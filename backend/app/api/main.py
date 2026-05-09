@@ -1,0 +1,89 @@
+"""FastAPI entrypoint for the PaperDesk backend skeleton."""
+
+from __future__ import annotations
+
+from functools import lru_cache
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.agents import (
+    LibraryRetrieverAgent,
+    PaperSearchAgent,
+    ReadingSummarizerAgent,
+    ReportWriterAgent,
+    TopicPlannerAgent,
+)
+from app.config import Settings, get_settings
+from app.repositories import SQLiteRepository
+from app.services import DocumentLibraryService, ExportService, ResearchOrchestrator
+from app.vectorstores import StubVectorStore
+
+
+@lru_cache(maxsize=1)
+def get_repository() -> SQLiteRepository:
+    settings = get_settings()
+    return SQLiteRepository(settings.sqlite_file)
+
+
+@lru_cache(maxsize=1)
+def get_vectorstore() -> StubVectorStore:
+    settings = get_settings()
+    return StubVectorStore(settings.vectorstore_path)
+
+
+@lru_cache(maxsize=1)
+def get_document_library_service() -> DocumentLibraryService:
+    settings = get_settings()
+    return DocumentLibraryService(
+        repository=get_repository(),
+        vectorstore=get_vectorstore(),
+        upload_dir=settings.upload_path,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_export_service() -> ExportService:
+    settings = get_settings()
+    return ExportService(settings.report_path)
+
+
+@lru_cache(maxsize=1)
+def get_research_orchestrator() -> ResearchOrchestrator:
+    return ResearchOrchestrator(
+        repository=get_repository(),
+        topic_planner=TopicPlannerAgent(),
+        paper_search_agent=PaperSearchAgent(),
+        library_retriever=LibraryRetrieverAgent(get_vectorstore()),
+        reading_summarizer=ReadingSummarizerAgent(),
+        report_writer=ReportWriterAgent(),
+        export_service=get_export_service(),
+    )
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    runtime_settings = settings or get_settings()
+    app = FastAPI(title=runtime_settings.app_name, version=runtime_settings.app_version)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=runtime_settings.get_cors_origins_list(),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    from app.api.routes import documents, reports, research
+
+    app.include_router(documents.router, prefix="/api")
+    app.include_router(reports.router, prefix="/api")
+    app.include_router(research.router, prefix="/api")
+
+    @app.get("/healthz")
+    def healthz() -> dict[str, str]:
+        return {"status": "ok"}
+
+    return app
+
+
+app = create_app()
+
