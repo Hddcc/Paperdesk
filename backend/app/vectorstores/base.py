@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from app.models import EvidenceItem, LibraryDocument
+from app.models import ChunkRecord, EvidenceItem, LibraryDocument
 
 
 class AbstractVectorStore(ABC):
@@ -15,6 +15,10 @@ class AbstractVectorStore(ABC):
         """Register a document with the local knowledge store."""
 
     @abstractmethod
+    def add_chunks(self, chunks: list[ChunkRecord]) -> None:
+        """Persist parsed chunks for later retrieval."""
+
+    @abstractmethod
     def query_evidence(
         self,
         query: str,
@@ -23,3 +27,6 @@ class AbstractVectorStore(ABC):
     ) -> list[EvidenceItem]:
         """Return evidence items relevant to the given query."""
 
+    @abstractmethod
+    def delete_document(self, document_id: str) -> None:
+        """Remove any vectorstore state associated with a document."""

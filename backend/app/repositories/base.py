@@ -1,0 +1,376 @@
+"""Shared SQLite helpers for repository implementations."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Iterator
+
+from app.models import CitationRecord
+
+
+def utc_now() -> datetime:
+    """Return timezone-aware current UTC time."""
+
+    return datetime.now(timezone.utc)
+
+
+class SQLiteDatabase:
+    """Own the shared SQLite connection lifecycle and schema management."""
+
+    def __init__(self, database_path: Path) -> None:
+        self.database_path = database_path
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.init_schema()
+
+    @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(self.database_path)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        try:
+            yield connection
+            connection.commit()
+        finally:
+            connection.close()
+
+    def init_schema(self) -> None:
+        """Create phase-03 tables and backfill compatible legacy data."""
+
+        with self.connection() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS research_runs (
+                    id TEXT PRIMARY KEY,
+                    topic TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS todo_tasks (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    task_order INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    intent TEXT NOT NULL,
+                    query TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    summary_markdown TEXT,
+                    FOREIGN KEY (run_id) REFERENCES research_runs (id)
+                );
+
+                CREATE TABLE IF NOT EXISTS paper_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL,
+                    paper_id TEXT,
+                    title TEXT NOT NULL,
+                    authors_json TEXT NOT NULL,
+                    abstract TEXT,
+                    year INTEGER,
+                    venue TEXT,
+                    doi TEXT,
+                    url TEXT,
+                    source TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS library_documents (
+                    id TEXT PRIMARY KEY,
+                    filename TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    title TEXT,
+                    file_path TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    page_count INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    uploaded_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS report_records (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    markdown TEXT NOT NULL,
+                    citations_text TEXT NOT NULL,
+                    task_summaries_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES research_runs (id)
+                );
+
+                CREATE TABLE IF NOT EXISTS citation_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    report_id TEXT NOT NULL,
+                    citation_label TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    url TEXT,
+                    doi TEXT,
+                    document_id TEXT,
+                    page_number INTEGER,
+                    sort_order INTEGER NOT NULL,
+                    FOREIGN KEY (report_id) REFERENCES report_records (id)
+                );
+                """
+            )
+            self._ensure_todo_task_columns(conn)
+            self._migrate_legacy_documents(conn)
+            self._migrate_legacy_reports(conn)
+
+    @staticmethod
+    def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def _column_names(conn: sqlite3.Connection, table_name: str) -> set[str]:
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return {str(row["name"]) for row in rows}
+
+    @staticmethod
+    def _ensure_column(
+        conn: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        definition: str,
+    ) -> None:
+        columns = SQLiteDatabase._column_names(conn, table_name)
+        if column_name not in columns:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+    def _ensure_todo_task_columns(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists(conn, "todo_tasks"):
+            return
+
+        self._ensure_column(conn, "todo_tasks", "task_order", "INTEGER")
+        self._ensure_column(conn, "todo_tasks", "query", "TEXT")
+        self._ensure_column(conn, "todo_tasks", "summary_markdown", "TEXT")
+
+        columns = self._column_names(conn, "todo_tasks")
+        if "task_index" in columns:
+            conn.execute(
+                """
+                UPDATE todo_tasks
+                SET task_order = COALESCE(task_order, task_index)
+                """
+            )
+        if "query_text" in columns:
+            conn.execute(
+                """
+                UPDATE todo_tasks
+                SET query = COALESCE(query, query_text)
+                """
+            )
+        if "summary" in columns:
+            conn.execute(
+                """
+                UPDATE todo_tasks
+                SET summary_markdown = COALESCE(summary_markdown, summary)
+                """
+            )
+
+    def _migrate_legacy_documents(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists(conn, "documents"):
+            return
+
+        conn.execute(
+            """
+            INSERT INTO library_documents (
+                id,
+                filename,
+                display_name,
+                title,
+                file_path,
+                sha256,
+                page_count,
+                status,
+                created_at,
+                uploaded_at
+            )
+            SELECT
+                documents.id,
+                documents.filename,
+                documents.display_name,
+                documents.display_name,
+                documents.file_path,
+                '',
+                0,
+                documents.status,
+                documents.uploaded_at,
+                documents.uploaded_at
+            FROM documents
+            WHERE NOT EXISTS (
+                SELECT 1 FROM library_documents
+                WHERE library_documents.id = documents.id
+            )
+            """
+        )
+
+    def _migrate_legacy_reports(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists(conn, "reports"):
+            return
+
+        conn.execute(
+            """
+            INSERT INTO report_records (
+                id,
+                run_id,
+                topic,
+                markdown,
+                citations_text,
+                task_summaries_json,
+                created_at
+            )
+            SELECT
+                reports.id,
+                reports.run_id,
+                reports.topic,
+                reports.markdown,
+                reports.citations,
+                reports.task_summaries_json,
+                reports.created_at
+            FROM reports
+            WHERE NOT EXISTS (
+                SELECT 1 FROM report_records
+                WHERE report_records.id = reports.id
+            )
+            """
+        )
+
+        rows = conn.execute(
+            """
+            SELECT id, citations, task_summaries_json
+            FROM reports
+            ORDER BY created_at ASC
+            """
+        ).fetchall()
+        for row in rows:
+            existing = conn.execute(
+                "SELECT 1 FROM citation_records WHERE report_id = ? LIMIT 1",
+                (row["id"],),
+            ).fetchone()
+            if existing is not None:
+                continue
+            citation_items = self._extract_legacy_citation_items(
+                task_summaries_json=row["task_summaries_json"],
+                citations_text=row["citations"],
+            )
+            for index, citation in enumerate(citation_items):
+                conn.execute(
+                    """
+                    INSERT INTO citation_records (
+                        report_id,
+                        citation_label,
+                        source_type,
+                        title,
+                        url,
+                        doi,
+                        document_id,
+                        page_number,
+                        sort_order
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["id"],
+                        citation.citation_label,
+                        citation.source_type,
+                        citation.title,
+                        citation.url,
+                        citation.doi,
+                        citation.document_id,
+                        citation.page_number,
+                        index,
+                    ),
+                )
+
+    @staticmethod
+    def _extract_legacy_citation_items(
+        *,
+        task_summaries_json: str,
+        citations_text: str,
+    ) -> list[CitationRecord]:
+        items: list[CitationRecord] = []
+        seen: set[tuple[str, str, str | None, str | None, str | None, int | None]] = set()
+
+        try:
+            task_summaries = json.loads(task_summaries_json)
+        except json.JSONDecodeError:
+            task_summaries = []
+
+        for task_summary in task_summaries:
+            for evidence in task_summary.get("evidence_items", []):
+                metadata = evidence.get("metadata") or {}
+                citation = CitationRecord(
+                    citation_label=evidence.get("citation_label") or "Legacy local evidence",
+                    source_type=str(evidence.get("source_type") or "local_document"),
+                    title=str(
+                        evidence.get("title")
+                        or metadata.get("filename")
+                        or evidence.get("citation_label")
+                        or "Legacy local evidence"
+                    ),
+                    url=evidence.get("url"),
+                    document_id=evidence.get("document_id")
+                    or metadata.get("document_id")
+                    or evidence.get("source_id"),
+                    page_number=evidence.get("page_number"),
+                )
+                key = (
+                    citation.citation_label,
+                    citation.title,
+                    citation.url,
+                    citation.doi,
+                    citation.document_id,
+                    citation.page_number,
+                )
+                if key not in seen:
+                    items.append(citation)
+                    seen.add(key)
+
+            for paper in task_summary.get("paper_records", []):
+                citation = CitationRecord(
+                    citation_label=paper.get("title") or "Legacy online paper",
+                    source_type=str(paper.get("source_type") or "online_paper"),
+                    title=paper.get("title") or "Legacy online paper",
+                    url=paper.get("url"),
+                    doi=paper.get("doi"),
+                )
+                key = (
+                    citation.citation_label,
+                    citation.title,
+                    citation.url,
+                    citation.doi,
+                    citation.document_id,
+                    citation.page_number,
+                )
+                if key not in seen:
+                    items.append(citation)
+                    seen.add(key)
+
+        if items:
+            return items
+
+        for line in [entry.strip() for entry in citations_text.splitlines() if entry.strip()]:
+            items.append(
+                CitationRecord(
+                    citation_label=line,
+                    source_type="legacy",
+                    title=line,
+                )
+            )
+        return items
+
+
+class BaseRepository:
+    """Base class for repositories backed by a shared SQLite database."""
+
+    def __init__(self, database: SQLiteDatabase) -> None:
+        self.database = database
+

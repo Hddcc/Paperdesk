@@ -5,6 +5,7 @@ frontend/.vite/
 backend/.venv/
 backend/.uv-cache/
 backend/.pytest-tmp/
+backend/.pytest-tmp*/
 backend/.pytest_cache/
 backend/.tmp_pytest/
 backend/pytest-cache-files-*/

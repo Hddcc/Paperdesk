@@ -30,7 +30,7 @@ class ReadingSummarizerAgent:
             title=task.title,
             intent=task.intent,
             summary=summary,
+            summary_markdown=summary,
             evidence_items=evidence_items,
             paper_records=paper_records,
         )
-

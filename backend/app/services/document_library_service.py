@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile
 
 from app.models import LibraryDocument
-from app.repositories import SQLiteRepository
+from app.repositories import LibraryRepository
 from app.vectorstores import AbstractVectorStore
 
 
@@ -18,7 +19,7 @@ class DocumentLibraryService:
 
     def __init__(
         self,
-        repository: SQLiteRepository,
+        repository: LibraryRepository,
         vectorstore: AbstractVectorStore,
         upload_dir: Path,
     ) -> None:
@@ -38,13 +39,18 @@ class DocumentLibraryService:
         destination = self.upload_dir / safe_filename
         content = await upload.read()
         destination.write_bytes(content)
+        sha256 = hashlib.sha256(content).hexdigest()
 
         document = LibraryDocument(
             id=document_id,
             filename=safe_filename,
             display_name=upload.filename,
+            title=Path(upload.filename).stem,
             file_path=str(destination),
             status="uploaded",
+            sha256=sha256,
+            page_count=0,
+            created_at=datetime.now(timezone.utc),
             uploaded_at=datetime.now(timezone.utc),
         )
         self.repository.create_document(document)
@@ -61,9 +67,5 @@ class DocumentLibraryService:
         file_path = Path(document.file_path)
         if file_path.exists():
             file_path.unlink()
-        marker_base_path = getattr(self.vectorstore, "base_path", None)
-        if marker_base_path is not None:
-            marker_path = Path(marker_base_path) / f"{document.id}.txt"
-            if marker_path.exists():
-                marker_path.unlink()
+        self.vectorstore.delete_document(document.id)
         return document

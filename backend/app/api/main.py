@@ -32,11 +32,27 @@ def get_vectorstore() -> StubVectorStore:
     return StubVectorStore(settings.vectorstore_path)
 
 
+def get_library_repository():
+    return get_repository().library
+
+
+def get_research_repository():
+    return get_repository().research
+
+
+def get_paper_repository():
+    return get_repository().paper
+
+
+def get_report_repository():
+    return get_repository().report
+
+
 @lru_cache(maxsize=1)
 def get_document_library_service() -> DocumentLibraryService:
     settings = get_settings()
     return DocumentLibraryService(
-        repository=get_repository(),
+        repository=get_library_repository(),
         vectorstore=get_vectorstore(),
         upload_dir=settings.upload_path,
     )
@@ -51,7 +67,10 @@ def get_export_service() -> ExportService:
 @lru_cache(maxsize=1)
 def get_research_orchestrator() -> ResearchOrchestrator:
     return ResearchOrchestrator(
-        repository=get_repository(),
+        research_repository=get_research_repository(),
+        paper_repository=get_paper_repository(),
+        library_repository=get_library_repository(),
+        report_repository=get_report_repository(),
         topic_planner=TopicPlannerAgent(),
         paper_search_agent=PaperSearchAgent(),
         library_retriever=LibraryRetrieverAgent(get_vectorstore()),
@@ -86,4 +105,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 app = create_app()
-

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from app.models import ResearchReport, TaskSummary
+from app.models import CitationRecord, ResearchReport, TaskSummary
 
 
 class ReportWriterAgent:
@@ -13,6 +13,7 @@ class ReportWriterAgent:
 
     def write(self, topic: str, task_summaries: list[TaskSummary]) -> ResearchReport:
         citations: list[str] = []
+        citation_items: list[CitationRecord] = []
         sections: list[str] = []
         for index, task_summary in enumerate(task_summaries, start=1):
             sections.append(
@@ -29,8 +30,27 @@ class ReportWriterAgent:
                 citations.append(
                     f"{evidence.citation_label} - {evidence.metadata.get('file_path', evidence.source_id)}"
                 )
+                citation_items.append(
+                    CitationRecord(
+                        citation_label=evidence.citation_label,
+                        source_type=evidence.source_type.value,
+                        title=evidence.title,
+                        url=evidence.url,
+                        document_id=evidence.document_id or evidence.source_id,
+                        page_number=evidence.page_number,
+                    )
+                )
             for paper in task_summary.paper_records:
                 citations.append(f"{paper.title} - {paper.url or paper.doi or 'mock source'}")
+                citation_items.append(
+                    CitationRecord(
+                        citation_label=paper.title,
+                        source_type=paper.source_type.value,
+                        title=paper.title,
+                        url=paper.url,
+                        doi=paper.doi,
+                    )
+                )
 
         citation_lines = [f"- {citation}" for citation in citations] if citations else ["- 暂无引用"]
         markdown = "\n".join(
@@ -54,5 +74,6 @@ class ReportWriterAgent:
             markdown=markdown,
             task_summaries=task_summaries,
             citations=citations,
+            citation_items=citation_items,
             created_at=datetime.now(timezone.utc),
         )

@@ -15,7 +15,7 @@ from app.agents import (
 )
 from app.models import ResearchRequest, ResearchReport, TaskSummary
 from app.models.enums import ResearchRunStatus
-from app.repositories import SQLiteRepository
+from app.repositories import LibraryRepository, PaperRepository, ReportRepository, ResearchRepository
 
 from .export_service import ExportService
 
@@ -25,7 +25,10 @@ class ResearchOrchestrator:
 
     def __init__(
         self,
-        repository: SQLiteRepository,
+        research_repository: ResearchRepository,
+        paper_repository: PaperRepository,
+        library_repository: LibraryRepository,
+        report_repository: ReportRepository,
         topic_planner: TopicPlannerAgent,
         paper_search_agent: PaperSearchAgent,
         library_retriever: LibraryRetrieverAgent,
@@ -33,7 +36,10 @@ class ResearchOrchestrator:
         report_writer: ReportWriterAgent,
         export_service: ExportService,
     ) -> None:
-        self.repository = repository
+        self.research_repository = research_repository
+        self.paper_repository = paper_repository
+        self.library_repository = library_repository
+        self.report_repository = report_repository
         self.topic_planner = topic_planner
         self.paper_search_agent = paper_search_agent
         self.library_retriever = library_retriever
@@ -42,10 +48,10 @@ class ResearchOrchestrator:
         self.export_service = export_service
 
     def run_stream(self, request: ResearchRequest) -> Iterator[dict]:
-        run = self.repository.create_run(str(uuid4()), request.topic)
+        run = self.research_repository.create_run(str(uuid4()), request.topic)
         yield {"type": "run_created", "run": run.model_dump(mode="json")}
 
-        self.repository.update_run_status(run.id, ResearchRunStatus.PLANNING)
+        self.research_repository.update_run_status(run.id, ResearchRunStatus.PLANNING)
         yield {
             "type": "status",
             "status": ResearchRunStatus.PLANNING.value,
@@ -53,19 +59,19 @@ class ResearchOrchestrator:
         }
 
         tasks = self.topic_planner.plan(request.topic)
-        self.repository.save_todo_tasks(run.id, tasks)
+        self.research_repository.save_todo_tasks(run.id, tasks)
         yield {
             "type": "todo_list",
             "tasks": [task.model_dump(mode="json") for task in tasks],
         }
 
         task_summaries: list[TaskSummary] = []
-        documents = self.repository.list_documents()
+        documents = self.library_repository.list_documents()
 
         for task in tasks:
             task.status = ResearchRunStatus.SEARCHING_ONLINE
-            self.repository.update_task(run.id, task)
-            self.repository.update_run_status(run.id, ResearchRunStatus.SEARCHING_ONLINE)
+            self.research_repository.update_task(run.id, task)
+            self.research_repository.update_run_status(run.id, ResearchRunStatus.SEARCHING_ONLINE)
             yield {
                 "type": "task_status",
                 "task_id": task.id,
@@ -74,10 +80,11 @@ class ResearchOrchestrator:
                 "message": "正在执行在线论文检索",
             }
             paper_records = self.paper_search_agent.search(task, top_k=request.top_k_online)
+            self.paper_repository.save_task_papers(task.id, paper_records)
 
             task.status = ResearchRunStatus.RETRIEVING_LOCAL
-            self.repository.update_task(run.id, task)
-            self.repository.update_run_status(run.id, ResearchRunStatus.RETRIEVING_LOCAL)
+            self.research_repository.update_task(run.id, task)
+            self.research_repository.update_run_status(run.id, ResearchRunStatus.RETRIEVING_LOCAL)
             yield {
                 "type": "task_status",
                 "task_id": task.id,
@@ -92,8 +99,8 @@ class ResearchOrchestrator:
             )
 
             task.status = ResearchRunStatus.SUMMARIZING_TASK
-            self.repository.update_task(run.id, task)
-            self.repository.update_run_status(run.id, ResearchRunStatus.SUMMARIZING_TASK)
+            self.research_repository.update_task(run.id, task)
+            self.research_repository.update_run_status(run.id, ResearchRunStatus.SUMMARIZING_TASK)
             yield {
                 "type": "task_status",
                 "task_id": task.id,
@@ -103,8 +110,9 @@ class ResearchOrchestrator:
             }
             task_summary = self.reading_summarizer.summarize(task, paper_records, evidence_items)
             task.summary = task_summary.summary
+            task.summary_markdown = task_summary.summary_markdown
             task.status = ResearchRunStatus.COMPLETED
-            self.repository.update_task(run.id, task)
+            self.research_repository.update_task(run.id, task)
             task_summaries.append(task_summary)
             yield {
                 "type": "task_result",
@@ -115,7 +123,7 @@ class ResearchOrchestrator:
                 "summary": task_summary.model_dump(mode="json"),
             }
 
-        self.repository.update_run_status(run.id, ResearchRunStatus.WRITING_REPORT)
+        self.research_repository.update_run_status(run.id, ResearchRunStatus.WRITING_REPORT)
         yield {
             "type": "status",
             "status": ResearchRunStatus.WRITING_REPORT.value,
@@ -125,8 +133,8 @@ class ResearchOrchestrator:
         report = self.report_writer.write(request.topic, task_summaries)
         report = self._attach_export_path(report, self.export_service.get_export_path(report.id))
         self.export_service.export_markdown(report)
-        self.repository.create_report(report, run.id)
-        self.repository.update_run_status(run.id, ResearchRunStatus.COMPLETED)
+        self.report_repository.create_report(report, run.id)
+        self.research_repository.update_run_status(run.id, ResearchRunStatus.COMPLETED)
 
         yield {
             "type": "final_report",

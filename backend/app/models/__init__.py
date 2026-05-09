@@ -1,21 +1,14 @@
 """Shared schemas for API, services, and frontend coordination."""
 
 from .enums import EvidenceSourceType, ResearchRunStatus
-from .schemas import (
-    ChunkRecord,
-    EvidenceItem,
-    LibraryDocument,
-    PaperRecord,
-    ReportListItem,
-    ResearchReport,
-    ResearchRequest,
-    ResearchRun,
-    TaskSummary,
-    TodoTask,
-)
+from .library import ChunkRecord, LibraryDocument
+from .paper import EvidenceItem, PaperRecord
+from .report import CitationRecord, ReportListItem, ResearchReport, TaskSummary
+from .research import ResearchRequest, ResearchRun, TodoTask
 
 __all__ = [
     "ChunkRecord",
+    "CitationRecord",
     "EvidenceItem",
     "EvidenceSourceType",
     "LibraryDocument",
@@ -28,4 +21,3 @@ __all__ = [
     "TaskSummary",
     "TodoTask",
 ]
-
