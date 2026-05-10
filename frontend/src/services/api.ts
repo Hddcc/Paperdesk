@@ -16,26 +16,48 @@ async function parseJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
+function normalizeFetchError(err: unknown, fallbackMessage: string): Error {
+  if (err instanceof Error) {
+    if (err instanceof TypeError) {
+      return new Error(`${fallbackMessage}，后端连接可能已中断或正在重启。`);
+    }
+    return err;
+  }
+  return new Error(fallbackMessage);
+}
+
 export async function listDocuments(): Promise<LibraryDocument[]> {
-  const response = await fetch(`${baseUrl}/api/documents`);
-  return parseJson<LibraryDocument[]>(response);
+  try {
+    const response = await fetch(`${baseUrl}/api/documents`);
+    return parseJson<LibraryDocument[]>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "加载文档失败");
+  }
 }
 
 export async function uploadDocument(file: File): Promise<LibraryDocument> {
   const formData = new FormData();
   formData.append("file", file);
-  const response = await fetch(`${baseUrl}/api/documents/upload`, {
-    method: "POST",
-    body: formData
-  });
-  return parseJson<LibraryDocument>(response);
+  try {
+    const response = await fetch(`${baseUrl}/api/documents/upload`, {
+      method: "POST",
+      body: formData
+    });
+    return parseJson<LibraryDocument>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "上传文档失败");
+  }
 }
 
 export async function deleteDocument(documentId: string): Promise<LibraryDocument> {
-  const response = await fetch(`${baseUrl}/api/documents/${documentId}`, {
-    method: "DELETE"
-  });
-  return parseJson<LibraryDocument>(response);
+  try {
+    const response = await fetch(`${baseUrl}/api/documents/${documentId}`, {
+      method: "DELETE"
+    });
+    return parseJson<LibraryDocument>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "删除文档失败");
+  }
 }
 
 export async function listReports(): Promise<ReportListItem[]> {
@@ -100,4 +122,3 @@ export async function runResearchStream(
     }
   }
 }
-

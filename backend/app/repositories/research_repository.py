@@ -130,7 +130,7 @@ class ResearchRepository(BaseRepository):
             title=row["title"],
             intent=row["intent"],
             query=query,
-            status=ResearchRunStatus(row["status"]),
+            status=row["status"],
             summary=summary_markdown,
             summary_markdown=summary_markdown,
         )

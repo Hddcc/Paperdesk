@@ -6,8 +6,14 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .enums import ResearchRunStatus
+from .enums import (
+    ResearchRunStatus,
+    TodoTaskStatus,
+    coerce_research_run_status,
+    coerce_todo_task_status,
+)
 from .paper import normalize_search_provider
+from .report import ResearchReport, TaskSummary
 
 
 class ResearchRequest(BaseModel):
@@ -32,9 +38,14 @@ class TodoTask(BaseModel):
     title: str
     intent: str
     query: str
-    status: ResearchRunStatus = ResearchRunStatus.CREATED
+    status: TodoTaskStatus = TodoTaskStatus.PENDING
     summary: str | None = None
     summary_markdown: str | None = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, value: TodoTaskStatus | str) -> TodoTaskStatus:
+        return coerce_todo_task_status(value)
 
     @model_validator(mode="after")
     def sync_summary_fields(self) -> "TodoTask":
@@ -53,3 +64,19 @@ class ResearchRun(BaseModel):
     status: ResearchRunStatus
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, value: ResearchRunStatus | str) -> ResearchRunStatus:
+        return coerce_research_run_status(value)
+
+
+class ResearchState(BaseModel):
+    """In-memory execution state for a single fixed research workflow run."""
+
+    run_id: str
+    topic: str
+    status: ResearchRunStatus
+    todo_tasks: list[TodoTask] = Field(default_factory=list)
+    task_summaries: list[TaskSummary] = Field(default_factory=list)
+    report: ResearchReport | None = None

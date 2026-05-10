@@ -9,6 +9,7 @@ from .paper_search_service import PaperSearchService
 from .pdf_parser import PdfParser
 from .query_translation_service import QueryTranslationService
 from .research_orchestrator import ResearchOrchestrator
+from .research_workspace_service import ResearchWorkspaceService
 from .text_chunker import TextChunker
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "PdfParser",
     "QueryTranslationService",
     "ResearchOrchestrator",
+    "ResearchWorkspaceService",
     "TextChunker",
 ]

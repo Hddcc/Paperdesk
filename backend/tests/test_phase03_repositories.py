@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from app.models import TodoTask
-from app.models.enums import ResearchRunStatus
+from app.models.enums import TodoTaskStatus
 from app.repositories import SQLiteRepository
 
 
@@ -145,7 +145,7 @@ def test_phase03_schema_and_legacy_backfill_are_idempotent(sandbox_dir):
                 title="New Task",
                 intent="Check compatibility insert",
                 query="new query",
-                status=ResearchRunStatus.CREATED,
+                status=TodoTaskStatus.PENDING,
             )
         ],
     )

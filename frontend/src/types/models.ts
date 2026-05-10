@@ -1,13 +1,13 @@
 export type ResearchRunStatus =
   | "created"
   | "planning"
-  | "searching_online"
-  | "retrieving_local"
-  | "summarizing_task"
+  | "running_task"
   | "writing_report"
   | "completed"
   | "failed"
   | "cancelled";
+
+export type TodoTaskStatus = "pending" | "in_progress" | "completed" | "failed";
 
 export type EvidenceSourceType = "online_paper" | "local_document";
 
@@ -24,7 +24,7 @@ export interface TodoTask {
   title: string;
   intent: string;
   query: string;
-  status: ResearchRunStatus;
+  status: TodoTaskStatus;
   summary?: string | null;
   summary_markdown?: string | null;
 }

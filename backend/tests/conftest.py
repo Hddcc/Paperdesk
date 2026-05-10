@@ -54,6 +54,7 @@ def client(sandbox_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         get_paper_search_service,
         get_repository,
         get_research_orchestrator,
+        get_research_workspace_service,
         get_vectorstore,
     )
     from app.config import get_settings
@@ -65,6 +66,7 @@ def client(sandbox_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     get_paper_search_service.cache_clear()
     get_document_library_service.cache_clear()
     get_export_service.cache_clear()
+    get_research_workspace_service.cache_clear()
     get_research_orchestrator.cache_clear()
 
     app = create_app()

@@ -26,6 +26,7 @@ from app.services import (
     PdfParser,
     QueryTranslationService,
     ResearchOrchestrator,
+    ResearchWorkspaceService,
     TextChunker,
 )
 from app.vectorstores import ChromaVectorStore
@@ -104,6 +105,12 @@ def get_export_service() -> ExportService:
 
 
 @lru_cache(maxsize=1)
+def get_research_workspace_service() -> ResearchWorkspaceService:
+    settings = get_settings()
+    return ResearchWorkspaceService(settings.workspace_path)
+
+
+@lru_cache(maxsize=1)
 def get_research_orchestrator() -> ResearchOrchestrator:
     return ResearchOrchestrator(
         research_repository=get_research_repository(),
@@ -116,6 +123,7 @@ def get_research_orchestrator() -> ResearchOrchestrator:
         reading_summarizer=ReadingSummarizerAgent(),
         report_writer=ReportWriterAgent(),
         export_service=get_export_service(),
+        workspace_service=get_research_workspace_service(),
     )
 
 

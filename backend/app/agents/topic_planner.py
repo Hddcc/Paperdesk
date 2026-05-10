@@ -6,7 +6,7 @@ from datetime import date
 from uuid import uuid4
 
 from app.models import TodoTask
-from app.models.enums import ResearchRunStatus
+from app.models.enums import TodoTaskStatus
 
 
 class TopicPlannerAgent:
@@ -28,8 +28,7 @@ class TopicPlannerAgent:
                     title=f"{topic}：{title_suffix}",
                     intent=intent,
                     query=f"{topic} {title_suffix} {reference_date.year}",
-                    status=ResearchRunStatus.CREATED,
+                    status=TodoTaskStatus.PENDING,
                 )
             )
         return tasks
-

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 from typing import TYPE_CHECKING
@@ -15,6 +16,8 @@ from .base import AbstractVectorStore
 
 if TYPE_CHECKING:
     from app.services.embedding_service import EmbeddingService
+
+logger = logging.getLogger(__name__)
 
 
 class ChromaVectorStore(AbstractVectorStore):
@@ -31,8 +34,9 @@ class ChromaVectorStore(AbstractVectorStore):
         self.base_path.mkdir(parents=True, exist_ok=True)
         self.embedding_service = embedding_service
         self.collection_name = collection_name
-        self._client: chromadb.PersistentClient | None = None
+        self._client: chromadb.PersistentClient | chromadb.EphemeralClient | None = None
         self._collection = None
+        self._client_mode = "persistent"
 
     def upsert_document(self, document: LibraryDocument) -> None:
         _ = document
@@ -41,14 +45,17 @@ class ChromaVectorStore(AbstractVectorStore):
         if not chunks:
             raise RuntimeError("PDF import produced no usable text chunks")
 
-        collection = self._get_collection()
         texts = [chunk.content or chunk.text for chunk in chunks]
         embeddings = self.embedding_service.embed_texts(texts)
-        collection.upsert(
-            ids=[chunk.chunk_id or chunk.id for chunk in chunks],
-            documents=texts,
-            embeddings=embeddings,
-            metadatas=[self._to_metadata(chunk) for chunk in chunks],
+        payload = {
+            "ids": [chunk.chunk_id or chunk.id for chunk in chunks],
+            "documents": texts,
+            "embeddings": embeddings,
+            "metadatas": [self._to_metadata(chunk) for chunk in chunks],
+        }
+        self._run_collection_operation(
+            "upsert chunks",
+            lambda collection: collection.upsert(**payload),
         )
 
     def query_evidence(
@@ -64,14 +71,17 @@ class ChromaVectorStore(AbstractVectorStore):
             return []
 
         collection = self._get_collection()
-        if collection.count() == 0:
+        if self._run_collection_operation("count collection", lambda current: current.count()) == 0:
             return []
 
         query_embedding = self.embedding_service.embed_query(query)
         result_limit = max(top_k * 4, top_k)
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=result_limit,
+        results = self._run_collection_operation(
+            "query evidence",
+            lambda current: current.query(
+                query_embeddings=[query_embedding],
+                n_results=result_limit,
+            ),
         )
 
         ids = results.get("ids", [[]])[0]
@@ -131,8 +141,10 @@ class ChromaVectorStore(AbstractVectorStore):
         return evidence_items
 
     def delete_document(self, document_id: str) -> None:
-        collection = self._get_collection()
-        collection.delete(where={"document_id": document_id})
+        self._run_collection_operation(
+            "delete document",
+            lambda collection: collection.delete(where={"document_id": document_id}),
+        )
 
     def _get_collection(self):
         if self._collection is not None:
@@ -140,15 +152,64 @@ class ChromaVectorStore(AbstractVectorStore):
 
         try:
             if self._client is None:
-                self._client = chromadb.PersistentClient(path=str(self.base_path))
+                self._client = self._build_client()
             self._collection = self._client.get_or_create_collection(
                 name=self.collection_name,
                 metadata={"hnsw:space": "cosine"},
             )
         except Exception as exc:  # pragma: no cover - depends on local chroma runtime
-            raise RuntimeError(f"Failed to initialize Chroma vector store: {exc}") from exc
+            if self._should_fallback_to_ephemeral(exc):
+                logger.warning(
+                    "Chroma persistent storage failed during initialization, falling back to in-memory mode: %s",
+                    exc,
+                )
+                self._activate_ephemeral_fallback()
+                self._collection = self._client.get_or_create_collection(
+                    name=self.collection_name,
+                    metadata={"hnsw:space": "cosine"},
+                )
+            else:
+                raise RuntimeError(f"Failed to initialize Chroma vector store: {exc}") from exc
 
         return self._collection
+
+    def _run_collection_operation(self, action: str, operation):
+        collection = self._get_collection()
+        try:
+            return operation(collection)
+        except Exception as exc:
+            if self._should_fallback_to_ephemeral(exc) and self._client_mode != "ephemeral":
+                logger.warning(
+                    "Chroma persistent storage failed during %s, retrying with in-memory mode: %s",
+                    action,
+                    exc,
+                )
+                self._activate_ephemeral_fallback()
+                return operation(self._get_collection())
+            raise RuntimeError(f"Failed to {action}: {exc}") from exc
+
+    def _build_client(self) -> chromadb.PersistentClient | chromadb.EphemeralClient:
+        if self._client_mode == "ephemeral":
+            return chromadb.EphemeralClient()
+        return chromadb.PersistentClient(path=str(self.base_path))
+
+    def _activate_ephemeral_fallback(self) -> None:
+        self._client_mode = "ephemeral"
+        self._client = chromadb.EphemeralClient()
+        self._collection = None
+
+    @staticmethod
+    def _should_fallback_to_ephemeral(exc: Exception) -> bool:
+        message = str(exc).casefold()
+        return any(
+            token in message
+            for token in (
+                "disk i/o error",
+                "readonly database",
+                "database is locked",
+                "error returned from database",
+            )
+        )
 
     @staticmethod
     def _to_metadata(chunk: ChunkRecord) -> dict[str, Any]:
