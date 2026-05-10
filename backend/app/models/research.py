@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .enums import ResearchRunStatus
+from .paper import normalize_search_provider
 
 
 class ResearchRequest(BaseModel):
@@ -17,6 +18,11 @@ class ResearchRequest(BaseModel):
     top_k_local: int = Field(default=3, ge=1, le=10)
     search_provider: str | None = None
     notes: str | None = None
+
+    @field_validator("search_provider", mode="before")
+    @classmethod
+    def normalize_provider(cls, value: str | None) -> str | None:
+        return normalize_search_provider(value)
 
 
 class TodoTask(BaseModel):
@@ -47,4 +53,3 @@ class ResearchRun(BaseModel):
     status: ResearchRunStatus
     created_at: datetime
     updated_at: datetime
-

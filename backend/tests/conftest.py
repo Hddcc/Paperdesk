@@ -24,6 +24,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         create_app,
         get_document_library_service,
         get_export_service,
+        get_paper_search_service,
         get_repository,
         get_research_orchestrator,
         get_vectorstore,
@@ -33,10 +34,10 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     get_settings.cache_clear()
     get_repository.cache_clear()
     get_vectorstore.cache_clear()
+    get_paper_search_service.cache_clear()
     get_document_library_service.cache_clear()
     get_export_service.cache_clear()
     get_research_orchestrator.cache_clear()
 
     app = create_app()
     return TestClient(app)
-

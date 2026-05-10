@@ -16,7 +16,15 @@ from app.agents import (
 )
 from app.config import Settings, get_settings
 from app.repositories import SQLiteRepository
-from app.services import DocumentLibraryService, ExportService, ResearchOrchestrator
+from app.services import (
+    ArxivClient,
+    DocumentLibraryService,
+    ExportService,
+    OpenAlexClient,
+    PaperSearchService,
+    QueryTranslationService,
+    ResearchOrchestrator,
+)
 from app.vectorstores import StubVectorStore
 
 
@@ -49,6 +57,23 @@ def get_report_repository():
 
 
 @lru_cache(maxsize=1)
+def get_paper_search_service() -> PaperSearchService:
+    settings = get_settings()
+    return PaperSearchService(
+        openalex_client=OpenAlexClient(
+            base_url=settings.openalex_base_url,
+            api_key=settings.openalex_api_key,
+        ),
+        arxiv_client=ArxivClient(base_url=settings.arxiv_base_url),
+        translation_service=QueryTranslationService(
+            model=settings.llm_model,
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+        ),
+    )
+
+
+@lru_cache(maxsize=1)
 def get_document_library_service() -> DocumentLibraryService:
     settings = get_settings()
     return DocumentLibraryService(
@@ -72,7 +97,7 @@ def get_research_orchestrator() -> ResearchOrchestrator:
         library_repository=get_library_repository(),
         report_repository=get_report_repository(),
         topic_planner=TopicPlannerAgent(),
-        paper_search_agent=PaperSearchAgent(),
+        paper_search_agent=PaperSearchAgent(get_paper_search_service()),
         library_retriever=LibraryRetrieverAgent(get_vectorstore()),
         reading_summarizer=ReadingSummarizerAgent(),
         report_writer=ReportWriterAgent(),
@@ -91,9 +116,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    from app.api.routes import documents, reports, research
+    from app.api.routes import documents, papers, reports, research
 
     app.include_router(documents.router, prefix="/api")
+    app.include_router(papers.router, prefix="/api")
     app.include_router(reports.router, prefix="/api")
     app.include_router(research.router, prefix="/api")
 

@@ -79,7 +79,11 @@ class ResearchOrchestrator:
                 "title": task.title,
                 "message": "正在执行在线论文检索",
             }
-            paper_records = self.paper_search_agent.search(task, top_k=request.top_k_online)
+            paper_records = self.paper_search_agent.search(
+                task,
+                top_k=request.top_k_online,
+                search_provider=request.search_provider,
+            )
             self.paper_repository.save_task_papers(task.id, paper_records)
 
             task.status = ResearchRunStatus.RETRIEVING_LOCAL

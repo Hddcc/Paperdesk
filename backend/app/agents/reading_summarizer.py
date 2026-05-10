@@ -15,14 +15,16 @@ class ReadingSummarizerAgent:
         evidence_items: list[EvidenceItem],
     ) -> TaskSummary:
         citation_lines = [item.citation_label for item in evidence_items]
-        paper_lines = [record.title for record in paper_records]
+        paper_lines = [
+            self._format_paper_reference(index, record)
+            for index, record in enumerate(paper_records, start=1)
+        ]
         summary = (
-            f"这是针对“{task.title}”的骨架版任务总结。\n\n"
+            f"任务聚焦：{task.intent}\n\n"
             f"- 在线论文结果：{len(paper_records)} 条\n"
             f"- 本地证据结果：{len(evidence_items)} 条\n"
-            f"- 说明：当前实现为 00/01 章节可运行骨架，摘要内容为 mock/stub，"
-            f"用于验证多 Agent 职责边界、状态流和 SSE 展示。\n\n"
-            f"在线论文样例：{'; '.join(paper_lines) if paper_lines else '暂无'}\n"
+            "\n"
+            f"在线论文参考：\n{chr(10).join(paper_lines) if paper_lines else '暂无'}\n"
             f"本地证据引用：{'; '.join(citation_lines) if citation_lines else '暂无'}"
         )
         return TaskSummary(
@@ -34,3 +36,23 @@ class ReadingSummarizerAgent:
             evidence_items=evidence_items,
             paper_records=paper_records,
         )
+
+    @staticmethod
+    def _format_paper_reference(index: int, record: PaperRecord) -> str:
+        authors = ReadingSummarizerAgent._format_authors(record.authors)
+        year = str(record.year) if record.year is not None else "年份未知"
+        venue = f" {record.venue}." if record.venue else ""
+        locator = ""
+        if record.doi:
+            locator = f" DOI: {record.doi}"
+        elif record.url:
+            locator = f" URL: {record.url}"
+        return f"[{index}] {authors}. {record.title}. {year}.{venue}{locator}"
+
+    @staticmethod
+    def _format_authors(authors: list[str]) -> str:
+        if not authors:
+            return "作者未知"
+        if len(authors) <= 3:
+            return ", ".join(authors)
+        return f"{', '.join(authors[:3])} 等"

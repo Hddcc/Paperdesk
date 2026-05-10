@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     llm_model: str = "gpt-4o-mini"
+    openalex_api_key: str | None = None
     embedding_provider: str = "local"
     embedding_model: str = "BAAI/bge-m3"
     sqlite_path: str = "./data/paperdesk.db"
@@ -39,7 +40,7 @@ class Settings(BaseSettings):
     arxiv_base_url: str = "http://export.arxiv.org/api/query"
     cors_origins: str = Field(default="*")
 
-    @field_validator("llm_base_url", "llm_api_key", mode="before")
+    @field_validator("llm_base_url", "llm_api_key", "openalex_api_key", mode="before")
     @classmethod
     def empty_string_as_none(cls, value: str | None) -> str | None:
         if value is None:

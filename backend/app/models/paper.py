@@ -1,12 +1,46 @@
-"""Paper and evidence models."""
+"""Paper-domain models and normalization helpers."""
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .enums import EvidenceSourceType
+
+SUPPORTED_SEARCH_PROVIDERS = {"all", "auto", "openalex", "arxiv"}
+
+
+def normalize_search_provider(value: str | None) -> str | None:
+    """Normalize the configured search provider name."""
+
+    if value is None:
+        return None
+
+    cleaned = value.strip().lower()
+    if not cleaned:
+        return None
+    if cleaned not in SUPPORTED_SEARCH_PROVIDERS:
+        supported = ", ".join(sorted(SUPPORTED_SEARCH_PROVIDERS))
+        raise ValueError(f"Unsupported search_provider: {cleaned}. Expected one of: {supported}")
+    return cleaned
+
+
+def normalize_doi_value(value: str | None) -> str | None:
+    """Normalize DOI text for display and deduplication."""
+
+    if value is None:
+        return None
+
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+
+    cleaned = re.sub(r"^https?://(dx\.)?doi\.org/", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^doi:\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.strip().lower()
+    return cleaned or None
 
 
 class PaperRecord(BaseModel):
@@ -20,8 +54,32 @@ class PaperRecord(BaseModel):
     venue: str | None = None
     doi: str | None = None
     url: str | None = None
-    source: str = "mock"
+    source: str = "unknown"
     source_type: EvidenceSourceType = EvidenceSourceType.ONLINE_PAPER
+
+    @field_validator("doi", mode="before")
+    @classmethod
+    def normalize_doi(cls, value: str | None) -> str | None:
+        return normalize_doi_value(value)
+
+
+class PaperSearchRequest(BaseModel):
+    """Minimal request model for the standalone online paper search route."""
+
+    topic: str = Field(..., min_length=3)
+    search_provider: str | None = None
+    top_k_online: int = Field(default=5, ge=1, le=10)
+
+    @field_validator("search_provider", mode="before")
+    @classmethod
+    def normalize_provider(cls, value: str | None) -> str | None:
+        return normalize_search_provider(value)
+
+
+class PaperSearchResponse(BaseModel):
+    """Response model for normalized online paper search results."""
+
+    items: list[PaperRecord]
 
 
 class EvidenceItem(BaseModel):
@@ -57,4 +115,3 @@ class EvidenceItem(BaseModel):
             candidate = self.metadata.get("filename") or self.citation_label
             self.title = str(candidate)
         return self
-

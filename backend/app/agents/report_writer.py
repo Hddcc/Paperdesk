@@ -41,7 +41,7 @@ class ReportWriterAgent:
                     )
                 )
             for paper in task_summary.paper_records:
-                citations.append(f"{paper.title} - {paper.url or paper.doi or 'mock source'}")
+                citations.append(f"{paper.title} - {paper.url or paper.doi or 'source unavailable'}")
                 citation_items.append(
                     CitationRecord(
                         citation_label=paper.title,
@@ -59,7 +59,8 @@ class ReportWriterAgent:
                 "",
                 "## 概述",
                 "",
-                "本报告由 PaperDesk 00/01 可运行骨架自动生成，用于验证固定工作流、"
+                "本报告由 PaperDesk 教程版工作流自动生成。当前阶段已接入真实在线论文检索，"
+                "任务总结与报告写作仍采用规则模板，用于验证固定工作流、"
                 "多 Agent 边界、SQLite 持久化与前端研究工作台展示。",
                 "",
                 *sections,

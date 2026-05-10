@@ -19,6 +19,7 @@ def test_settings_read_env_file_and_prepare_runtime_paths(tmp_path: Path) -> Non
                 "LLM_BASE_URL=   ",
                 "LLM_API_KEY=   ",
                 "LLM_MODEL=gpt-test",
+                "OPENALEX_API_KEY=openalex-secret",
                 "EMBEDDING_PROVIDER=local",
                 "EMBEDDING_MODEL=test-embedding",
                 "SQLITE_PATH=./runtime/paperdesk.db",
@@ -44,6 +45,7 @@ def test_settings_read_env_file_and_prepare_runtime_paths(tmp_path: Path) -> Non
     assert settings.llm_base_url is None
     assert settings.llm_api_key is None
     assert settings.llm_model == "gpt-test"
+    assert settings.openalex_api_key == "openalex-secret"
     assert settings.embedding_provider == "local"
     assert settings.embedding_model == "test-embedding"
     assert settings.openalex_base_url == "https://openalex.example/api"
@@ -78,6 +80,7 @@ def test_create_app_with_blank_api_key_and_reserved_chroma_path(
     vector_dir = workspace_dir / "vectorstore"
 
     monkeypatch.setenv("LLM_API_KEY", "")
+    monkeypatch.setenv("OPENALEX_API_KEY", "")
     monkeypatch.setenv("SQLITE_PATH", str(data_dir / "paperdesk.db"))
     monkeypatch.setenv("CHROMA_PATH", str(chroma_dir))
     monkeypatch.setenv("WORKSPACE_DIR", str(workspace_dir))
@@ -90,6 +93,7 @@ def test_create_app_with_blank_api_key_and_reserved_chroma_path(
 
     settings = get_settings()
     assert settings.llm_api_key is None
+    assert settings.openalex_api_key is None
     assert settings.chroma_storage_path == chroma_dir
     assert settings.vectorstore_path == vector_dir
 
