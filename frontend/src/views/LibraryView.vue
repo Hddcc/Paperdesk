@@ -3,7 +3,7 @@
     <article class="panel">
       <header class="section-head">
         <h2>本地论文库</h2>
-        <p>上传 PDF 仅做文件登记与 mock 检索占位，不解析正文。</p>
+        <p>上传 PDF 后会同步完成解析、切片、向量化，并接入本地语义检索。</p>
       </header>
 
       <label class="upload-box">
@@ -23,7 +23,7 @@
         <li v-for="document in store.documents" :key="document.id" class="document-card">
           <div>
             <strong>{{ document.display_name }}</strong>
-            <p>{{ document.status }} · {{ formatTime(document.uploaded_at) }}</p>
+            <p>{{ document.status }} · {{ document.page_count || 0 }} 页 · {{ formatTime(document.uploaded_at) }}</p>
           </div>
           <button class="button-danger" @click="store.removeDocument(document.id)">删除</button>
         </li>
@@ -60,4 +60,3 @@ function formatTime(value: string) {
   return new Date(value).toLocaleString("zh-CN");
 }
 </script>
-

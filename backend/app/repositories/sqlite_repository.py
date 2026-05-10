@@ -34,6 +34,12 @@ class SQLiteRepository:
     def get_document(self, document_id: str) -> LibraryDocument | None:
         return self.library.get_document(document_id)
 
+    def get_document_by_sha256(self, sha256: str) -> LibraryDocument | None:
+        return self.library.get_by_sha256(sha256)
+
+    def update_document(self, document_id: str, **changes) -> LibraryDocument | None:
+        return self.library.update_document(document_id, **changes)
+
     def delete_document(self, document_id: str) -> LibraryDocument | None:
         return self.library.delete_document(document_id)
 
@@ -66,4 +72,3 @@ class SQLiteRepository:
 
     def get_report(self, report_id: str) -> ResearchReport | None:
         return self.report.get_report(report_id)
-

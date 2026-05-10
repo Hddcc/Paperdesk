@@ -31,6 +31,10 @@ class SQLiteDatabase:
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        # Some Windows-backed workspaces reject SQLite's default rollback journal writes.
+        # Keeping the journal in memory preserves local test/runtime stability here.
+        connection.execute("PRAGMA journal_mode = MEMORY")
+        connection.execute("PRAGMA synchronous = NORMAL")
         try:
             yield connection
             connection.commit()
@@ -373,4 +377,3 @@ class BaseRepository:
 
     def __init__(self, database: SQLiteDatabase) -> None:
         self.database = database
-

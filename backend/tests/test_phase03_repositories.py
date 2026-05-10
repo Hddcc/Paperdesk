@@ -7,10 +7,12 @@ from app.models.enums import ResearchRunStatus
 from app.repositories import SQLiteRepository
 
 
-def test_phase03_schema_and_legacy_backfill_are_idempotent(tmp_path):
-    database_path = tmp_path / "paperdesk.db"
+def test_phase03_schema_and_legacy_backfill_are_idempotent(sandbox_dir):
+    database_path = sandbox_dir / "paperdesk.db"
     conn = sqlite3.connect(database_path)
     try:
+        conn.execute("PRAGMA journal_mode = MEMORY")
+        conn.execute("PRAGMA synchronous = NORMAL")
         conn.executescript(
             """
             CREATE TABLE documents (
@@ -108,6 +110,8 @@ def test_phase03_schema_and_legacy_backfill_are_idempotent(tmp_path):
 
     conn = sqlite3.connect(database_path)
     try:
+        conn.execute("PRAGMA journal_mode = MEMORY")
+        conn.execute("PRAGMA synchronous = NORMAL")
         table_names = {
             row[0]
             for row in conn.execute(

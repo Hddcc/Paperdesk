@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import sqlite3
+from typing import Any
 
 from app.models import LibraryDocument
 
@@ -61,6 +62,34 @@ class LibraryRepository(BaseRepository):
             ).fetchone()
         return self._row_to_document(row) if row else None
 
+    def get_by_sha256(self, sha256: str) -> LibraryDocument | None:
+        with self.database.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM library_documents WHERE sha256 = ?",
+                (sha256,),
+            ).fetchone()
+        return self._row_to_document(row) if row else None
+
+    def update_document(
+        self,
+        document_id: str,
+        **changes: Any,
+    ) -> LibraryDocument | None:
+        if not changes:
+            return self.get_document(document_id)
+
+        assignments = ", ".join(f"{column} = ?" for column in changes)
+        values = [self._serialize_value(value) for value in changes.values()]
+        values.append(document_id)
+
+        with self.database.connection() as conn:
+            conn.execute(
+                f"UPDATE library_documents SET {assignments} WHERE id = ?",
+                tuple(values),
+            )
+
+        return self.get_document(document_id)
+
     def delete_document(self, document_id: str) -> LibraryDocument | None:
         document = self.get_document(document_id)
         if document is None:
@@ -84,3 +113,8 @@ class LibraryRepository(BaseRepository):
             uploaded_at=datetime.fromisoformat(row["uploaded_at"]),
         )
 
+    @staticmethod
+    def _serialize_value(value: Any) -> Any:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return value

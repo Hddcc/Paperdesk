@@ -19,13 +19,16 @@ from app.repositories import SQLiteRepository
 from app.services import (
     ArxivClient,
     DocumentLibraryService,
+    EmbeddingService,
     ExportService,
     OpenAlexClient,
     PaperSearchService,
+    PdfParser,
     QueryTranslationService,
     ResearchOrchestrator,
+    TextChunker,
 )
-from app.vectorstores import StubVectorStore
+from app.vectorstores import ChromaVectorStore
 
 
 @lru_cache(maxsize=1)
@@ -35,9 +38,18 @@ def get_repository() -> SQLiteRepository:
 
 
 @lru_cache(maxsize=1)
-def get_vectorstore() -> StubVectorStore:
+def get_embedding_service() -> EmbeddingService:
     settings = get_settings()
-    return StubVectorStore(settings.vectorstore_path)
+    return EmbeddingService(settings.embedding_model)
+
+
+@lru_cache(maxsize=1)
+def get_vectorstore() -> ChromaVectorStore:
+    settings = get_settings()
+    return ChromaVectorStore(
+        settings.chroma_storage_path,
+        get_embedding_service(),
+    )
 
 
 def get_library_repository():
@@ -80,6 +92,8 @@ def get_document_library_service() -> DocumentLibraryService:
         repository=get_library_repository(),
         vectorstore=get_vectorstore(),
         upload_dir=settings.upload_path,
+        pdf_parser=PdfParser(),
+        text_chunker=TextChunker(),
     )
 
 

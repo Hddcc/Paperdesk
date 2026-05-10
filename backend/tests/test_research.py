@@ -2,7 +2,10 @@ from io import BytesIO
 import os
 import sqlite3
 
+import fitz
+
 from app.services.arxiv_client import ArxivClient
+from app.services.embedding_service import EmbeddingService
 from app.services.openalex_client import OpenAlexClient
 from app.services.query_translation_service import QueryTranslationService
 
@@ -41,6 +44,18 @@ def _build_arxiv_entry(query: str) -> dict:
     }
 
 
+def _build_pdf_bytes(text: str, *, title: str = "Library Paper") -> bytes:
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_textbox(
+        fitz.Rect(72, 72, 520, 760),
+        text,
+        fontsize=11,
+    )
+    document.set_metadata({"title": title})
+    return document.tobytes()
+
+
 def test_research_stream_and_report_persistence(client, monkeypatch):
     observed_queries: list[str] = []
 
@@ -59,10 +74,32 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     monkeypatch.setattr(QueryTranslationService, "translate_to_english", fake_translate)
     monkeypatch.setattr(OpenAlexClient, "search", fake_openalex_search)
     monkeypatch.setattr(ArxivClient, "search", fake_arxiv_search)
+    monkeypatch.setattr(
+        EmbeddingService,
+        "embed_texts",
+        lambda self, texts: [[float(index + 1), 0.75, 0.25] for index, _ in enumerate(texts)],
+    )
+    monkeypatch.setattr(
+        EmbeddingService,
+        "embed_query",
+        lambda self, query: [1.0, 0.75, 0.25],
+    )
 
     client.post(
         "/api/documents/upload",
-        files={"file": ("library.pdf", BytesIO(b"%PDF-1.4 library"), "application/pdf")},
+        files={
+            "file": (
+                "library.pdf",
+                BytesIO(
+                    _build_pdf_bytes(
+                        "RAG systems evaluation methods compare faithfulness, attribution, robustness, "
+                        "and grounded answer quality across retrieval settings. " * 10,
+                        title="RAG Evaluation Library",
+                    )
+                ),
+                "application/pdf",
+            )
+        },
     )
 
     response = client.post(
@@ -80,6 +117,8 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert "在线论文参考：" in body
     assert "[1]" in body
     assert "OpenAlex Paper 1." in body
+    assert "Mock local evidence" not in body
+    assert "library.pdf p.1" in body
 
     reports_response = client.get("/api/reports")
     assert reports_response.status_code == 200
@@ -95,6 +134,7 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert report["citation_items"]
     assert "任务总结仍采用教程阶段的规则模板" not in report["markdown"]
     assert "在线论文参考：" in report["markdown"]
+    assert "library.pdf p.1" in report["markdown"]
 
     conn = sqlite3.connect(os.environ["SQLITE_PATH"])
     try:

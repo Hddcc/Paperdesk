@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import gc
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
+import time
 from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile
@@ -12,6 +14,9 @@ from fastapi import HTTPException, UploadFile
 from app.models import LibraryDocument
 from app.repositories import LibraryRepository
 from app.vectorstores import AbstractVectorStore
+
+from .pdf_parser import PdfParser
+from .text_chunker import TextChunker
 
 
 class DocumentLibraryService:
@@ -22,10 +27,14 @@ class DocumentLibraryService:
         repository: LibraryRepository,
         vectorstore: AbstractVectorStore,
         upload_dir: Path,
+        pdf_parser: PdfParser | None = None,
+        text_chunker: TextChunker | None = None,
     ) -> None:
         self.repository = repository
         self.vectorstore = vectorstore
         self.upload_dir = upload_dir
+        self.pdf_parser = pdf_parser or PdfParser()
+        self.text_chunker = text_chunker or TextChunker()
         self.upload_dir.mkdir(parents=True, exist_ok=True)
 
     async def upload_document(self, upload: UploadFile) -> LibraryDocument:
@@ -34,28 +43,75 @@ class DocumentLibraryService:
         if not upload.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail="Only PDF uploads are supported")
 
-        document_id = str(uuid4())
-        safe_filename = f"{document_id}.pdf"
-        destination = self.upload_dir / safe_filename
         content = await upload.read()
-        destination.write_bytes(content)
+        await upload.close()
         sha256 = hashlib.sha256(content).hexdigest()
+
+        existing = self.repository.get_by_sha256(sha256)
+        if existing is not None:
+            return existing
+
+        document_id = str(uuid4())
+        original_name = Path(upload.filename).name
+        safe_filename = f"{document_id}_{original_name}"
+        destination = self.upload_dir / safe_filename
+        destination.write_bytes(content)
+        now = datetime.now(timezone.utc)
 
         document = LibraryDocument(
             id=document_id,
             filename=safe_filename,
-            display_name=upload.filename,
-            title=Path(upload.filename).stem,
+            display_name=original_name,
+            title=Path(original_name).stem,
             file_path=str(destination),
-            status="uploaded",
+            status="processing",
             sha256=sha256,
             page_count=0,
-            created_at=datetime.now(timezone.utc),
-            uploaded_at=datetime.now(timezone.utc),
+            created_at=now,
+            uploaded_at=now,
         )
         self.repository.create_document(document)
-        self.vectorstore.upsert_document(document)
-        return document
+
+        try:
+            parsed = self.pdf_parser.parse(destination)
+            resolved_title = parsed.title or document.title or original_name
+            chunks = self.text_chunker.chunk_document(
+                document_id=document.id,
+                filename=document.display_name or document.filename,
+                title=resolved_title,
+                file_path=str(destination),
+                pages=parsed.pages,
+            )
+            indexed_document = self.repository.update_document(
+                document.id,
+                title=resolved_title,
+                page_count=parsed.page_count,
+                status="processing",
+                file_path=str(destination),
+            )
+            if indexed_document is None:  # pragma: no cover - defensive guardrail
+                raise RuntimeError("Document disappeared during import")
+            self.vectorstore.upsert_document(indexed_document)
+            self.vectorstore.add_chunks(chunks)
+            ready_document = self.repository.update_document(
+                document.id,
+                title=resolved_title,
+                page_count=parsed.page_count,
+                status="ready",
+            )
+            if ready_document is None:  # pragma: no cover - defensive guardrail
+                raise RuntimeError("Failed to finalize imported document")
+            self.vectorstore.upsert_document(ready_document)
+            return ready_document
+        except Exception as exc:
+            try:
+                self.vectorstore.delete_document(document.id)
+            except Exception:
+                pass
+            failed_document = self.repository.update_document(document.id, status="failed")
+            if failed_document is not None:
+                self.vectorstore.upsert_document(failed_document)
+            raise HTTPException(status_code=500, detail=f"PDF import failed: {exc}") from exc
 
     def list_documents(self) -> list[LibraryDocument]:
         return self.repository.list_documents()
@@ -66,6 +122,17 @@ class DocumentLibraryService:
             raise HTTPException(status_code=404, detail="Document not found")
         file_path = Path(document.file_path)
         if file_path.exists():
-            file_path.unlink()
+            self._unlink_with_retry(file_path)
         self.vectorstore.delete_document(document.id)
         return document
+
+    @staticmethod
+    def _unlink_with_retry(file_path: Path) -> bool:
+        for _ in range(3):
+            try:
+                file_path.unlink()
+                return True
+            except PermissionError:
+                gc.collect()
+                time.sleep(0.05)
+        return False

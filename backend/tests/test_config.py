@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 
-from app.api.main import create_app, get_vectorstore
+from app.api.main import create_app, get_embedding_service, get_vectorstore
 from app.config import Settings, get_settings
 
 
-def test_settings_read_env_file_and_prepare_runtime_paths(tmp_path: Path) -> None:
-    env_file = tmp_path / ".env"
+def test_settings_read_env_file_and_prepare_runtime_paths(sandbox_dir) -> None:
+    env_file = sandbox_dir / ".env"
     env_file.write_text(
         "\n".join(
             [
@@ -71,12 +69,12 @@ def test_settings_read_env_file_and_prepare_runtime_paths(tmp_path: Path) -> Non
 
 
 def test_create_app_with_blank_api_key_and_reserved_chroma_path(
-    tmp_path: Path,
+    sandbox_dir,
     monkeypatch,
 ) -> None:
-    data_dir = tmp_path / "data"
-    workspace_dir = tmp_path / "workspace"
-    chroma_dir = tmp_path / "chroma"
+    data_dir = sandbox_dir / "data"
+    workspace_dir = sandbox_dir / "workspace"
+    chroma_dir = sandbox_dir / "chroma"
     vector_dir = workspace_dir / "vectorstore"
 
     monkeypatch.setenv("LLM_API_KEY", "")
@@ -89,6 +87,7 @@ def test_create_app_with_blank_api_key_and_reserved_chroma_path(
     monkeypatch.setenv("VECTORSTORE_DIR", str(vector_dir))
 
     get_settings.cache_clear()
+    get_embedding_service.cache_clear()
     get_vectorstore.cache_clear()
 
     settings = get_settings()
@@ -103,4 +102,4 @@ def test_create_app_with_blank_api_key_and_reserved_chroma_path(
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
-    assert get_vectorstore().base_path == vector_dir
+    assert get_vectorstore().base_path == chroma_dir
