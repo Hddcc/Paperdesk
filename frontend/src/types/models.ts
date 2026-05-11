@@ -19,6 +19,13 @@ export interface ResearchRequest {
   notes?: string | null;
 }
 
+export interface ResearchTaskState {
+  task: TodoTask;
+  papers: PaperRecord[];
+  evidenceItems: EvidenceItem[];
+  summary: TaskSummary | null;
+}
+
 export interface TodoTask {
   id: string;
   title: string;
@@ -51,6 +58,9 @@ export interface LibraryDocument {
   sha256?: string;
   page_count?: number;
   status: string;
+  parser_status?: string;
+  indexed_at?: string | null;
+  version?: number;
   created_at?: string;
   uploaded_at: string;
 }
@@ -93,6 +103,7 @@ export interface CitationRecord {
 
 export interface ResearchReport {
   id: string;
+  report_id?: string | null;
   topic: string;
   markdown: string;
   task_summaries: TaskSummary[];
@@ -113,6 +124,66 @@ export interface ResearchRun {
   status: ResearchRunStatus;
   created_at: string;
   updated_at: string;
+}
+
+export interface ResearchRunDetail {
+  run: ResearchRun;
+  tasks: TodoTask[];
+  task_summaries: TaskSummary[];
+  report: ResearchReport | null;
+}
+
+export interface RagAskRequest {
+  question: string;
+  document_ids?: string[];
+  top_k?: number;
+  notes?: string | null;
+}
+
+export interface RagAnswer {
+  answer: string;
+  citations: string[];
+  sources: string[];
+  pages: number[];
+  retrieval_count: number;
+  confidence?: number | null;
+  evidence_items: EvidenceItem[];
+}
+
+export interface PaperAnalysisRequest {
+  document_ids: string[];
+  mode: "single" | "compare";
+  question?: string | null;
+}
+
+export interface PaperAnalysisSection {
+  title: string;
+  content: string;
+}
+
+export interface PaperAnalysisResponse {
+  mode: "single" | "compare";
+  answer: string;
+  sections: PaperAnalysisSection[];
+  citations: string[];
+  evidence_items: EvidenceItem[];
+  retrieval_count: number;
+}
+
+export interface PaperCurationRequest {
+  topic: string;
+  search_provider?: string | null;
+  top_k_online?: number;
+}
+
+export interface PaperCurationItem {
+  paper: PaperRecord;
+  decision: "recommended" | "consider" | "skip";
+  reason: string;
+}
+
+export interface PaperCurationResponse {
+  items: PaperCurationItem[];
 }
 
 export interface ResearchStreamEvent {

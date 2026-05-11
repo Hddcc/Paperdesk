@@ -127,7 +127,7 @@ def test_phase03_schema_and_legacy_backfill_are_idempotent(sandbox_dir):
     finally:
         conn.close()
 
-    assert {"paper_records", "library_documents", "report_records", "citation_records"}.issubset(
+    assert {"paper_records", "library_documents", "library_chunks", "report_records", "citation_records"}.issubset(
         table_names
     )
     assert {"task_order", "query", "summary_markdown"}.issubset(todo_columns)

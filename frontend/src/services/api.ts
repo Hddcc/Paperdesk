@@ -1,7 +1,14 @@
 import type {
   LibraryDocument,
+  PaperAnalysisRequest,
+  PaperAnalysisResponse,
+  PaperCurationRequest,
+  PaperCurationResponse,
+  RagAnswer,
+  RagAskRequest,
   ReportListItem,
   ResearchReport,
+  ResearchRunDetail,
   ResearchRequest,
   ResearchStreamEvent
 } from "../types/models";
@@ -19,7 +26,7 @@ async function parseJson<T>(response: Response): Promise<T> {
 function normalizeFetchError(err: unknown, fallbackMessage: string): Error {
   if (err instanceof Error) {
     if (err instanceof TypeError) {
-      return new Error(`${fallbackMessage}，后端连接可能已中断或正在重启。`);
+      return new Error(`${fallbackMessage}，连接暂时中断，请稍后重试。`);
     }
     return err;
   }
@@ -60,6 +67,45 @@ export async function deleteDocument(documentId: string): Promise<LibraryDocumen
   }
 }
 
+export async function askKnowledgeQuestion(payload: RagAskRequest): Promise<RagAnswer> {
+  try {
+    const response = await fetch(`${baseUrl}/api/rag/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    return parseJson<RagAnswer>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "知识问答失败");
+  }
+}
+
+export async function analyzePapers(payload: PaperAnalysisRequest): Promise<PaperAnalysisResponse> {
+  try {
+    const response = await fetch(`${baseUrl}/api/papers/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    return parseJson<PaperAnalysisResponse>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "论文分析失败");
+  }
+}
+
+export async function curatePapers(payload: PaperCurationRequest): Promise<PaperCurationResponse> {
+  try {
+    const response = await fetch(`${baseUrl}/api/papers/curate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    return parseJson<PaperCurationResponse>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "候选筛选失败");
+  }
+}
+
 export async function listReports(): Promise<ReportListItem[]> {
   const response = await fetch(`${baseUrl}/api/reports`);
   return parseJson<ReportListItem[]>(response);
@@ -68,6 +114,27 @@ export async function listReports(): Promise<ReportListItem[]> {
 export async function getReport(reportId: string): Promise<ResearchReport> {
   const response = await fetch(`${baseUrl}/api/reports/${reportId}`);
   return parseJson<ResearchReport>(response);
+}
+
+export async function deleteReport(reportId: string): Promise<ResearchReport> {
+  const response = await fetch(`${baseUrl}/api/reports/${reportId}`, {
+    method: "DELETE"
+  });
+  return parseJson<ResearchReport>(response);
+}
+
+export async function getResearchRun(taskId: string): Promise<ResearchRunDetail> {
+  const response = await fetch(`${baseUrl}/api/research/${taskId}`);
+  return parseJson<ResearchRunDetail>(response);
+}
+
+export async function exportReportMarkdown(reportId: string): Promise<string> {
+  const response = await fetch(`${baseUrl}/api/export/${reportId}`);
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(detail || `Export failed: ${response.status}`);
+  }
+  return response.text();
 }
 
 export async function runResearchStream(

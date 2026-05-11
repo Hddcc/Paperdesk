@@ -17,8 +17,7 @@ from app.models import LibraryDocument
 from app.repositories import LibraryRepository
 from app.vectorstores import AbstractVectorStore
 
-from .pdf_parser import PdfParser
-from .text_chunker import TextChunker
+from .knowledge_ingestion_service import KnowledgeIngestionService
 
 
 class DocumentLibraryService:
@@ -29,14 +28,12 @@ class DocumentLibraryService:
         repository: LibraryRepository,
         vectorstore: AbstractVectorStore,
         upload_dir: Path,
-        pdf_parser: PdfParser | None = None,
-        text_chunker: TextChunker | None = None,
+        ingestion_service: KnowledgeIngestionService,
     ) -> None:
         self.repository = repository
         self.vectorstore = vectorstore
         self.upload_dir = upload_dir
-        self.pdf_parser = pdf_parser or PdfParser()
-        self.text_chunker = text_chunker or TextChunker()
+        self.ingestion_service = ingestion_service
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="paperdesk-import")
         self._scheduled_document_ids: set[str] = set()
         self._schedule_lock = Lock()
@@ -51,19 +48,47 @@ class DocumentLibraryService:
         content = await upload.read()
         await upload.close()
         sha256 = hashlib.sha256(content).hexdigest()
+        original_name = Path(upload.filename).name
 
         existing = self.repository.get_by_sha256(sha256)
         if existing is not None:
             if existing.status != "ready":
-                self.repository.update_document(existing.id, status="processing")
+                self.repository.update_document(
+                    existing.id,
+                    status="processing",
+                    parser_status="pending",
+                    indexed_at=None,
+                )
                 self._schedule_processing(existing.id)
                 refreshed = self.repository.get_document(existing.id)
                 if refreshed is not None:
                     return refreshed
             return existing
 
+        existing_named_document = self.repository.get_by_display_name(original_name)
+        if existing_named_document is not None and existing_named_document.sha256 != sha256:
+            destination = self.upload_dir / f"{existing_named_document.id}_{original_name}"
+            destination.write_bytes(content)
+            now = datetime.now(timezone.utc)
+            updated = self.repository.update_document(
+                existing_named_document.id,
+                filename=destination.name,
+                display_name=original_name,
+                title=Path(original_name).stem,
+                file_path=str(destination),
+                sha256=sha256,
+                page_count=0,
+                status="processing",
+                parser_status="pending",
+                indexed_at=None,
+                version=max(existing_named_document.version, 1) + 1,
+                uploaded_at=now,
+            )
+            if updated is not None:
+                self._schedule_processing(updated.id)
+                return updated
+
         document_id = str(uuid4())
-        original_name = Path(upload.filename).name
         safe_filename = f"{document_id}_{original_name}"
         destination = self.upload_dir / safe_filename
         destination.write_bytes(content)
@@ -76,8 +101,11 @@ class DocumentLibraryService:
             title=Path(original_name).stem,
             file_path=str(destination),
             status="processing",
+            parser_status="pending",
             sha256=sha256,
             page_count=0,
+            indexed_at=None,
+            version=1,
             created_at=now,
             uploaded_at=now,
         )
@@ -98,54 +126,10 @@ class DocumentLibraryService:
             self._scheduled_document_ids.discard(document_id)
 
     def _process_document(self, document_id: str) -> None:
-        document = self.repository.get_document(document_id)
-        if document is None:
-            return
-
-        destination = Path(document.file_path)
-        original_name = document.display_name or document.filename
         try:
-            parsed = self.pdf_parser.parse(destination)
-            resolved_title = parsed.title or document.title or original_name
-            chunks = self.text_chunker.chunk_document(
-                document_id=document.id,
-                filename=document.display_name or document.filename,
-                title=resolved_title,
-                file_path=str(destination),
-                pages=parsed.pages,
-            )
-            indexed_document = self.repository.update_document(
-                document.id,
-                title=resolved_title,
-                page_count=parsed.page_count,
-                status="processing",
-                file_path=str(destination),
-            )
-            if indexed_document is None:  # pragma: no cover - defensive guardrail
-                raise RuntimeError("Document disappeared during import")
-            self.vectorstore.upsert_document(indexed_document)
-            self.vectorstore.add_chunks(chunks)
-            ready_document = self.repository.update_document(
-                document.id,
-                title=resolved_title,
-                page_count=parsed.page_count,
-                status="ready",
-            )
-            if ready_document is None:  # pragma: no cover - defensive guardrail
-                raise RuntimeError("Failed to finalize imported document")
-            self.vectorstore.upsert_document(ready_document)
-        except Exception as exc:
-            try:
-                self.vectorstore.delete_document(document.id)
-            except Exception:
-                pass
-            failed_document = self.repository.update_document(
-                document.id,
-                status="failed",
-                page_count=0,
-            )
-            if failed_document is not None:
-                self.vectorstore.upsert_document(failed_document)
+            self.ingestion_service.ingest_document(document_id)
+        except Exception:
+            return
 
     def list_documents(self) -> list[LibraryDocument]:
         return self.repository.list_documents()

@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from threading import Lock
 
-from sentence_transformers import SentenceTransformer
-
 
 class EmbeddingService:
-    """Generate normalized embeddings with a lazily loaded local model."""
+    """Generate normalized embeddings with a lazily loaded FlagEmbedding model."""
 
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
-        self._model: SentenceTransformer | None = None
+        self._model = None
         self._lock = Lock()
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
@@ -20,43 +18,59 @@ class EmbeddingService:
             return []
         model = self._get_model()
         try:
-            vectors = model.encode(
-                texts,
-                normalize_embeddings=True,
-                convert_to_numpy=True,
-                show_progress_bar=False,
-            )
+            output = model.encode(texts, batch_size=12, max_length=2048)
         except Exception as exc:  # pragma: no cover - depends on local model runtime
             raise RuntimeError(
                 f"Failed to generate document embeddings with '{self.model_name}': {exc}"
             ) from exc
-        return vectors.tolist()
+        return self._normalize_output(output)
 
     def embed_query(self, query: str) -> list[float]:
         model = self._get_model()
         try:
-            vector = model.encode(
-                [query],
-                normalize_embeddings=True,
-                convert_to_numpy=True,
-                show_progress_bar=False,
-            )[0]
+            output = model.encode([query], batch_size=1, max_length=1024)
         except Exception as exc:  # pragma: no cover - depends on local model runtime
             raise RuntimeError(
                 f"Failed to generate query embedding with '{self.model_name}': {exc}"
             ) from exc
-        return vector.tolist()
+        vectors = self._normalize_output(output)
+        return vectors[0]
 
-    def _get_model(self) -> SentenceTransformer:
+    def _get_model(self):
         if self._model is not None:
             return self._model
 
         with self._lock:
             if self._model is None:
                 try:
-                    self._model = SentenceTransformer(self.model_name)
+                    from FlagEmbedding import BGEM3FlagModel
+                except Exception as exc:  # pragma: no cover - depends on installed packages
+                    raise RuntimeError(
+                        "FlagEmbedding is required for PaperDesk 09.5 embeddings. "
+                        "Install it with the project dependencies before indexing documents."
+                    ) from exc
+
+                try:
+                    self._model = BGEM3FlagModel(
+                        self.model_name,
+                        use_fp16=False,
+                    )
                 except Exception as exc:  # pragma: no cover - depends on local model availability
                     raise RuntimeError(
                         f"Failed to load embedding model '{self.model_name}': {exc}"
                     ) from exc
         return self._model
+
+    @staticmethod
+    def _normalize_output(output) -> list[list[float]]:
+        dense_vectors = output
+        if isinstance(output, dict):
+            dense_vectors = (
+                output.get("dense_vecs")
+                or output.get("dense_embeddings")
+                or output.get("embeddings")
+                or []
+            )
+        if hasattr(dense_vectors, "tolist"):
+            dense_vectors = dense_vectors.tolist()
+        return [list(map(float, vector)) for vector in dense_vectors]

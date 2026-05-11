@@ -90,8 +90,27 @@ class SQLiteDatabase:
                     sha256 TEXT NOT NULL,
                     page_count INTEGER NOT NULL,
                     status TEXT NOT NULL,
+                    parser_status TEXT NOT NULL DEFAULT 'pending',
+                    indexed_at TEXT,
+                    version INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
                     uploaded_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS library_chunks (
+                    id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    source TEXT,
+                    page_number INTEGER NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    section TEXT,
+                    title TEXT,
+                    sha256 TEXT,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    text TEXT NOT NULL,
+                    token_estimate INTEGER NOT NULL DEFAULT 0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    FOREIGN KEY (document_id) REFERENCES library_documents (id) ON DELETE CASCADE
                 );
 
                 CREATE TABLE IF NOT EXISTS report_records (
@@ -121,6 +140,7 @@ class SQLiteDatabase:
                 """
             )
             self._ensure_todo_task_columns(conn)
+            self._ensure_library_document_columns(conn)
             self._migrate_legacy_documents(conn)
             self._migrate_legacy_reports(conn)
 
@@ -179,6 +199,43 @@ class SQLiteDatabase:
                 """
             )
 
+    def _ensure_library_document_columns(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists(conn, "library_documents"):
+            return
+
+        self._ensure_column(conn, "library_documents", "parser_status", "TEXT NOT NULL DEFAULT 'pending'")
+        self._ensure_column(conn, "library_documents", "indexed_at", "TEXT")
+        self._ensure_column(conn, "library_documents", "version", "INTEGER NOT NULL DEFAULT 1")
+
+        conn.execute(
+            """
+            UPDATE library_documents
+            SET parser_status = CASE
+                WHEN status = 'ready' THEN 'indexed'
+                WHEN status = 'failed' THEN 'failed'
+                WHEN status = 'processing' THEN 'processing'
+                ELSE COALESCE(parser_status, 'pending')
+            END
+            WHERE parser_status IS NULL
+               OR parser_status = ''
+               OR parser_status = 'pending'
+            """
+        )
+        conn.execute(
+            """
+            UPDATE library_documents
+            SET indexed_at = COALESCE(indexed_at, uploaded_at)
+            WHERE status = 'ready' AND indexed_at IS NULL
+            """
+        )
+        conn.execute(
+            """
+            UPDATE library_documents
+            SET version = COALESCE(version, 1)
+            WHERE version IS NULL OR version <= 0
+            """
+        )
+
     def _migrate_legacy_documents(self, conn: sqlite3.Connection) -> None:
         if not self._table_exists(conn, "documents"):
             return
@@ -194,6 +251,9 @@ class SQLiteDatabase:
                 sha256,
                 page_count,
                 status,
+                parser_status,
+                indexed_at,
+                version,
                 created_at,
                 uploaded_at
             )
@@ -206,6 +266,14 @@ class SQLiteDatabase:
                 '',
                 0,
                 documents.status,
+                CASE
+                    WHEN documents.status = 'ready' THEN 'indexed'
+                    WHEN documents.status = 'failed' THEN 'failed'
+                    WHEN documents.status = 'processing' THEN 'processing'
+                    ELSE 'pending'
+                END,
+                NULL,
+                1,
                 documents.uploaded_at,
                 documents.uploaded_at
             FROM documents

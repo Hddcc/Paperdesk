@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 
-import { getReport, listReports } from "../services/api";
+import { deleteReport, getReport, listReports } from "../services/api";
 import type { ReportListItem, ResearchReport } from "../types/models";
 
 export const useReportStore = defineStore("reports", () => {
@@ -34,13 +34,30 @@ export const useReportStore = defineStore("reports", () => {
     }
   }
 
+  async function removeReport(reportId: string) {
+    loading.value = true;
+    error.value = "";
+    try {
+      await deleteReport(reportId);
+      reports.value = reports.value.filter((item) => item.id !== reportId);
+      if (activeReport.value?.id === reportId) {
+        activeReport.value = null;
+      }
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "删除报告失败";
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  }
+
   return {
     reports,
     activeReport,
     loading,
     error,
     refreshReports,
-    loadReport
+    loadReport,
+    removeReport
   };
 });
-

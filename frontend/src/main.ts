@@ -4,6 +4,7 @@ import { createRouter, createWebHistory } from "vue-router";
 
 import App from "./App.vue";
 import HomeView from "./views/HomeView.vue";
+import KnowledgeView from "./views/KnowledgeView.vue";
 import LibraryView from "./views/LibraryView.vue";
 import ResearchView from "./views/ResearchView.vue";
 import ReportView from "./views/ReportView.vue";
@@ -14,6 +15,7 @@ const router = createRouter({
   routes: [
     { path: "/", name: "home", component: HomeView },
     { path: "/library", name: "library", component: LibraryView },
+    { path: "/knowledge", name: "knowledge", component: KnowledgeView },
     { path: "/research", name: "research", component: ResearchView },
     { path: "/reports", name: "reports", component: ReportView }
   ]
@@ -23,4 +25,3 @@ const app = createApp(App);
 app.use(createPinia());
 app.use(router);
 app.mount("#app");
-

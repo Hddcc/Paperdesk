@@ -37,19 +37,19 @@ export const useDocumentStore = defineStore("documents", () => {
   async function addDocument(file: File) {
     submittingUpload.value = true;
     activeUploadName.value = file.name;
-    uploadHint.value = "正在上传文件，服务器接收后会自动进入后台解析。";
+    uploadHint.value = "正在上传，请稍候。";
     error.value = "";
     try {
       const document = await uploadDocument(file);
       upsertDocument(document);
       if (document.status === "processing") {
-        uploadHint.value = "文件已接收，后台正在解析、切片和向量化，列表会自动刷新。";
+        uploadHint.value = "文件已上传，正在处理中，列表会自动更新。";
         trackProcessingDocument(document.id);
         void ensureProcessingPoll();
       } else if (document.status === "ready") {
-        uploadHint.value = "上传完成，文档已可用于本地检索。";
+        uploadHint.value = "上传完成，可以开始使用。";
       } else if (document.status === "failed") {
-        uploadHint.value = "上传已登记，但后台处理失败，请刷新后查看状态。";
+        uploadHint.value = "上传成功，但处理失败，请刷新后查看状态。";
       } else {
         uploadHint.value = `上传已接收，当前状态：${document.status}`;
       }
@@ -128,11 +128,11 @@ export const useDocumentStore = defineStore("documents", () => {
 
         processingUploads.value = nextPending;
         if (nextPending.length) {
-          uploadHint.value = `后台处理中：还有 ${nextPending.length} 篇文档正在解析与向量化。`;
+          uploadHint.value = `还有 ${nextPending.length} 篇文档正在处理中。`;
         } else if (completedFailed > 0) {
           uploadHint.value = `${completedFailed} 篇文档处理失败，请刷新列表查看状态。`;
         } else if (completedReady > 0) {
-          uploadHint.value = "后台处理完成，文档已可用于本地检索。";
+          uploadHint.value = "处理完成，文档已可使用。";
         }
       }
     })().finally(() => {

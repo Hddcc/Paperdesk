@@ -18,4 +18,3 @@ const md = new MarkdownIt({
 
 const rendered = computed(() => md.render(props.markdown || ""));
 </script>
-

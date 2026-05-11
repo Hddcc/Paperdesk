@@ -27,10 +27,13 @@ class LibraryRepository(BaseRepository):
                     sha256,
                     page_count,
                     status,
+                    parser_status,
+                    indexed_at,
+                    version,
                     created_at,
                     uploaded_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     document.id,
@@ -41,6 +44,9 @@ class LibraryRepository(BaseRepository):
                     document.sha256,
                     document.page_count,
                     document.status,
+                    document.parser_status,
+                    document.indexed_at.isoformat() if document.indexed_at else None,
+                    document.version,
                     document.created_at.isoformat(),
                     document.uploaded_at.isoformat(),
                 ),
@@ -67,6 +73,19 @@ class LibraryRepository(BaseRepository):
             row = conn.execute(
                 "SELECT * FROM library_documents WHERE sha256 = ?",
                 (sha256,),
+            ).fetchone()
+        return self._row_to_document(row) if row else None
+
+    def get_by_display_name(self, display_name: str) -> LibraryDocument | None:
+        with self.database.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM library_documents
+                WHERE display_name = ?
+                ORDER BY uploaded_at DESC
+                LIMIT 1
+                """,
+                (display_name,),
             ).fetchone()
         return self._row_to_document(row) if row else None
 
@@ -109,6 +128,9 @@ class LibraryRepository(BaseRepository):
             sha256=row["sha256"],
             page_count=row["page_count"],
             status=row["status"],
+            parser_status=row["parser_status"],
+            indexed_at=datetime.fromisoformat(row["indexed_at"]) if row["indexed_at"] else None,
+            version=row["version"] or 1,
             created_at=datetime.fromisoformat(row["created_at"]),
             uploaded_at=datetime.fromisoformat(row["uploaded_at"]),
         )

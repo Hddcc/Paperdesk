@@ -1,28 +1,55 @@
 <template>
-  <section class="hero-grid">
-    <article class="hero-card hero-main">
-      <p class="eyebrow">PaperDesk Skeleton</p>
-      <h1>智能论文助手 00/01 可运行骨架</h1>
-      <p class="lead">
-        当前版本只实现固定工作流、前后端分层、SQLite 持久化、本地 PDF 管理、
-        任务流展示和 Markdown 报告预览。在线论文检索与本地语义召回仍为 mock/stub。
-      </p>
-      <div class="hero-actions">
-        <RouterLink class="button-primary" to="/research">进入研究工作台</RouterLink>
-        <RouterLink class="button-secondary" to="/library">管理本地论文库</RouterLink>
-      </div>
-    </article>
+  <section class="page-shell home-workbench">
+    <ResearchLaunchPanel
+      title="启动一轮新的研究"
+      description="先明确主题、检索范围和补充说明，再进入研究工作台持续查看进展。"
+      submit-label="进入研究工作台"
+      :initial-request="store.lastRequest"
+      @submit="handleSubmit"
+    />
 
     <article class="hero-card hero-side">
-      <h2>本轮实现范围</h2>
-      <ul class="bullet-list">
-        <li>5 个 Agent 固定职责边界</li>
-        <li>顺序执行的研究工作流</li>
-        <li>文档上传 / 删除 / 列表</li>
-        <li>SSE 实时研究过程展示</li>
-        <li>报告落盘与历史报告查看</li>
-      </ul>
+      <p class="eyebrow">PaperDesk</p>
+      <h1>把研究主题拆成清晰、可跟踪的工作台</h1>
+      <p class="lead">
+        从本地论文库、在线检索到阶段性总结与最终综述，整个研究过程都会保留在同一套界面里。
+      </p>
+
+      <div class="info-stack">
+        <section class="info-card">
+          <h2>工作流会发生什么</h2>
+          <ul class="bullet-list">
+            <li>自动拆解 TODO 任务，并持续更新状态</li>
+            <li>合并在线论文与本地文档证据</li>
+            <li>逐步产出任务总结，最后形成完整综述</li>
+          </ul>
+        </section>
+
+        <section class="info-card">
+          <h2>你也可以先做这些准备</h2>
+          <div class="hero-actions">
+            <RouterLink class="button-secondary" to="/library">整理本地论文库</RouterLink>
+            <RouterLink class="button-secondary" to="/knowledge">进入知识页</RouterLink>
+            <RouterLink class="button-secondary" to="/reports">回看历史报告</RouterLink>
+          </div>
+        </section>
+      </div>
     </article>
   </section>
 </template>
 
+<script setup lang="ts">
+import { useRouter } from "vue-router";
+
+import ResearchLaunchPanel from "../components/ResearchLaunchPanel.vue";
+import { useResearchStore } from "../stores/research";
+import type { ResearchRequest } from "../types/models";
+
+const router = useRouter();
+const store = useResearchStore();
+
+async function handleSubmit(payload: ResearchRequest) {
+  store.queueResearch(payload);
+  await router.push("/research");
+}
+</script>

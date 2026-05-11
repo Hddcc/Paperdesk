@@ -8,6 +8,7 @@ from app.models import LibraryDocument, PaperRecord, ReportListItem, ResearchRep
 from app.models.enums import ResearchRunStatus
 
 from .base import SQLiteDatabase
+from .chunk_repository import ChunkRepository
 from .library_repository import LibraryRepository
 from .paper_repository import PaperRepository
 from .report_repository import ReportRepository
@@ -20,6 +21,7 @@ class SQLiteRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
         self.database = SQLiteDatabase(database_path)
+        self.chunk = ChunkRepository(self.database)
         self.library = LibraryRepository(self.database)
         self.research = ResearchRepository(self.database)
         self.paper = PaperRepository(self.database)
@@ -30,6 +32,9 @@ class SQLiteRepository:
 
     def list_documents(self) -> list[LibraryDocument]:
         return self.library.list_documents()
+
+    def list_chunks(self, document_ids: list[str] | None = None):
+        return self.chunk.list_chunks(document_ids=document_ids)
 
     def get_document(self, document_id: str) -> LibraryDocument | None:
         return self.library.get_document(document_id)
@@ -48,6 +53,9 @@ class SQLiteRepository:
 
     def update_run_status(self, run_id: str, status: ResearchRunStatus) -> None:
         self.research.update_run_status(run_id, status)
+
+    def get_run(self, run_id: str) -> ResearchRun | None:
+        return self.research.get_run(run_id)
 
     def save_todo_tasks(self, run_id: str, tasks: list[TodoTask]) -> None:
         self.research.save_todo_tasks(run_id, tasks)
@@ -72,3 +80,9 @@ class SQLiteRepository:
 
     def get_report(self, report_id: str) -> ResearchReport | None:
         return self.report.get_report(report_id)
+
+    def get_report_by_run_id(self, run_id: str) -> ResearchReport | None:
+        return self.report.get_report_by_run_id(run_id)
+
+    def delete_report(self, report_id: str) -> ResearchReport | None:
+        return self.report.delete_report(report_id)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import re
 import sqlite3
 
 from app.models import CitationRecord, EvidenceItem, PaperRecord, ReportListItem, ResearchReport, TaskSummary
@@ -104,10 +105,55 @@ class ReportRepository(BaseRepository):
                 (report_id,),
             ).fetchall()
 
+        return self._build_report(report_row, citation_rows)
+
+    def get_report_by_run_id(self, run_id: str) -> ResearchReport | None:
+        with self.database.connection() as conn:
+            report_row = conn.execute(
+                """
+                SELECT * FROM report_records
+                WHERE run_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+            if report_row is None:
+                return None
+            citation_rows = conn.execute(
+                """
+                SELECT citation_label, source_type, title, url, doi, document_id, page_number
+                FROM citation_records
+                WHERE report_id = ?
+                ORDER BY sort_order ASC, id ASC
+                """,
+                (report_row["id"],),
+            ).fetchall()
+
+        return self._build_report(report_row, citation_rows)
+
+    def delete_report(self, report_id: str) -> ResearchReport | None:
+        report = self.get_report(report_id)
+        if report is None:
+            return None
+
+        with self.database.connection() as conn:
+            conn.execute("DELETE FROM citation_records WHERE report_id = ?", (report_id,))
+            conn.execute("DELETE FROM report_records WHERE id = ?", (report_id,))
+
+        return report
+
+    def _build_report(
+        self,
+        report_row: sqlite3.Row,
+        citation_rows: list[sqlite3.Row],
+    ) -> ResearchReport:
+        sanitized_markdown = self._sanitize_user_facing_markdown(report_row["markdown"])
+        normalized_markdown = self._normalize_reference_section(sanitized_markdown)
         return ResearchReport(
             id=report_row["id"],
             topic=report_row["topic"],
-            markdown=report_row["markdown"],
+            markdown=normalized_markdown,
             task_summaries=self._load_task_summaries(report_row["task_summaries_json"]),
             citations=[line for line in report_row["citations_text"].splitlines() if line],
             citation_items=[CitationRecord(**dict(row)) for row in citation_rows],
@@ -122,8 +168,12 @@ class ReportRepository(BaseRepository):
                 task_id=item["task_id"],
                 title=item["title"],
                 intent=item["intent"],
-                summary=item.get("summary") or item.get("summary_markdown") or "",
-                summary_markdown=item.get("summary_markdown") or item.get("summary"),
+                summary=ReportRepository._sanitize_user_facing_markdown(
+                    item.get("summary") or item.get("summary_markdown") or ""
+                ),
+                summary_markdown=ReportRepository._sanitize_user_facing_markdown(
+                    item.get("summary_markdown") or item.get("summary") or ""
+                ),
                 evidence_items=[
                     EvidenceItem(**evidence)
                     for evidence in item.get("evidence_items", [])
@@ -136,3 +186,44 @@ class ReportRepository(BaseRepository):
             for item in payload
         ]
 
+    @staticmethod
+    def _sanitize_user_facing_markdown(markdown: str) -> str:
+        cleaned = re.sub(
+            r"(?m)^\s*[-*]\s*说明：.*(?:当前实现已接入在线论文检索|规则模板|SQLite|SSE).*$\n?",
+            "",
+            markdown,
+        )
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _normalize_reference_section(markdown: str) -> str:
+        parts = re.split(r"(?m)^##\s*参考来源\s*$", markdown, maxsplit=1)
+        if len(parts) != 2:
+            return markdown
+
+        body, references = parts
+        normalized_lines: list[str] = []
+        for raw_line in references.strip().splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("- "):
+                normalized_lines.append(line)
+            elif re.match(r"^\[\d+\]\s+", line):
+                normalized_lines.append(f"- {line}")
+            else:
+                normalized_lines.append(line)
+
+        if not normalized_lines:
+            normalized_lines.append("- 暂无可导出的参考来源。")
+
+        return "\n".join(
+            [
+                body.rstrip(),
+                "",
+                "## 参考来源",
+                "",
+                *normalized_lines,
+            ]
+        ).strip()

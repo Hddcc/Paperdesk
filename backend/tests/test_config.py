@@ -21,7 +21,10 @@ def test_settings_read_env_file_and_prepare_runtime_paths(sandbox_dir) -> None:
                 "EMBEDDING_PROVIDER=local",
                 "EMBEDDING_MODEL=test-embedding",
                 "SQLITE_PATH=./runtime/paperdesk.db",
-                "CHROMA_PATH=./runtime/chroma",
+                "MILVUS_URI=http://milvus.example:19530",
+                "MILVUS_TOKEN=milvus-token",
+                "MILVUS_DATABASE=paperdesk_runtime",
+                "MILVUS_COLLECTION=paperdesk_collection",
                 "WORKSPACE_DIR=./runtime/workspace",
                 "UPLOAD_DIR=./runtime/workspace/uploads",
                 "REPORT_DIR=./runtime/workspace/reports",
@@ -46,6 +49,10 @@ def test_settings_read_env_file_and_prepare_runtime_paths(sandbox_dir) -> None:
     assert settings.openalex_api_key == "openalex-secret"
     assert settings.embedding_provider == "local"
     assert settings.embedding_model == "test-embedding"
+    assert settings.milvus_uri == "http://milvus.example:19530"
+    assert settings.milvus_token == "milvus-token"
+    assert settings.milvus_database == "paperdesk_runtime"
+    assert settings.milvus_collection == "paperdesk_collection"
     assert settings.openalex_base_url == "https://openalex.example/api"
     assert settings.arxiv_base_url == "https://arxiv.example/api"
     assert settings.get_cors_origins_list() == [
@@ -54,14 +61,12 @@ def test_settings_read_env_file_and_prepare_runtime_paths(sandbox_dir) -> None:
     ]
 
     assert settings.sqlite_file == (settings.resolve_path("./runtime/paperdesk.db"))
-    assert settings.chroma_storage_path == settings.resolve_path("./runtime/chroma")
     assert settings.workspace_path == settings.resolve_path("./runtime/workspace")
     assert settings.upload_path == settings.resolve_path("./runtime/workspace/uploads")
     assert settings.report_path == settings.resolve_path("./runtime/workspace/reports")
     assert settings.vectorstore_path == settings.resolve_path("./runtime/workspace/vectorstore")
 
     assert settings.sqlite_file.parent.exists()
-    assert settings.chroma_storage_path.exists()
     assert settings.workspace_path.exists()
     assert settings.upload_path.exists()
     assert settings.report_path.exists()
@@ -74,17 +79,18 @@ def test_create_app_with_blank_api_key_and_reserved_chroma_path(
 ) -> None:
     data_dir = sandbox_dir / "data"
     workspace_dir = sandbox_dir / "workspace"
-    chroma_dir = sandbox_dir / "chroma"
     vector_dir = workspace_dir / "vectorstore"
 
     monkeypatch.setenv("LLM_API_KEY", "")
     monkeypatch.setenv("OPENALEX_API_KEY", "")
     monkeypatch.setenv("SQLITE_PATH", str(data_dir / "paperdesk.db"))
-    monkeypatch.setenv("CHROMA_PATH", str(chroma_dir))
     monkeypatch.setenv("WORKSPACE_DIR", str(workspace_dir))
     monkeypatch.setenv("UPLOAD_DIR", str(workspace_dir / "uploads"))
     monkeypatch.setenv("REPORT_DIR", str(workspace_dir / "reports"))
     monkeypatch.setenv("VECTORSTORE_DIR", str(vector_dir))
+    monkeypatch.setenv("MILVUS_URI", "http://fake-milvus:19530")
+    monkeypatch.setenv("MILVUS_DATABASE", "paperdesk_test")
+    monkeypatch.setenv("MILVUS_COLLECTION", "paperdesk_collection")
 
     get_settings.cache_clear()
     get_embedding_service.cache_clear()
@@ -93,8 +99,8 @@ def test_create_app_with_blank_api_key_and_reserved_chroma_path(
     settings = get_settings()
     assert settings.llm_api_key is None
     assert settings.openalex_api_key is None
-    assert settings.chroma_storage_path == chroma_dir
     assert settings.vectorstore_path == vector_dir
+    assert settings.milvus_uri == "http://fake-milvus:19530"
 
     app = create_app()
     with TestClient(app) as client:
@@ -102,4 +108,4 @@ def test_create_app_with_blank_api_key_and_reserved_chroma_path(
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
-    assert get_vectorstore().base_path == chroma_dir
+    assert get_vectorstore().uri == "http://fake-milvus:19530"

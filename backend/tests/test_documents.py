@@ -4,13 +4,12 @@ import os
 import sqlite3
 import time
 
-import chromadb
 import fitz
 
 from app.api.main import get_vectorstore
 from app.models import ChunkRecord, LibraryDocument
 from app.services.embedding_service import EmbeddingService
-from app.vectorstores.chroma_store import ChromaVectorStore
+from app.vectorstores.milvus_store import MilvusVectorStore
 
 
 def _build_pdf_bytes(text: str, *, title: str = "Sample Paper") -> bytes:
@@ -72,6 +71,9 @@ def test_document_upload_list_delete_flow(client, monkeypatch):
     ready_payload = _wait_for_document_status(client, payload["id"], "ready")
     assert ready_payload["title"] == "Sample Paper"
     assert ready_payload["page_count"] == 1
+    assert ready_payload["parser_status"] == "indexed"
+    assert ready_payload["indexed_at"]
+    assert ready_payload["version"] == 1
 
     duplicate_response = client.post(
         "/api/documents/upload",
@@ -91,10 +93,12 @@ def test_document_upload_list_delete_flow(client, monkeypatch):
     conn = sqlite3.connect(os.environ["SQLITE_PATH"])
     try:
         library_count = conn.execute("SELECT COUNT(*) FROM library_documents").fetchone()[0]
+        chunk_count = conn.execute("SELECT COUNT(*) FROM library_chunks").fetchone()[0]
     finally:
         conn.close()
     assert library_count == 1
-    assert get_vectorstore()._get_collection().count() > 0
+    assert chunk_count > 0
+    assert get_vectorstore()._get_client().has_collection(collection_name=get_vectorstore().collection_name)
 
     delete_response = client.delete(f"/api/documents/{payload['id']}")
     assert delete_response.status_code == 200
@@ -102,7 +106,7 @@ def test_document_upload_list_delete_flow(client, monkeypatch):
     list_again_response = client.get("/api/documents")
     assert list_again_response.status_code == 200
     assert list_again_response.json() == []
-    assert get_vectorstore()._get_collection().count() == 0
+    assert get_vectorstore().query_evidence("sample", [], top_k=1) == []
 
 
 def test_document_upload_accepts_second_different_pdf_without_connection_break(client, monkeypatch):
@@ -190,7 +194,62 @@ def test_document_upload_marks_failed_when_embedding_generation_breaks(client, m
     assert rows[0][1] == "failed"
 
 
-def test_chroma_store_falls_back_to_ephemeral_when_persistent_client_breaks(sandbox_dir, monkeypatch):
+def test_document_reupload_with_same_name_and_new_content_reindexes_in_place(client, monkeypatch):
+    monkeypatch.setattr(
+        EmbeddingService,
+        "embed_texts",
+        lambda self, texts: [[float(index + 1), 0.9, 0.1] for index, _ in enumerate(texts)],
+    )
+    monkeypatch.setattr(
+        EmbeddingService,
+        "embed_query",
+        lambda self, query: [1.0, 0.9, 0.1],
+    )
+
+    first_upload = client.post(
+        "/api/documents/upload",
+        files={
+            "file": (
+                "iterative.pdf",
+                BytesIO(_build_pdf_bytes("first revision " * 24, title="Iterative Study")),
+                "application/pdf",
+            )
+        },
+    )
+    assert first_upload.status_code == 200
+    first_payload = _wait_for_document_status(client, first_upload.json()["id"], "ready")
+
+    second_upload = client.post(
+        "/api/documents/upload",
+        files={
+            "file": (
+                "iterative.pdf",
+                BytesIO(_build_pdf_bytes("second revision with more evidence " * 24, title="Iterative Study")),
+                "application/pdf",
+            )
+        },
+    )
+    assert second_upload.status_code == 200
+    second_payload = _wait_for_document_status(client, second_upload.json()["id"], "ready")
+
+    assert second_payload["id"] == first_payload["id"]
+    assert second_payload["version"] == first_payload["version"] + 1
+    assert second_payload["sha256"] != first_payload["sha256"]
+
+    conn = sqlite3.connect(os.environ["SQLITE_PATH"])
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*), MAX(version) FROM library_chunks WHERE document_id = ?",
+            (second_payload["id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row[0] > 0
+    assert row[1] == second_payload["version"]
+
+
+def test_milvus_store_adds_and_queries_chunks(sandbox_dir, monkeypatch):
     class FakeEmbeddingService:
         def embed_texts(self, texts):
             return [[float(index + 1), 0.5, 0.25] for index, _ in enumerate(texts)]
@@ -199,16 +258,13 @@ def test_chroma_store_falls_back_to_ephemeral_when_persistent_client_breaks(sand
             _ = query
             return [1.0, 0.5, 0.25]
 
-    monkeypatch.setattr(
-        "app.vectorstores.chroma_store.chromadb.PersistentClient",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("disk I/O error")),
+    store = MilvusVectorStore(
+        uri="http://fake-milvus:19530",
+        token=None,
+        database="paperdesk_test",
+        collection_name="paperdesk_collection",
+        embedding_service=FakeEmbeddingService(),
     )
-    monkeypatch.setattr(
-        "app.vectorstores.chroma_store.chromadb.EphemeralClient",
-        chromadb.EphemeralClient,
-    )
-
-    store = ChromaVectorStore(sandbox_dir / "chroma", FakeEmbeddingService())
     document = LibraryDocument(
         id="doc-1",
         filename="doc-1.pdf",
@@ -218,6 +274,8 @@ def test_chroma_store_falls_back_to_ephemeral_when_persistent_client_breaks(sand
         sha256="x" * 64,
         page_count=1,
         status="ready",
+        parser_status="indexed",
+        version=1,
         created_at=datetime.now(timezone.utc),
         uploaded_at=datetime.now(timezone.utc),
     )
@@ -228,6 +286,9 @@ def test_chroma_store_falls_back_to_ephemeral_when_persistent_client_breaks(sand
             page_number=1,
             chunk_index=0,
             text="sample text",
+            title="Doc 1",
+            sha256=document.sha256,
+            version=1,
             metadata={
                 "document_id": document.id,
                 "filename": document.display_name,
@@ -235,11 +296,13 @@ def test_chroma_store_falls_back_to_ephemeral_when_persistent_client_breaks(sand
                 "chunk_index": 0,
                 "title": document.title,
                 "file_path": document.file_path,
+                "sha256": document.sha256,
+                "version": 1,
             },
         )
     ]
 
     store.add_chunks(chunks)
-    assert store._client_mode == "ephemeral"
     results = store.query_evidence("sample", [document], top_k=1)
     assert len(results) == 1
+    assert results[0].document_id == document.id

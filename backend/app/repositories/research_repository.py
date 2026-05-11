@@ -42,6 +42,20 @@ class ResearchRepository(BaseRepository):
             updated_at=timestamp,
         )
 
+    def get_run(self, run_id: str) -> ResearchRun | None:
+        with self.database.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, topic, status, created_at, updated_at
+                FROM research_runs
+                WHERE id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ResearchRun(**dict(row))
+
     def update_run_status(self, run_id: str, status: ResearchRunStatus) -> None:
         timestamp = utc_now().isoformat()
         with self.database.connection() as conn:
@@ -108,11 +122,20 @@ class ResearchRepository(BaseRepository):
 
     def list_tasks(self, run_id: str) -> list[TodoTask]:
         with self.database.connection() as conn:
+            columns = self._todo_task_columns(conn)
+            if "task_order" in columns and "task_index" in columns:
+                order_sql = "COALESCE(task_order, task_index, 0)"
+            elif "task_order" in columns:
+                order_sql = "task_order"
+            elif "task_index" in columns:
+                order_sql = "task_index"
+            else:
+                order_sql = "rowid"
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM todo_tasks
                 WHERE run_id = ?
-                ORDER BY COALESCE(task_order, task_index, 0) ASC
+                ORDER BY {order_sql} ASC
                 """,
                 (run_id,),
             ).fetchall()

@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-m3"
     sqlite_path: str = "./data/paperdesk.db"
     chroma_path: str = "./data/chroma"
+    milvus_uri: str = "http://127.0.0.1:19530"
+    milvus_token: str | None = None
+    milvus_database: str = "default"
+    milvus_collection: str = "paperdesk_local_library"
     workspace_dir: str = "./workspace"
     upload_dir: str = "./workspace/uploads"
     report_dir: str = "./workspace/reports"
@@ -40,7 +44,13 @@ class Settings(BaseSettings):
     arxiv_base_url: str = "http://export.arxiv.org/api/query"
     cors_origins: str = Field(default="*")
 
-    @field_validator("llm_base_url", "llm_api_key", "openalex_api_key", mode="before")
+    @field_validator(
+        "llm_base_url",
+        "llm_api_key",
+        "openalex_api_key",
+        "milvus_token",
+        mode="before",
+    )
     @classmethod
     def empty_string_as_none(cls, value: str | None) -> str | None:
         if value is None:

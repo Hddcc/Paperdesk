@@ -66,13 +66,18 @@ class ResearchOrchestrator:
             topic=request.topic,
             status=ResearchRunStatus.CREATED,
         )
-        self._emit(event_sink, {"type": "run_created", "run": run.model_dump(mode="json")})
 
         current_task: TodoTask | None = None
         try:
             state.status = ResearchRunStatus.PLANNING
             self.research_repository.update_run_status(run.id, state.status)
-            self._emit_status(event_sink, state.status, "正在规划研究任务")
+            self._emit_status(
+                event_sink,
+                state.status,
+                "正在规划研究任务",
+                run=run.model_dump(mode="json"),
+                run_id=run.id,
+            )
 
             tasks = self.topic_planner.plan(request.topic)
             state.todo_tasks = tasks
@@ -82,6 +87,7 @@ class ResearchOrchestrator:
                 event_sink,
                 {
                     "type": "todo_list",
+                    "run_id": run.id,
                     "tasks": [task.model_dump(mode="json") for task in tasks],
                 },
             )
@@ -132,11 +138,22 @@ class ResearchOrchestrator:
                 self._emit(
                     event_sink,
                     {
-                        "type": "task_result",
+                        "type": "task_status",
+                        "run_id": run.id,
                         "task_id": task.id,
-                        "task": task.model_dump(mode="json"),
-                        "papers": [paper.model_dump(mode="json") for paper in paper_records],
-                        "evidence_items": [item.model_dump(mode="json") for item in evidence_items],
+                        "status": task.status.value,
+                        "title": task.title,
+                        "message": "任务总结已完成",
+                    },
+                )
+                self._emit(
+                    event_sink,
+                    {
+                        "type": "task_summary",
+                        "run_id": run.id,
+                        "task_id": task.id,
+                        "title": task.title,
+                        "summary_markdown": task_summary.summary_markdown,
                         "summary": task_summary.model_dump(mode="json"),
                     },
                 )
@@ -144,7 +161,7 @@ class ResearchOrchestrator:
 
             state.status = ResearchRunStatus.WRITING_REPORT
             self.research_repository.update_run_status(run.id, state.status)
-            self._emit_status(event_sink, state.status, "正在生成最终综述")
+            self._emit_status(event_sink, state.status, "正在生成最终综述", run_id=run.id)
 
             report = self.report_writer.write(request.topic, state.task_summaries)
             report = self._attach_export_path(report, self.export_service.get_export_path(report.id))
@@ -158,7 +175,10 @@ class ResearchOrchestrator:
             self._emit(
                 event_sink,
                 {
-                    "type": "final_report",
+                    "type": "report",
+                    "run_id": run.id,
+                    "report_id": report.id,
+                    "markdown": report.markdown,
                     "report": report.model_dump(mode="json"),
                 },
             )
@@ -208,6 +228,7 @@ class ResearchOrchestrator:
             event_sink,
             {
                 "type": "task_status",
+                "run_id": state.run_id,
                 "task_id": task.id,
                 "status": task.status.value,
                 "title": task.title,
@@ -229,6 +250,7 @@ class ResearchOrchestrator:
                 event_sink,
                 {
                     "type": "task_status",
+                    "run_id": state.run_id,
                     "task_id": current_task.id,
                     "status": current_task.status.value,
                     "title": current_task.title,
@@ -251,17 +273,20 @@ class ResearchOrchestrator:
         event_sink: EventSink | None,
         status: ResearchRunStatus,
         message: str,
+        **extra: object,
     ) -> None:
+        event = {
+            "type": "status",
+            "status": status.value,
+            "message": message,
+        }
+        event.update(extra)
         self._emit(
             event_sink,
-            {
-                "type": "status",
-                "status": status.value,
-                "message": message,
-            },
+            event,
         )
 
     @staticmethod
     def _attach_export_path(report: ResearchReport, export_path: Path) -> ResearchReport:
-        markdown = report.markdown + f"\n\n> 导出路径：{export_path}"
-        return report.model_copy(update={"markdown": markdown})
+        _ = export_path
+        return report

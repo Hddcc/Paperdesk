@@ -80,3 +80,12 @@ class ResearchState(BaseModel):
     todo_tasks: list[TodoTask] = Field(default_factory=list)
     task_summaries: list[TaskSummary] = Field(default_factory=list)
     report: ResearchReport | None = None
+
+
+class ResearchRunDetail(BaseModel):
+    """Fallback payload for reloading a previously created research run."""
+
+    run: ResearchRun
+    tasks: list[TodoTask] = Field(default_factory=list)
+    task_summaries: list[TaskSummary] = Field(default_factory=list)
+    report: ResearchReport | None = None
