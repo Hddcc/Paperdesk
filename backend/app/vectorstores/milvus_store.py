@@ -14,6 +14,8 @@ from .base import AbstractVectorStore
 class MilvusVectorStore(AbstractVectorStore):
     """Persist local PDF chunks in Milvus and retrieve semantic evidence."""
 
+    STRING_PRIMARY_KEY_MAX_LENGTH = 512
+
     def __init__(
         self,
         *,
@@ -30,6 +32,10 @@ class MilvusVectorStore(AbstractVectorStore):
         self.embedding_service = embedding_service
         self._client = None
         self._dimension: int | None = None
+
+    def ensure_available(self) -> None:
+        """Eagerly initialize the Milvus client so startup failures surface early."""
+        self._get_client()
 
     def upsert_document(self, document: LibraryDocument) -> None:
         _ = document
@@ -167,6 +173,7 @@ class MilvusVectorStore(AbstractVectorStore):
             metric_type="COSINE",
             primary_field_name="chunk_id",
             id_type="string",
+            max_length=self.STRING_PRIMARY_KEY_MAX_LENGTH,
             vector_field_name="embedding",
             auto_id=False,
             enable_dynamic_field=True,

@@ -1,8 +1,11 @@
+from datetime import datetime, timezone
 from io import BytesIO
 import time
 
 import fitz
 
+from app.api.main import get_repository
+from app.models import LibraryDocument
 from app.services.arxiv_client import ArxivClient
 from app.services.embedding_service import EmbeddingService
 from app.services.openalex_client import OpenAlexClient
@@ -90,6 +93,64 @@ def test_rag_ask_returns_grounded_answer(client, monkeypatch):
     assert payload["pages"] == [1]
     assert payload["retrieval_count"] >= 1
     assert payload["evidence_items"][0]["document_id"] == document["id"]
+
+
+def test_rag_ask_returns_insufficient_evidence_when_library_is_empty(client):
+    response = client.post(
+        "/api/rag/ask",
+        json={
+            "question": "这篇论文如何讨论评估方法？",
+            "top_k": 3,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert "当前知识库中没有检索到足够相关的本地证据" in payload["answer"]
+    assert "暂不足以回答这个问题" in payload["answer"]
+    assert payload["citations"] == []
+    assert payload["sources"] == []
+    assert payload["pages"] == []
+    assert payload["retrieval_count"] == 0
+    assert payload["confidence"] is None
+    assert payload["evidence_items"] == []
+
+
+def test_rag_ask_returns_insufficient_evidence_for_unready_or_missing_document_ids(client):
+    repository = get_repository()
+    repository.library.create_document(
+        LibraryDocument(
+            id="doc-processing",
+            filename="processing.pdf",
+            display_name="processing.pdf",
+            title="Processing Paper",
+            file_path="D:/virtual/processing.pdf",
+            sha256="p" * 64,
+            page_count=0,
+            status="processing",
+            parser_status="processing",
+            version=1,
+            created_at=datetime.now(timezone.utc),
+            uploaded_at=datetime.now(timezone.utc),
+        )
+    )
+
+    response = client.post(
+        "/api/rag/ask",
+        json={
+            "question": "请总结这份未完成索引的文档。",
+            "document_ids": ["doc-processing", "doc-missing"],
+            "top_k": 3,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert "当前知识库中没有检索到足够相关的本地证据" in payload["answer"]
+    assert payload["citations"] == []
+    assert payload["sources"] == []
+    assert payload["pages"] == []
+    assert payload["retrieval_count"] == 0
+    assert payload["confidence"] is None
+    assert payload["evidence_items"] == []
 
 
 def test_paper_analysis_supports_single_and_compare_modes(client, monkeypatch):

@@ -157,9 +157,16 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     events = _parse_sse_events(body)
     event_types = [event["type"] for event in events]
     assert "status" in event_types
+    assert "coordinator_status" in event_types
     assert "todo_list" in event_types
     assert "task_status" in event_types
+    assert "subagent_spawned" in event_types
+    assert "subagent_started" in event_types
+    assert "subagent_completed" in event_types
+    assert "task_merge_started" in event_types
+    assert "task_merge_completed" in event_types
     assert "task_summary" in event_types
+    assert "report_completed" in event_types
     assert "report" in event_types
     assert "done" in event_types
     assert "任务总结仍采用教程阶段的规则模板" not in body
@@ -207,6 +214,10 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert run_payload["run"]["status"] == "completed"
     assert len(run_payload["tasks"]) == 4
     assert len(run_payload["task_summaries"]) == 4
+    assert len(run_payload["subagent_tasks"]) == 8
+    assert len(run_payload["task_notifications"]) == 8
+    assert len(run_payload["task_traces"]) >= 8
+    assert len(run_payload["task_artifacts"]) >= 8
     assert run_payload["report"]["id"] == report_id
 
     export_response = client.get(f"/api/export/{report_id}")
@@ -227,6 +238,10 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
         library_count = conn.execute("SELECT COUNT(*) FROM library_documents").fetchone()[0]
         report_count = conn.execute("SELECT COUNT(*) FROM report_records").fetchone()[0]
         citation_count = conn.execute("SELECT COUNT(*) FROM citation_records").fetchone()[0]
+        subagent_task_count = conn.execute("SELECT COUNT(*) FROM subagent_tasks").fetchone()[0]
+        notification_count = conn.execute("SELECT COUNT(*) FROM task_notifications").fetchone()[0]
+        artifact_count = conn.execute("SELECT COUNT(*) FROM task_artifacts").fetchone()[0]
+        trace_count = conn.execute("SELECT COUNT(*) FROM task_execution_traces").fetchone()[0]
     finally:
         conn.close()
 
@@ -237,6 +252,10 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert library_count == 1
     assert report_count == 1
     assert citation_count > 0
+    assert subagent_task_count == 8
+    assert notification_count == 8
+    assert artifact_count >= 16
+    assert trace_count >= 16
     assert run_row[1] == "completed"
     assert all(task_row[1] == "completed" for task_row in task_rows)
     assert observed_queries
@@ -256,7 +275,6 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert all(item["status"] == "pending" for item in todo_payload)
     assert "在线论文参考：" in (run_dir / "task_1_summary.md").read_text(encoding="utf-8")
     assert final_report_markdown == export_response.text.strip()
-
 
 def test_irrelevant_local_document_is_not_used_as_evidence(client, monkeypatch):
     _patch_research_dependencies(monkeypatch)

@@ -91,6 +91,7 @@ class SQLiteDatabase:
                     page_count INTEGER NOT NULL,
                     status TEXT NOT NULL,
                     parser_status TEXT NOT NULL DEFAULT 'pending',
+                    failure_reason TEXT,
                     indexed_at TEXT,
                     version INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
@@ -136,6 +137,135 @@ class SQLiteDatabase:
                     page_number INTEGER,
                     sort_order INTEGER NOT NULL,
                     FOREIGN KEY (report_id) REFERENCES report_records (id)
+                );
+
+                CREATE TABLE IF NOT EXISTS subagent_tasks (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    parent_task_id TEXT,
+                    profile TEXT NOT NULL,
+                    goal TEXT NOT NULL,
+                    context_bundle_json TEXT NOT NULL,
+                    done_criteria TEXT NOT NULL,
+                    tool_policy_json TEXT NOT NULL,
+                    artifact_dir TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES research_runs (id)
+                );
+
+                CREATE TABLE IF NOT EXISTS task_notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    agent_profile TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    result_payload_json TEXT NOT NULL,
+                    token_usage_json TEXT NOT NULL,
+                    artifact_refs_json TEXT NOT NULL,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES research_runs (id),
+                    FOREIGN KEY (task_id) REFERENCES subagent_tasks (id)
+                );
+
+                CREATE TABLE IF NOT EXISTS task_artifacts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    description TEXT,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES research_runs (id),
+                    FOREIGN KEY (task_id) REFERENCES subagent_tasks (id)
+                );
+
+                CREATE TABLE IF NOT EXISTS task_execution_traces (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    task_id TEXT,
+                    trace_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES research_runs (id)
+                );
+
+                CREATE TABLE IF NOT EXISTS chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    retrieval_status TEXT,
+                    warning TEXT,
+                    citations_json TEXT NOT NULL DEFAULT '[]',
+                    used_document_ids_json TEXT NOT NULL DEFAULT '[]',
+                    memory_hits_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions (id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS chat_attachments (
+                    id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    mime_type TEXT,
+                    document_id TEXT,
+                    data_url TEXT,
+                    file_path TEXT,
+                    status TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (message_id) REFERENCES chat_messages (id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS memory_records (
+                    id TEXT PRIMARY KEY,
+                    memory_type TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    detail TEXT,
+                    source_kind TEXT,
+                    source_id TEXT,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_verified_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS memory_links (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    memory_id TEXT NOT NULL,
+                    target_kind TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (memory_id) REFERENCES memory_records (id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS memory_refresh_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    memory_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (memory_id) REFERENCES memory_records (id) ON DELETE CASCADE
                 );
                 """
             )
@@ -204,6 +334,7 @@ class SQLiteDatabase:
             return
 
         self._ensure_column(conn, "library_documents", "parser_status", "TEXT NOT NULL DEFAULT 'pending'")
+        self._ensure_column(conn, "library_documents", "failure_reason", "TEXT")
         self._ensure_column(conn, "library_documents", "indexed_at", "TEXT")
         self._ensure_column(conn, "library_documents", "version", "INTEGER NOT NULL DEFAULT 1")
 

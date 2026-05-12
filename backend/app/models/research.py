@@ -14,6 +14,7 @@ from .enums import (
 )
 from .paper import normalize_search_provider
 from .report import ResearchReport, TaskSummary
+from .runtime import StoredAgentTask, TaskArtifactRef, TaskExecutionTrace, TaskNotification
 
 
 class ResearchRequest(BaseModel):
@@ -79,6 +80,10 @@ class ResearchState(BaseModel):
     status: ResearchRunStatus
     todo_tasks: list[TodoTask] = Field(default_factory=list)
     task_summaries: list[TaskSummary] = Field(default_factory=list)
+    subagent_tasks: list[StoredAgentTask] = Field(default_factory=list)
+    task_notifications: list[TaskNotification] = Field(default_factory=list)
+    task_traces: list[TaskExecutionTrace] = Field(default_factory=list)
+    task_artifacts: list[TaskArtifactRef] = Field(default_factory=list)
     report: ResearchReport | None = None
 
 
@@ -88,4 +93,8 @@ class ResearchRunDetail(BaseModel):
     run: ResearchRun
     tasks: list[TodoTask] = Field(default_factory=list)
     task_summaries: list[TaskSummary] = Field(default_factory=list)
+    subagent_tasks: list[StoredAgentTask] = Field(default_factory=list)
+    task_notifications: list[TaskNotification] = Field(default_factory=list)
+    task_traces: list[TaskExecutionTrace] = Field(default_factory=list)
+    task_artifacts: list[TaskArtifactRef] = Field(default_factory=list)
     report: ResearchReport | None = None

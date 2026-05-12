@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+from contextlib import asynccontextmanager
 from functools import lru_cache
+import threading
+import time
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,10 +24,17 @@ from app.config import Settings, get_settings
 from app.repositories import SQLiteRepository
 from app.services import (
     ArxivClient,
+    ChatMemoryService,
+    ChatService,
+    ContextAssembler,
+    ContextBudgetService,
+    ContextCompactionService,
+    ContextFileStore,
     DocumentLibraryService,
     EmbeddingService,
     ExportService,
     KnowledgeIngestionService,
+    MilvusBootstrapService,
     OpenAlexClient,
     PaperAnalysisService,
     PaperSearchService,
@@ -36,6 +47,61 @@ from app.services import (
 )
 from app.services.research_orchestrator import ResearchOrchestrator
 from app.vectorstores import MilvusVectorStore
+
+logger = logging.getLogger(__name__)
+
+
+def _warmup_vectorstore(app: FastAPI, settings: Settings) -> None:
+    """Warm up Milvus in the background so the API can still start serving."""
+    deadline = time.time() + max(settings.milvus_start_timeout_seconds, 10)
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            get_milvus_bootstrap_service().ensure_running()
+            get_vectorstore().ensure_available()
+            app.state.vectorstore_status = "ready"
+            app.state.vectorstore_error = None
+            return
+        except Exception as exc:
+            last_error = exc
+            app.state.vectorstore_status = "starting"
+            app.state.vectorstore_error = str(exc)
+            if not _is_retryable_milvus_warmup_error(exc):
+                break
+            time.sleep(2)
+
+    app.state.vectorstore_status = "failed"
+    app.state.vectorstore_error = str(last_error) if last_error else "unknown Milvus warmup error"
+    logger.warning(
+        "Milvus warmup failed for %s: %s",
+        settings.effective_milvus_uri,
+        app.state.vectorstore_error,
+    )
+
+
+def _warmup_embedding_model(app: FastAPI, settings: Settings) -> None:
+    """Warm up the embedding model in the background to avoid first-upload downloads."""
+    try:
+        get_embedding_service().preload()
+        app.state.embedding_status = "ready"
+        app.state.embedding_error = None
+    except Exception as exc:
+        app.state.embedding_status = "failed"
+        app.state.embedding_error = str(exc)
+        logger.warning("Embedding warmup failed for %s: %s", settings.embedding_model, exc)
+
+
+def _is_retryable_milvus_warmup_error(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    retry_markers = (
+        "proxy is not ready yet",
+        "service unavailable",
+        "channel_state=ready",
+        "fail connecting to server",
+        "server unavailable",
+        "timed out",
+    )
+    return any(marker in message for marker in retry_markers)
 
 
 @lru_cache(maxsize=1)
@@ -54,11 +120,25 @@ def get_embedding_service() -> EmbeddingService:
 def get_vectorstore() -> MilvusVectorStore:
     settings = get_settings()
     return MilvusVectorStore(
-        uri=settings.milvus_uri,
+        uri=settings.effective_milvus_uri,
         token=settings.milvus_token,
         database=settings.milvus_database,
         collection_name=settings.milvus_collection,
         embedding_service=get_embedding_service(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_milvus_bootstrap_service() -> MilvusBootstrapService:
+    settings = get_settings()
+    return MilvusBootstrapService(
+        uri=settings.effective_milvus_uri,
+        auto_start=settings.milvus_auto_start,
+        timeout_seconds=settings.milvus_start_timeout_seconds,
+        runtime_dir=settings.milvus_runtime_path,
+        container_name=settings.milvus_container_name,
+        image=settings.milvus_image,
+        docker_desktop_executable=settings.docker_desktop_executable,
     )
 
 
@@ -80,6 +160,38 @@ def get_paper_repository():
 
 def get_report_repository():
     return get_repository().report
+
+
+def get_runtime_repository():
+    return get_repository().runtime
+
+
+def get_chat_repository():
+    return get_repository().chat
+
+
+@lru_cache(maxsize=1)
+def get_context_file_store() -> ContextFileStore:
+    return ContextFileStore(get_settings())
+
+
+@lru_cache(maxsize=1)
+def get_context_budget_service() -> ContextBudgetService:
+    return ContextBudgetService(get_settings())
+
+
+@lru_cache(maxsize=1)
+def get_context_compaction_service() -> ContextCompactionService:
+    return ContextCompactionService(get_settings(), get_context_file_store())
+
+
+@lru_cache(maxsize=1)
+def get_context_assembler() -> ContextAssembler:
+    return ContextAssembler(
+        budget_service=get_context_budget_service(),
+        compaction_service=get_context_compaction_service(),
+        file_store=get_context_file_store(),
+    )
 
 
 @lru_cache(maxsize=1)
@@ -163,6 +275,30 @@ def get_rag_service() -> RagService:
 
 
 @lru_cache(maxsize=1)
+def get_chat_memory_service() -> ChatMemoryService:
+    return ChatMemoryService(
+        chat_repository=get_chat_repository(),
+        library_repository=get_library_repository(),
+        file_store=get_context_file_store(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_chat_service() -> ChatService:
+    settings = get_settings()
+    return ChatService(
+        chat_repository=get_chat_repository(),
+        library_repository=get_library_repository(),
+        rag_service=get_rag_service(),
+        memory_service=get_chat_memory_service(),
+        context_assembler=get_context_assembler(),
+        model=settings.llm_model,
+        api_key=settings.llm_api_key,
+        base_url=settings.llm_base_url,
+    )
+
+
+@lru_cache(maxsize=1)
 def get_paper_analysis_agent() -> PaperAnalysisAgent:
     return PaperAnalysisAgent(PaperAnalysisService(get_rag_service()))
 
@@ -179,6 +315,7 @@ def get_research_orchestrator() -> ResearchOrchestrator:
         paper_repository=get_paper_repository(),
         library_repository=get_library_repository(),
         report_repository=get_report_repository(),
+        runtime_repository=get_runtime_repository(),
         topic_planner=TopicPlannerAgent(),
         paper_search_agent=PaperSearchAgent(get_paper_search_service()),
         library_retriever=LibraryRetrieverAgent(
@@ -195,7 +332,49 @@ def get_research_orchestrator() -> ResearchOrchestrator:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     runtime_settings = settings or get_settings()
-    app = FastAPI(title=runtime_settings.app_name, version=runtime_settings.app_version)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.vectorstore_status = "starting"
+        app.state.vectorstore_uri = runtime_settings.effective_milvus_uri
+        app.state.vectorstore_error = None
+        app.state.embedding_model = runtime_settings.embedding_model
+        app.state.embedding_error = None
+        if runtime_settings.embedding_warmup_on_start:
+            app.state.embedding_status = "starting"
+            threading.Thread(
+                target=_warmup_embedding_model,
+                args=(app, runtime_settings),
+                daemon=True,
+                name="paperdesk-embedding-warmup",
+            ).start()
+        else:
+            app.state.embedding_status = "disabled"
+        if runtime_settings.uses_embedded_milvus:
+            try:
+                get_vectorstore().ensure_available()
+                app.state.vectorstore_status = "ready"
+            except Exception as exc:
+                app.state.vectorstore_status = "failed"
+                app.state.vectorstore_error = str(exc)
+                raise RuntimeError(
+                    "Embedded Milvus failed to start. Run `uv sync` to install "
+                    "`pymilvus[milvus_lite]`, or set MILVUS_URI to an external Milvus service."
+                ) from exc
+        else:
+            threading.Thread(
+                target=_warmup_vectorstore,
+                args=(app, runtime_settings),
+                daemon=True,
+                name="paperdesk-milvus-warmup",
+            ).start()
+        yield
+
+    app = FastAPI(
+        title=runtime_settings.app_name,
+        version=runtime_settings.app_version,
+        lifespan=lifespan,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=runtime_settings.get_cors_origins_list(),
@@ -204,8 +383,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    from app.api.routes import documents, export, papers, rag, reports, research
+    from app.api.routes import chat, documents, export, papers, rag, reports, research
 
+    app.include_router(chat.router, prefix="/api")
     app.include_router(documents.router, prefix="/api")
     app.include_router(export.router, prefix="/api")
     app.include_router(papers.router, prefix="/api")
@@ -214,8 +394,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(research.router, prefix="/api")
 
     @app.get("/healthz")
-    def healthz() -> dict[str, str]:
-        return {"status": "ok"}
+    def healthz() -> dict[str, str | None]:
+        return {
+            "status": "ok",
+            "vectorstore_status": getattr(app.state, "vectorstore_status", "unknown"),
+            "vectorstore_uri": getattr(app.state, "vectorstore_uri", None),
+            "vectorstore_error": getattr(app.state, "vectorstore_error", None),
+            "embedding_status": getattr(app.state, "embedding_status", "unknown"),
+            "embedding_model": getattr(app.state, "embedding_model", None),
+            "embedding_error": getattr(app.state, "embedding_error", None),
+        }
 
     return app
 

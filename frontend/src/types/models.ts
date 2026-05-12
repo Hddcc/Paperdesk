@@ -59,6 +59,7 @@ export interface LibraryDocument {
   page_count?: number;
   status: string;
   parser_status?: string;
+  failure_reason?: string | null;
   indexed_at?: string | null;
   version?: number;
   created_at?: string;
@@ -133,6 +134,8 @@ export interface ResearchRunDetail {
   report: ResearchReport | null;
 }
 
+export type KnowledgeRetrievalStatus = "ready" | "skipped" | "degraded" | "unavailable";
+
 export interface RagAskRequest {
   question: string;
   document_ids?: string[];
@@ -148,6 +151,95 @@ export interface RagAnswer {
   retrieval_count: number;
   confidence?: number | null;
   evidence_items: EvidenceItem[];
+}
+
+export type ChatAttachmentKind = "image" | "uploaded_pdf" | "library_document";
+export type ChatMessageRole = "user" | "assistant" | "system";
+export type MemoryRecordType = "user" | "feedback" | "project" | "reference";
+export type ContextStage = "normal" | "evidence_compacted" | "history_compacted" | "truncated";
+
+export interface ChatAttachment {
+  id: string;
+  kind: ChatAttachmentKind;
+  display_name: string;
+  mime_type?: string | null;
+  document_id?: string | null;
+  data_url?: string | null;
+  file_path?: string | null;
+  status?: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface MemoryHit {
+  id: string;
+  memory_type: MemoryRecordType;
+  summary: string;
+  detail?: string | null;
+  source_kind?: string | null;
+  source_id?: string | null;
+  status: string;
+  last_verified_at?: string | null;
+}
+
+export interface MemorySnapshot {
+  items: MemoryHit[];
+  refreshed_at: string;
+}
+
+export interface ChatContextState {
+  stage: ContextStage;
+  estimated_tokens: number;
+  budget_tokens: number;
+  sources: string[];
+  last_compacted_at?: string | null;
+}
+
+export interface ChatMessage {
+  id: string;
+  session_id: string;
+  role: ChatMessageRole;
+  content: string;
+  status: string;
+  retrieval_status?: KnowledgeRetrievalStatus | null;
+  warning?: string | null;
+  citations: string[];
+  used_document_ids: string[];
+  memory_hits: MemoryHit[];
+  attachments: ChatAttachment[];
+  created_at: string;
+}
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  last_message_preview?: string | null;
+}
+
+export interface ChatSessionDetail {
+  session: ChatSession;
+  messages: ChatMessage[];
+  memory_snapshot: MemorySnapshot;
+  context_state: ChatContextState;
+}
+
+export interface ChatSessionCreateRequest {
+  title?: string | null;
+}
+
+export interface ChatMessageRequest {
+  content: string;
+  attachments?: ChatAttachment[];
+  selected_document_ids?: string[];
+}
+
+export interface ChatSendResponse {
+  session: ChatSession;
+  user_message: ChatMessage;
+  assistant_message: ChatMessage;
+  memory_snapshot: MemorySnapshot;
+  context_state: ChatContextState;
 }
 
 export interface PaperAnalysisRequest {

@@ -137,26 +137,37 @@ def client(sandbox_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     upload_dir = workspace_dir / "uploads"
     report_dir = workspace_dir / "reports"
     vector_dir = workspace_dir / "vectorstore"
+    claude_dir = sandbox_dir / ".claude"
 
     monkeypatch.setenv("SQLITE_PATH", str(data_dir / "paperdesk.db"))
     monkeypatch.setenv("WORKSPACE_DIR", str(workspace_dir))
     monkeypatch.setenv("UPLOAD_DIR", str(upload_dir))
     monkeypatch.setenv("REPORT_DIR", str(report_dir))
     monkeypatch.setenv("VECTORSTORE_DIR", str(vector_dir))
+    monkeypatch.setenv("CLAUDE_DIR", str(claude_dir))
     monkeypatch.setenv("LLM_API_KEY", "")
     monkeypatch.setenv("LLM_BASE_URL", "")
     monkeypatch.setenv("OPENALEX_API_KEY", "")
+    monkeypatch.setenv("EMBEDDING_WARMUP_ON_START", "false")
     monkeypatch.setenv("MILVUS_URI", "http://fake-milvus:19530")
     monkeypatch.setenv("MILVUS_TOKEN", "")
     monkeypatch.setenv("MILVUS_DATABASE", "paperdesk_test")
     monkeypatch.setenv("MILVUS_COLLECTION", "paperdesk_test_collection")
+    monkeypatch.setenv("MILVUS_AUTO_START", "false")
 
     from app.api.main import (
+        get_chat_memory_service,
+        get_chat_service,
         create_app,
         get_document_library_service,
         get_embedding_service,
         get_export_service,
+        get_context_assembler,
+        get_context_budget_service,
+        get_context_compaction_service,
+        get_context_file_store,
         get_knowledge_ingestion_service,
+        get_milvus_bootstrap_service,
         get_paper_analysis_agent,
         get_paper_search_service,
         get_paper_selection_agent,
@@ -173,11 +184,18 @@ def client(sandbox_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     get_settings.cache_clear()
     get_repository.cache_clear()
     get_embedding_service.cache_clear()
+    get_milvus_bootstrap_service.cache_clear()
     get_vectorstore.cache_clear()
     get_paper_search_service.cache_clear()
     get_paper_selection_agent.cache_clear()
     get_paper_analysis_agent.cache_clear()
     get_query_translation_service.cache_clear()
+    get_context_file_store.cache_clear()
+    get_context_budget_service.cache_clear()
+    get_context_compaction_service.cache_clear()
+    get_context_assembler.cache_clear()
+    get_chat_memory_service.cache_clear()
+    get_chat_service.cache_clear()
     get_document_library_service.cache_clear()
     get_knowledge_ingestion_service.cache_clear()
     get_export_service.cache_clear()

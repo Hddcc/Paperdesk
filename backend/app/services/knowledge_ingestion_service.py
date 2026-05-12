@@ -37,20 +37,25 @@ class KnowledgeIngestionService:
             return
 
         destination = Path(document.file_path)
+        resolved_title = document.title or document.display_name or document.filename
+        resolved_page_count = document.page_count
         try:
             self.document_repository.update_document(
                 document.id,
                 status="processing",
                 parser_status="processing",
+                failure_reason=None,
                 indexed_at=None,
             )
             parsed = self.pdf_parser.parse(destination)
-            resolved_title = parsed.title or document.title or document.display_name or document.filename
+            resolved_title = parsed.title or resolved_title
+            resolved_page_count = parsed.page_count
             working_document = self.document_repository.update_document(
                 document.id,
                 title=resolved_title,
-                page_count=parsed.page_count,
+                page_count=resolved_page_count,
                 parser_status="parsed",
+                failure_reason=None,
                 file_path=str(destination),
             )
             if working_document is None:  # pragma: no cover - defensive guardrail
@@ -72,15 +77,16 @@ class KnowledgeIngestionService:
             ready_document = self.document_repository.update_document(
                 document.id,
                 title=resolved_title,
-                page_count=parsed.page_count,
+                page_count=resolved_page_count,
                 status="ready",
                 parser_status="indexed",
+                failure_reason=None,
                 indexed_at=datetime.now(timezone.utc),
             )
             if ready_document is None:  # pragma: no cover - defensive guardrail
                 raise RuntimeError("Failed to finalize imported document")
             self.vectorstore.upsert_document(ready_document)
-        except Exception:
+        except Exception as exc:
             self.chunk_repository.delete_document_chunks(document.id)
             try:
                 self.vectorstore.delete_document(document.id)
@@ -90,9 +96,25 @@ class KnowledgeIngestionService:
                 document.id,
                 status="failed",
                 parser_status="failed",
-                page_count=0,
+                title=resolved_title,
+                page_count=resolved_page_count,
+                failure_reason=self._summarize_failure(exc),
                 indexed_at=None,
             )
             if failed_document is not None:
                 self.vectorstore.upsert_document(failed_document)
             raise
+
+    @staticmethod
+    def _summarize_failure(exc: Exception) -> str:
+        message = str(exc).strip() or exc.__class__.__name__
+        lowered = message.casefold()
+        if "fail connecting to server" in lowered or "server unavailable" in lowered:
+            return "Milvus 服务不可用，无法完成论文建库。请先启动 127.0.0.1:19530 后重试。"
+        if "milvusexception" in lowered:
+            return "Milvus 服务异常，当前论文还未完成建库。请检查向量库服务后重试。"
+        if "embedding" in lowered:
+            return f"嵌入生成失败：{message}"
+        if "pdf" in lowered:
+            return f"PDF 解析失败：{message}"
+        return message

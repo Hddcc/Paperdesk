@@ -28,12 +28,13 @@ class LibraryRepository(BaseRepository):
                     page_count,
                     status,
                     parser_status,
+                    failure_reason,
                     indexed_at,
                     version,
                     created_at,
                     uploaded_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     document.id,
@@ -45,6 +46,7 @@ class LibraryRepository(BaseRepository):
                     document.page_count,
                     document.status,
                     document.parser_status,
+                    document.failure_reason,
                     document.indexed_at.isoformat() if document.indexed_at else None,
                     document.version,
                     document.created_at.isoformat(),
@@ -129,6 +131,7 @@ class LibraryRepository(BaseRepository):
             page_count=row["page_count"],
             status=row["status"],
             parser_status=row["parser_status"],
+            failure_reason=row["failure_reason"],
             indexed_at=datetime.fromisoformat(row["indexed_at"]) if row["indexed_at"] else None,
             version=row["version"] or 1,
             created_at=datetime.fromisoformat(row["created_at"]),

@@ -20,6 +20,7 @@ class LibraryDocument(BaseModel):
     page_count: int = 0
     status: str = "pending"
     parser_status: str = "pending"
+    failure_reason: str | None = None
     indexed_at: datetime | None = None
     version: int = 1
     created_at: datetime

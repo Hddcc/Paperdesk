@@ -8,9 +8,14 @@ from fastapi import APIRouter, Depends
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.api.main import get_report_repository, get_research_orchestrator, get_research_repository
+from app.api.main import (
+    get_report_repository,
+    get_research_orchestrator,
+    get_research_repository,
+    get_runtime_repository,
+)
 from app.models import ResearchRequest, ResearchRunDetail, TaskSummary
-from app.repositories import ReportRepository, ResearchRepository
+from app.repositories import ReportRepository, ResearchRepository, RuntimeRepository
 from app.services.research_orchestrator import ResearchOrchestrator
 
 router = APIRouter(prefix="/research", tags=["research"])
@@ -44,6 +49,7 @@ def get_research_run(
     task_id: str,
     research_repository: ResearchRepository = Depends(get_research_repository),
     report_repository: ReportRepository = Depends(get_report_repository),
+    runtime_repository: RuntimeRepository = Depends(get_runtime_repository),
 ) -> ResearchRunDetail:
     run = research_repository.get_run(task_id)
     if run is None:
@@ -56,6 +62,10 @@ def get_research_run(
         run=run,
         tasks=tasks,
         task_summaries=task_summaries,
+        subagent_tasks=runtime_repository.list_tasks(task_id),
+        task_notifications=runtime_repository.list_notifications(task_id),
+        task_traces=runtime_repository.list_traces(task_id),
+        task_artifacts=runtime_repository.list_artifacts(task_id),
         report=report,
     )
 

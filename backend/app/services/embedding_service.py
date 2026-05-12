@@ -36,6 +36,10 @@ class EmbeddingService:
         vectors = self._normalize_output(output)
         return vectors[0]
 
+    def preload(self) -> None:
+        """Download and initialize the embedding model ahead of the first upload/query."""
+        self._get_model()
+
     def _get_model(self):
         if self._model is not None:
             return self._model
@@ -65,12 +69,12 @@ class EmbeddingService:
     def _normalize_output(output) -> list[list[float]]:
         dense_vectors = output
         if isinstance(output, dict):
-            dense_vectors = (
-                output.get("dense_vecs")
-                or output.get("dense_embeddings")
-                or output.get("embeddings")
-                or []
-            )
+            dense_vectors = []
+            for key in ("dense_vecs", "dense_embeddings", "embeddings"):
+                candidate = output.get(key)
+                if candidate is not None:
+                    dense_vectors = candidate
+                    break
         if hasattr(dense_vectors, "tolist"):
             dense_vectors = dense_vectors.tolist()
         return [list(map(float, vector)) for vector in dense_vectors]

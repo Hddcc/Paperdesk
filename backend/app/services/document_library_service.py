@@ -57,6 +57,7 @@ class DocumentLibraryService:
                     existing.id,
                     status="processing",
                     parser_status="pending",
+                    failure_reason=None,
                     indexed_at=None,
                 )
                 self._schedule_processing(existing.id)
@@ -80,6 +81,7 @@ class DocumentLibraryService:
                 page_count=0,
                 status="processing",
                 parser_status="pending",
+                failure_reason=None,
                 indexed_at=None,
                 version=max(existing_named_document.version, 1) + 1,
                 uploaded_at=now,
@@ -102,6 +104,7 @@ class DocumentLibraryService:
             file_path=str(destination),
             status="processing",
             parser_status="pending",
+            failure_reason=None,
             sha256=sha256,
             page_count=0,
             indexed_at=None,
@@ -132,6 +135,7 @@ class DocumentLibraryService:
             return
 
     def list_documents(self) -> list[LibraryDocument]:
+        self._recover_processing_documents()
         return self.repository.list_documents()
 
     def delete_document(self, document_id: str) -> LibraryDocument:
@@ -141,8 +145,26 @@ class DocumentLibraryService:
         file_path = Path(document.file_path)
         if file_path.exists():
             self._unlink_with_retry(file_path)
-        self.vectorstore.delete_document(document.id)
+        try:
+            self.vectorstore.delete_document(document.id)
+        except Exception:
+            pass
         return document
+
+    def _recover_processing_documents(self) -> None:
+        for document in self.repository.list_documents():
+            if document.status != "processing":
+                continue
+            if not Path(document.file_path).exists():
+                self.repository.update_document(
+                    document.id,
+                    status="failed",
+                    parser_status="failed",
+                    failure_reason="文档文件不存在，已无法继续处理。请删除后重新上传。",
+                    indexed_at=None,
+                )
+                continue
+            self._schedule_processing(document.id)
 
     @staticmethod
     def _unlink_with_retry(file_path: Path) -> bool:

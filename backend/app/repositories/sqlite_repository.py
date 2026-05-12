@@ -8,11 +8,13 @@ from app.models import LibraryDocument, PaperRecord, ReportListItem, ResearchRep
 from app.models.enums import ResearchRunStatus
 
 from .base import SQLiteDatabase
+from .chat_repository import ChatRepository
 from .chunk_repository import ChunkRepository
 from .library_repository import LibraryRepository
 from .paper_repository import PaperRepository
 from .report_repository import ReportRepository
 from .research_repository import ResearchRepository
+from .runtime_repository import RuntimeRepository
 
 
 class SQLiteRepository:
@@ -26,6 +28,8 @@ class SQLiteRepository:
         self.research = ResearchRepository(self.database)
         self.paper = PaperRepository(self.database)
         self.report = ReportRepository(self.database)
+        self.runtime = RuntimeRepository(self.database)
+        self.chat = ChatRepository(self.database)
 
     def create_document(self, document: LibraryDocument) -> LibraryDocument:
         return self.library.create_document(document)

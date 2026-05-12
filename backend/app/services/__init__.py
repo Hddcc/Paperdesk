@@ -1,10 +1,17 @@
 """Service layer exports."""
 
 from .arxiv_client import ArxivClient
+from .chat_memory_service import ChatMemoryService
+from .chat_service import ChatService
+from .context_assembler import ContextAssembler
+from .context_budget_service import ContextBudgetService
+from .context_compaction_service import ContextCompactionService
+from .context_file_store import ContextFileStore
 from .document_library_service import DocumentLibraryService
 from .embedding_service import EmbeddingService
 from .export_service import ExportService
 from .knowledge_ingestion_service import KnowledgeIngestionService
+from .milvus_bootstrap_service import MilvusBootstrapService
 from .openalex_client import OpenAlexClient
 from .paper_analysis_service import PaperAnalysisService
 from .paper_search_service import PaperSearchService
@@ -17,10 +24,17 @@ from .text_chunker import TextChunker
 
 __all__ = [
     "ArxivClient",
+    "ChatMemoryService",
+    "ChatService",
+    "ContextAssembler",
+    "ContextBudgetService",
+    "ContextCompactionService",
+    "ContextFileStore",
     "DocumentLibraryService",
     "EmbeddingService",
     "ExportService",
     "KnowledgeIngestionService",
+    "MilvusBootstrapService",
     "OpenAlexClient",
     "PaperAnalysisService",
     "PaperSearchService",

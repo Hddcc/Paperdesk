@@ -1,5 +1,19 @@
 """Shared schemas for API, services, and frontend coordination."""
 
+from .chat import (
+    ChatAttachment,
+    ChatContextState,
+    ChatMessage,
+    ChatMessageRequest,
+    ChatSendResponse,
+    ChatSession,
+    ChatSessionCreateRequest,
+    ChatSessionDetail,
+    KnowledgeRetrievalStatus,
+    MemoryHit,
+    MemoryRecord,
+    MemorySnapshot,
+)
 from .enums import EvidenceSourceType, ResearchRunStatus, TodoTaskStatus
 from .library import ChunkRecord, LibraryDocument
 from .paper import (
@@ -18,13 +32,49 @@ from .paper import (
 )
 from .report import CitationRecord, ReportListItem, ResearchReport, TaskSummary
 from .research import ResearchRequest, ResearchRun, ResearchRunDetail, ResearchState, TodoTask
+from .runtime import (
+    AgentTask,
+    AgentTaskStatus,
+    ContinueTask,
+    ControlMessageType,
+    CoordinatorDecision,
+    Heartbeat,
+    SpawnTask,
+    StopTask,
+    StoredAgentTask,
+    SubagentProfile,
+    TaskArtifactRef,
+    TaskExecutionTrace,
+    TaskNotification,
+    TaskTimeout,
+    ToolPolicy,
+    TraceEventType,
+)
 
 __all__ = [
+    "AgentTask",
+    "AgentTaskStatus",
     "ChunkRecord",
+    "ChatAttachment",
+    "ChatContextState",
+    "ChatMessage",
+    "ChatMessageRequest",
+    "ChatSendResponse",
+    "ChatSession",
+    "ChatSessionCreateRequest",
+    "ChatSessionDetail",
     "CitationRecord",
+    "ContinueTask",
+    "ControlMessageType",
+    "CoordinatorDecision",
     "EvidenceItem",
     "EvidenceSourceType",
+    "Heartbeat",
+    "KnowledgeRetrievalStatus",
     "LibraryDocument",
+    "MemoryHit",
+    "MemoryRecord",
+    "MemorySnapshot",
     "PaperAnalysisRequest",
     "PaperAnalysisResponse",
     "PaperAnalysisSection",
@@ -43,7 +93,17 @@ __all__ = [
     "ResearchRunDetail",
     "ResearchRunStatus",
     "ResearchState",
+    "SpawnTask",
+    "StopTask",
+    "StoredAgentTask",
+    "SubagentProfile",
     "TaskSummary",
+    "TaskArtifactRef",
+    "TaskExecutionTrace",
+    "TaskNotification",
+    "TaskTimeout",
+    "ToolPolicy",
+    "TraceEventType",
     "TodoTask",
     "TodoTaskStatus",
 ]
