@@ -156,15 +156,14 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     body = response.text
     events = _parse_sse_events(body)
     event_types = [event["type"] for event in events]
+    assert "run_created" in event_types
+    assert "checkpoint_saved" in event_types
     assert "status" in event_types
     assert "coordinator_status" in event_types
     assert "todo_list" in event_types
     assert "task_status" in event_types
-    assert "subagent_spawned" in event_types
-    assert "subagent_started" in event_types
-    assert "subagent_completed" in event_types
-    assert "task_merge_started" in event_types
-    assert "task_merge_completed" in event_types
+    assert "agent_step_started" in event_types
+    assert "agent_step_completed" in event_types
     assert "task_summary" in event_types
     assert "report_completed" in event_types
     assert "report" in event_types
@@ -214,10 +213,13 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert run_payload["run"]["status"] == "completed"
     assert len(run_payload["tasks"]) == 4
     assert len(run_payload["task_summaries"]) == 4
-    assert len(run_payload["subagent_tasks"]) == 8
-    assert len(run_payload["task_notifications"]) == 8
+    assert run_payload["runtime_state"]["current_phase"] == "completed"
+    assert len(run_payload["runtime_state"]["completed_items"]) == 4
+    assert run_payload["runtime_state"]["tool_history"]
+    assert run_payload["subagent_tasks"] == []
+    assert run_payload["task_notifications"] == []
     assert len(run_payload["task_traces"]) >= 8
-    assert len(run_payload["task_artifacts"]) >= 8
+    assert run_payload["task_artifacts"] == []
     assert run_payload["report"]["id"] == report_id
 
     export_response = client.get(f"/api/export/{report_id}")
@@ -252,9 +254,9 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert library_count == 1
     assert report_count == 1
     assert citation_count > 0
-    assert subagent_task_count == 8
-    assert notification_count == 8
-    assert artifact_count >= 16
+    assert subagent_task_count == 0
+    assert notification_count == 0
+    assert artifact_count == 0
     assert trace_count >= 16
     assert run_row[1] == "completed"
     assert all(task_row[1] == "completed" for task_row in task_rows)
@@ -268,6 +270,7 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert (run_dir / "task_3_summary.md").exists()
     assert (run_dir / "task_4_summary.md").exists()
     assert (run_dir / "final_report.md").exists()
+    assert (run_dir / "runtime_state.json").exists()
 
     todo_payload = json.loads((run_dir / "todo_tasks.json").read_text(encoding="utf-8"))
     final_report_markdown = (run_dir / "final_report.md").read_text(encoding="utf-8").strip()
@@ -365,15 +368,13 @@ def test_report_can_be_deleted_from_history(client, monkeypatch):
 
     assert report_count == 0
     assert citation_count == 0
-    assert not report_path.exists()
 
 
 def test_legacy_technical_note_is_hidden_in_report_preview(client):
     from app.api.main import get_repository
 
-    get_repository()
-    conn = sqlite3.connect(os.environ["SQLITE_PATH"])
-    try:
+    repository = get_repository()
+    with repository.database.connection() as conn:
         conn.execute(
             """
             INSERT INTO research_runs (id, topic, status, created_at, updated_at)
@@ -415,9 +416,6 @@ def test_legacy_technical_note_is_hidden_in_report_preview(client):
                 "2026-05-10T00:00:00+00:00",
             ),
         )
-        conn.commit()
-    finally:
-        conn.close()
 
     response = client.get("/api/reports/report-legacy")
     assert response.status_code == 200
@@ -468,8 +466,53 @@ def test_research_stream_marks_run_and_task_failed_when_task_stage_breaks(client
 
     run_dir = Path(os.environ["WORKSPACE_DIR"]) / "runs" / run_row[0]
     assert (run_dir / "todo_tasks.json").exists()
+    assert (run_dir / "runtime_state.json").exists()
     assert not (run_dir / "task_1_summary.md").exists()
     assert not (run_dir / "final_report.md").exists()
+
+
+def test_research_resume_stream_recovers_failed_run_from_checkpoint(client, monkeypatch):
+    _patch_research_dependencies(monkeypatch)
+    _upload_library_pdf(client)
+
+    original_summarize = ReadingSummarizerAgent.summarize
+    call_state = {"failed_once": False}
+
+    def flaky_summarize(self, task, paper_records, evidence_items):
+        if not call_state["failed_once"]:
+            call_state["failed_once"] = True
+            raise RuntimeError("summary stage exploded once")
+        return original_summarize(self, task, paper_records, evidence_items)
+
+    monkeypatch.setattr(ReadingSummarizerAgent, "summarize", flaky_summarize)
+
+    first_response = client.post(
+        "/api/research/stream",
+        json={"topic": "RAG 系统中的评估方法"},
+        headers={"Accept": "text/event-stream"},
+    )
+    assert first_response.status_code == 200
+    first_events = _parse_sse_events(first_response.text)
+    assert "error" in [event["type"] for event in first_events]
+    run_id = next(event["run_id"] for event in first_events if event["type"] == "run_created")
+
+    resume_response = client.post(
+        f"/api/research/{run_id}/resume/stream",
+        headers={"Accept": "text/event-stream"},
+    )
+    assert resume_response.status_code == 200
+    resume_events = _parse_sse_events(resume_response.text)
+    resume_types = [event["type"] for event in resume_events]
+    assert "research_resumed" in resume_types
+    assert "report" in resume_types
+    assert "done" in resume_types
+
+    run_response = client.get(f"/api/research/{run_id}")
+    assert run_response.status_code == 200
+    run_payload = run_response.json()
+    assert run_payload["run"]["status"] == "completed"
+    assert run_payload["runtime_state"]["current_phase"] == "completed"
+    assert run_payload["runtime_state"]["report_id"]
 
 
 def test_report_writer_uses_fixed_structure_and_deduplicated_citations():

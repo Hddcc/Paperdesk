@@ -13,6 +13,7 @@ class ResearchRunStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    RESUMED = "resumed"
 
 
 class TodoTaskStatus(str, Enum):
@@ -33,7 +34,7 @@ def coerce_research_run_status(value: str | ResearchRunStatus) -> ResearchRunSta
     cleaned = value.strip().lower()
     if cleaned in ResearchRunStatus._value2member_map_:
         return ResearchRunStatus(cleaned)
-    if cleaned in {"searching_online", "retrieving_local", "summarizing_task"}:
+    if cleaned in {"searching_online", "retrieving_local", "summarizing_task", "resumed"}:
         return ResearchRunStatus.RUNNING_TASK
     raise ValueError(f"Unsupported research run status: {value}")
 

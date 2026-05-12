@@ -15,6 +15,7 @@ import type {
   RagAskRequest,
   ReportListItem,
   ResearchReport,
+  ResearchRuntimeState,
   ResearchRunDetail,
   ResearchRequest,
   ResearchStreamEvent
@@ -228,6 +229,57 @@ export async function runResearchStream(
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
     throw new Error(detail || `Research stream failed: ${response.status}`);
+  }
+
+  if (!response.body) {
+    throw new Error("The browser does not support stream reading.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const rawEvent = buffer.slice(0, boundary).trim();
+      buffer = buffer.slice(boundary + 2);
+      if (rawEvent.startsWith("data:")) {
+        const payloadText = rawEvent.slice(5).trim();
+        if (payloadText) {
+          const event = JSON.parse(payloadText) as ResearchStreamEvent;
+          onEvent(event);
+          if (event.type === "done" || event.type === "error") {
+            return;
+          }
+        }
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+
+    if (done) {
+      break;
+    }
+  }
+}
+
+export async function resumeResearchStream(
+  runId: string,
+  onEvent: (event: ResearchStreamEvent) => void
+): Promise<void> {
+  const response = await fetch(`${baseUrl}/api/research/${runId}/resume/stream`, {
+    method: "POST",
+    headers: {
+      Accept: "text/event-stream"
+    }
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(detail || `Research resume stream failed: ${response.status}`);
   }
 
   if (!response.body) {

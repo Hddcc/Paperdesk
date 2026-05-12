@@ -1,13 +1,14 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
-import { runResearchStream } from "../services/api";
+import { resumeResearchStream, runResearchStream } from "../services/api";
 import type {
   EvidenceItem,
   PaperRecord,
   ResearchReport,
   ResearchRequest,
   ResearchRun,
+  ResearchRuntimeState,
   ResearchStreamEvent,
   ResearchTaskState,
   TaskSummary,
@@ -34,9 +35,16 @@ export const useResearchStore = defineStore("research", () => {
   const tasks = ref<ResearchTaskState[]>([]);
   const activeTaskId = ref("");
   const finalReport = ref<ResearchReport | null>(null);
+  const runtimeState = ref<ResearchRuntimeState | null>(null);
 
   const completedCount = computed(
     () => tasks.value.filter((entry) => entry.task.status === "completed").length
+  );
+  const canResumeCurrentRun = computed(
+    () =>
+      !!run.value &&
+      !isRunning.value &&
+      run.value.status !== "completed"
   );
 
   const taskSummaryMap = computed<Record<string, TaskSummary>>(() =>
@@ -88,6 +96,7 @@ export const useResearchStore = defineStore("research", () => {
     tasks.value = [];
     activeTaskId.value = "";
     finalReport.value = null;
+    runtimeState.value = null;
   }
 
   function appendLog(message: string) {
@@ -112,6 +121,17 @@ export const useResearchStore = defineStore("research", () => {
       status: "created",
       created_at: now,
       updated_at: now
+    };
+  }
+
+  function updateRunStatus(nextStatus: string | undefined) {
+    if (!run.value || !nextStatus) {
+      return;
+    }
+    run.value = {
+      ...run.value,
+      status: nextStatus as ResearchRun["status"],
+      updated_at: new Date().toISOString()
     };
   }
 
@@ -195,8 +215,17 @@ export const useResearchStore = defineStore("research", () => {
         break;
       case "status":
         ensureRunFromEvent(event);
+        updateRunStatus(typeof event.status === "string" ? event.status : undefined);
         status.value = String(event.message || event.status || "处理中");
         appendLog(status.value);
+        break;
+      case "research_resumed":
+        ensureRunFromEvent(event);
+        isRunning.value = true;
+        if (event.runtime_state && typeof event.runtime_state === "object") {
+          runtimeState.value = event.runtime_state as ResearchRuntimeState;
+        }
+        appendLog("已从 checkpoint 恢复研究运行");
         break;
       case "todo_list":
         tasks.value = ((event.tasks as TodoTask[]) || []).map((task) => ({
@@ -253,6 +282,34 @@ export const useResearchStore = defineStore("research", () => {
         appendLog(`任务总结已返回：${taskSummaryMap.value[taskId]?.title || taskId}`);
         break;
       }
+      case "agent_step_started":
+        appendLog(
+          `主 Agent 步骤开始：${String(event.action || "unknown")}${
+            event.title ? ` / ${String(event.title)}` : ""
+          }`
+        );
+        break;
+      case "agent_step_completed":
+        appendLog(
+          `主 Agent 步骤完成：${String(event.action || "unknown")} - ${String(
+            event.summary || "完成"
+          )}`
+        );
+        break;
+      case "agent_step_failed":
+        appendLog(
+          `主 Agent 步骤失败：${String(event.action || "unknown")} - ${String(
+            event.error || "失败"
+          )}`
+        );
+        break;
+      case "checkpoint_saved":
+        appendLog(
+          `已保存 checkpoint：${String(event.current_phase || "unknown")} / step ${String(
+            event.step_count || 0
+          )}`
+        );
+        break;
       case "task_result": {
         const taskId = String(event.task_id);
         tasks.value = tasks.value.map((entry) =>
@@ -284,11 +341,13 @@ export const useResearchStore = defineStore("research", () => {
         break;
       case "done":
         isRunning.value = false;
+        updateRunStatus("completed");
         status.value = "研究完成";
         appendLog("研究流程结束");
         break;
       case "error":
         isRunning.value = false;
+        updateRunStatus("failed");
         error.value = String(event.detail || "研究失败");
         appendLog(error.value);
         break;
@@ -324,6 +383,22 @@ export const useResearchStore = defineStore("research", () => {
     await startResearch(request);
   }
 
+  async function resumeCurrentRun() {
+    if (!run.value) {
+      return;
+    }
+    error.value = "";
+    isRunning.value = true;
+    status.value = "正在恢复研究流程";
+    try {
+      await resumeResearchStream(run.value.id, applyEvent);
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "恢复研究请求失败";
+      appendLog(error.value);
+      isRunning.value = false;
+    }
+  }
+
   return {
     run,
     topic,
@@ -341,13 +416,16 @@ export const useResearchStore = defineStore("research", () => {
     activeTaskEvidence,
     activeTaskPapers,
     finalReport,
+    runtimeState,
     reportMarkdown,
     completedCount,
+    canResumeCurrentRun,
     taskSummaryMap,
     resetRuntime,
     queueResearch,
     setActiveTask,
     startResearch,
-    startPendingResearch
+    startPendingResearch,
+    resumeCurrentRun
   };
 });

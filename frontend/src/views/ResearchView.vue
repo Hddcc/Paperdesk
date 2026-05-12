@@ -15,6 +15,16 @@
             <span>{{ store.status }}</span>
           </div>
 
+          <button
+            v-if="store.canResumeCurrentRun"
+            class="ghost-button"
+            type="button"
+            :disabled="store.isRunning"
+            @click="store.resumeCurrentRun"
+          >
+            恢复当前运行
+          </button>
+
           <div v-if="store.topic" class="request-summary">
             <div class="request-summary-row">
               <span class="request-label">研究主题</span>

@@ -1,101 +1,97 @@
-"""Coordinator-side decision helpers for the main agent runtime."""
+"""Decision helpers for the phase-13 single-main-agent research runtime."""
 
 from __future__ import annotations
 
-from uuid import uuid4
-
 from app.models import (
-    AgentTask,
-    CoordinatorDecision,
+    ResearchActionType,
+    ResearchEvidenceBufferItem,
+    ResearchPlanItem,
     ResearchRequest,
-    SubagentProfile,
-    TaskNotification,
-    TodoTask,
-    ToolPolicy,
+    ResearchRuntimePhase,
+    ResearchRuntimeState,
 )
 
 
 class MainAgentRuntime:
-    """Apply simple Claude Code-style delegation rules for PaperDesk."""
+    """Choose the next action for the single-main-agent research loop."""
 
-    def decide(self, request: ResearchRequest) -> CoordinatorDecision:
+    max_step_budget: int = 64
+
+    @staticmethod
+    def should_use_direct_task(request: ResearchRequest) -> bool:
         compact_topic = "".join(request.topic.split())
-        if len(compact_topic) <= 8 and not request.notes:
-            return CoordinatorDecision(
-                action="direct_execute",
-                reason="Topic is small enough for a single-task direct path.",
-                spawn_subagents=False,
-            )
-        return CoordinatorDecision(
-            action="plan_and_spawn",
-            reason="Research topic benefits from read-only explore workers.",
-            spawn_subagents=True,
-            profile=SubagentProfile.EXPLORE,
-        )
+        return len(compact_topic) <= 8 and not request.notes
 
-    def build_explore_task(
-        self,
-        *,
-        run_id: str,
-        parent_task: TodoTask,
-        channel: str,
-        context_bundle: dict,
-        done_criteria: str,
-    ) -> AgentTask:
-        return AgentTask(
-            id=str(uuid4()),
-            run_id=run_id,
-            parent_task_id=parent_task.id,
-            profile=SubagentProfile.EXPLORE,
-            goal=f"{parent_task.title} [{channel}]",
-            context_bundle={
-                "channel": channel,
-                "todo_task": parent_task.model_dump(mode="json"),
-                **context_bundle,
-            },
-            done_criteria=done_criteria,
-            tool_policy=ToolPolicy(
-                read_only=True,
-                network_allowed=(channel == "online"),
-                workspace_write=False,
-                db_write=False,
-            ),
-            artifact_dir=f"scratch/{parent_task.id}/{channel}",
-        )
+    def next_action(self, state: ResearchRuntimeState) -> tuple[ResearchActionType, str | None]:
+        if state.failure_count >= 3:
+            return ResearchActionType.FAIL, None
+        if state.step_count >= self.max_step_budget:
+            return ResearchActionType.FAIL, None
+        if not state.plan_items:
+            return ResearchActionType.PLAN, None
 
-    def build_verify_task(
-        self,
-        *,
-        run_id: str,
-        parent_task: TodoTask,
-        notifications: list[TaskNotification],
-    ) -> AgentTask:
-        return AgentTask(
-            id=str(uuid4()),
-            run_id=run_id,
-            parent_task_id=parent_task.id,
-            profile=SubagentProfile.VERIFY,
-            goal=f"Verify evidence consistency for {parent_task.title}",
-            context_bundle={
-                "todo_task": parent_task.model_dump(mode="json"),
-                "notifications": [notification.model_dump(mode="json") for notification in notifications],
-            },
-            done_criteria="Flag whether the gathered evidence is empty, conflicting, or safe to merge.",
-            tool_policy=ToolPolicy(
-                read_only=True,
-                network_allowed=False,
-                workspace_write=False,
-                db_write=False,
-            ),
-            artifact_dir=f"scratch/{parent_task.id}/verify",
-        )
+        active_item = self._next_pending_item(state)
+        if active_item is None:
+            if state.report_id:
+                return ResearchActionType.FINISH, None
+            return ResearchActionType.FINALIZE_REPORT, None
+
+        evidence = self._find_evidence(state, active_item.task_id)
+        if not evidence.online_completed:
+            return ResearchActionType.SEARCH_ONLINE, active_item.task_id
+        if not evidence.local_completed:
+            return ResearchActionType.SEARCH_LOCAL, active_item.task_id
+        if self._has_sufficient_evidence(evidence):
+            return ResearchActionType.SUMMARIZE_EVIDENCE, active_item.task_id
+        if active_item.revise_count == 0:
+            return ResearchActionType.REVISE_PLAN, active_item.task_id
+        return ResearchActionType.SUMMARIZE_EVIDENCE, active_item.task_id
 
     @staticmethod
-    def should_verify(notifications: list[TaskNotification]) -> bool:
-        if not notifications:
-            return True
-        return any(not notification.result_payload for notification in notifications)
+    def initial_phase() -> ResearchRuntimePhase:
+        return ResearchRuntimePhase.PLANNING
 
     @staticmethod
-    def format_notifications_xml(notifications: list[TaskNotification]) -> str:
-        return "\n".join(notification.to_xml_block() for notification in notifications)
+    def step_phase(action: ResearchActionType) -> ResearchRuntimePhase:
+        if action == ResearchActionType.PLAN:
+            return ResearchRuntimePhase.PLANNING
+        if action in {ResearchActionType.SUMMARIZE_EVIDENCE, ResearchActionType.REVISE_PLAN}:
+            return ResearchRuntimePhase.SUMMARIZING
+        if action == ResearchActionType.FINALIZE_REPORT:
+            return ResearchRuntimePhase.WRITING_REPORT
+        if action == ResearchActionType.FINISH:
+            return ResearchRuntimePhase.COMPLETED
+        if action == ResearchActionType.FAIL:
+            return ResearchRuntimePhase.FAILED
+        return ResearchRuntimePhase.EXECUTING
+
+    @staticmethod
+    def should_degrade(task: ResearchPlanItem, evidence: ResearchEvidenceBufferItem) -> bool:
+        return task.revise_count > 0 and not MainAgentRuntime._has_sufficient_evidence(evidence)
+
+    @staticmethod
+    def summarize_working_notes(state: ResearchRuntimeState) -> str:
+        completed = [item.title for item in state.plan_items if item.task_id in state.completed_items]
+        if not completed:
+            return "尚未完成任务总结。"
+        return "已完成任务：" + "；".join(completed)
+
+    @staticmethod
+    def _next_pending_item(state: ResearchRuntimeState) -> ResearchPlanItem | None:
+        for item in state.plan_items:
+            if item.task_id not in state.completed_items:
+                return item
+        return None
+
+    @staticmethod
+    def _find_evidence(state: ResearchRuntimeState, task_id: str) -> ResearchEvidenceBufferItem:
+        for item in state.evidence_buffer:
+            if item.task_id == task_id:
+                return item
+        evidence = ResearchEvidenceBufferItem(task_id=task_id)
+        state.evidence_buffer.append(evidence)
+        return evidence
+
+    @staticmethod
+    def _has_sufficient_evidence(evidence: ResearchEvidenceBufferItem) -> bool:
+        return bool(evidence.paper_records or evidence.evidence_items)

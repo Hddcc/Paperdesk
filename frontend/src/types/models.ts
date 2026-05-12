@@ -125,12 +125,92 @@ export interface ResearchRun {
   status: ResearchRunStatus;
   created_at: string;
   updated_at: string;
+  stop_reason?: string | null;
+  last_checkpoint_at?: string | null;
+}
+
+export type ResearchActionType =
+  | "plan"
+  | "search_online"
+  | "search_local"
+  | "summarize_evidence"
+  | "revise_plan"
+  | "finalize_report"
+  | "finish"
+  | "fail";
+
+export interface ResearchRuntimeStep {
+  step_id: string;
+  action: ResearchActionType;
+  task_id?: string | null;
+  attempt: number;
+  status: "running" | "completed" | "failed";
+  started_at: string;
+}
+
+export interface ResearchToolCallRecord {
+  step_id: string;
+  action: ResearchActionType;
+  task_id?: string | null;
+  status: "completed" | "failed" | "skipped";
+  summary: string;
+  retryable: boolean;
+  error?: string | null;
+  paper_count: number;
+  evidence_count: number;
+  created_at: string;
+}
+
+export interface ResearchEvidenceBufferItem {
+  task_id: string;
+  paper_records: PaperRecord[];
+  evidence_items: EvidenceItem[];
+  online_completed: boolean;
+  local_completed: boolean;
+  degraded: boolean;
+}
+
+export interface ResearchPlanItem {
+  task_id: string;
+  title: string;
+  intent: string;
+  query: string;
+  status: TodoTaskStatus;
+  revise_count: number;
+  query_history: string[];
+  summary?: string | null;
+  summary_markdown?: string | null;
+  degraded: boolean;
+}
+
+export interface ResearchRuntimeState {
+  run_id: string;
+  goal: string;
+  current_phase:
+    | "planning"
+    | "executing"
+    | "summarizing"
+    | "writing_report"
+    | "completed"
+    | "failed";
+  plan_items: ResearchPlanItem[];
+  completed_items: string[];
+  active_step?: ResearchRuntimeStep | null;
+  tool_history: ResearchToolCallRecord[];
+  evidence_buffer: ResearchEvidenceBufferItem[];
+  working_summary: string;
+  failure_count: number;
+  stop_reason?: string | null;
+  last_checkpoint_at?: string | null;
+  step_count: number;
+  report_id?: string | null;
 }
 
 export interface ResearchRunDetail {
   run: ResearchRun;
   tasks: TodoTask[];
   task_summaries: TaskSummary[];
+  runtime_state?: ResearchRuntimeState | null;
   report: ResearchReport | null;
 }
 

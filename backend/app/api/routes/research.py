@@ -44,6 +44,29 @@ def stream_research(
     )
 
 
+@router.post("/{run_id}/resume/stream")
+def resume_research_stream(
+    run_id: str,
+    orchestrator: ResearchOrchestrator = Depends(get_research_orchestrator),
+) -> StreamingResponse:
+    def event_iterator():
+        try:
+            for event in orchestrator.resume_stream(run_id):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as exc:  # pragma: no cover - defensive guardrail
+            error_payload = {"type": "error", "detail": str(exc), "run_id": run_id}
+            yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_iterator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @router.get("/{task_id}")
 def get_research_run(
     task_id: str,
@@ -62,6 +85,7 @@ def get_research_run(
         run=run,
         tasks=tasks,
         task_summaries=task_summaries,
+        runtime_state=research_repository.get_runtime_state(task_id),
         subagent_tasks=runtime_repository.list_tasks(task_id),
         task_notifications=runtime_repository.list_notifications(task_id),
         task_traces=runtime_repository.list_traces(task_id),

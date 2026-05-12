@@ -14,6 +14,7 @@ from .enums import (
 )
 from .paper import normalize_search_provider
 from .report import ResearchReport, TaskSummary
+from .research_runtime import ResearchRuntimeState
 from .runtime import StoredAgentTask, TaskArtifactRef, TaskExecutionTrace, TaskNotification
 
 
@@ -65,6 +66,8 @@ class ResearchRun(BaseModel):
     status: ResearchRunStatus
     created_at: datetime
     updated_at: datetime
+    stop_reason: str | None = None
+    last_checkpoint_at: datetime | None = None
 
     @field_validator("status", mode="before")
     @classmethod
@@ -73,11 +76,12 @@ class ResearchRun(BaseModel):
 
 
 class ResearchState(BaseModel):
-    """In-memory execution state for a single fixed research workflow run."""
+    """In-memory execution state for a single research workflow run."""
 
     run_id: str
     topic: str
     status: ResearchRunStatus
+    runtime_state: ResearchRuntimeState | None = None
     todo_tasks: list[TodoTask] = Field(default_factory=list)
     task_summaries: list[TaskSummary] = Field(default_factory=list)
     subagent_tasks: list[StoredAgentTask] = Field(default_factory=list)
@@ -93,6 +97,7 @@ class ResearchRunDetail(BaseModel):
     run: ResearchRun
     tasks: list[TodoTask] = Field(default_factory=list)
     task_summaries: list[TaskSummary] = Field(default_factory=list)
+    runtime_state: ResearchRuntimeState | None = None
     subagent_tasks: list[StoredAgentTask] = Field(default_factory=list)
     task_notifications: list[TaskNotification] = Field(default_factory=list)
     task_traces: list[TaskExecutionTrace] = Field(default_factory=list)

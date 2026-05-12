@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.models import ResearchReport, TaskSummary, TodoTask
+from app.models import ResearchReport, ResearchRuntimeState, TaskSummary, TodoTask
 
 
 class ResearchWorkspaceService:
@@ -45,6 +45,21 @@ class ResearchWorkspaceService:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(report.markdown.rstrip() + "\n", encoding="utf-8")
         return destination
+
+    def write_runtime_state(self, run_id: str, runtime_state: ResearchRuntimeState) -> Path:
+        destination = self.get_run_dir(run_id) / "runtime_state.json"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(runtime_state.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return destination
+
+    def read_runtime_state(self, run_id: str) -> ResearchRuntimeState | None:
+        destination = self.get_run_dir(run_id) / "runtime_state.json"
+        if not destination.exists():
+            return None
+        return ResearchRuntimeState(**json.loads(destination.read_text(encoding="utf-8")))
 
     def write_scratch_json(self, run_id: str, task_id: str, filename: str, payload: object) -> Path:
         destination = self.get_scratch_dir(run_id, task_id) / filename

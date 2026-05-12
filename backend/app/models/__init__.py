@@ -32,6 +32,18 @@ from .paper import (
 )
 from .report import CitationRecord, ReportListItem, ResearchReport, TaskSummary
 from .research import ResearchRequest, ResearchRun, ResearchRunDetail, ResearchState, TodoTask
+from .research_runtime import (
+    ResearchActionType,
+    ResearchEvidenceBufferItem,
+    ResearchPlanItem,
+    ResearchRuntimePhase,
+    ResearchRuntimeState,
+    ResearchRuntimeStep,
+    ResearchStepStatus,
+    ResearchToolCallRecord,
+    ResearchToolResult,
+    ResearchToolResultStatus,
+)
 from .runtime import (
     AgentTask,
     AgentTaskStatus,
@@ -87,12 +99,22 @@ __all__ = [
     "RagAskRequest",
     "RagAskResponse",
     "ReportListItem",
+    "ResearchActionType",
+    "ResearchEvidenceBufferItem",
+    "ResearchPlanItem",
     "ResearchReport",
     "ResearchRequest",
     "ResearchRun",
     "ResearchRunDetail",
     "ResearchRunStatus",
+    "ResearchRuntimePhase",
+    "ResearchRuntimeState",
+    "ResearchRuntimeStep",
+    "ResearchStepStatus",
     "ResearchState",
+    "ResearchToolCallRecord",
+    "ResearchToolResult",
+    "ResearchToolResultStatus",
     "SpawnTask",
     "StopTask",
     "StoredAgentTask",

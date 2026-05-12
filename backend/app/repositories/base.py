@@ -271,6 +271,7 @@ class SQLiteDatabase:
             )
             self._ensure_todo_task_columns(conn)
             self._ensure_library_document_columns(conn)
+            self._ensure_research_run_columns(conn)
             self._migrate_legacy_documents(conn)
             self._migrate_legacy_reports(conn)
 
@@ -366,6 +367,15 @@ class SQLiteDatabase:
             WHERE version IS NULL OR version <= 0
             """
         )
+
+    def _ensure_research_run_columns(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists(conn, "research_runs"):
+            return
+
+        self._ensure_column(conn, "research_runs", "runtime_state_json", "TEXT")
+        self._ensure_column(conn, "research_runs", "request_payload_json", "TEXT")
+        self._ensure_column(conn, "research_runs", "stop_reason", "TEXT")
+        self._ensure_column(conn, "research_runs", "last_checkpoint_at", "TEXT")
 
     def _migrate_legacy_documents(self, conn: sqlite3.Connection) -> None:
         if not self._table_exists(conn, "documents"):
