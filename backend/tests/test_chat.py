@@ -144,6 +144,44 @@ def test_chat_degrades_gracefully_when_retrieval_breaks(client, monkeypatch):
     assert "知识库检索暂不可用" in assistant["warning"]
 
 
+def test_chat_local_pdf_attachment_does_not_trigger_library_ingestion(client):
+    create_response = client.post("/api/chat/sessions", json={"title": "本地 PDF 附件"})
+    assert create_response.status_code == 200
+    session_id = create_response.json()["id"]
+
+    send_response = client.post(
+        f"/api/chat/sessions/{session_id}/messages",
+        json={
+            "content": "请基于我刚上传的 PDF 给我一个概览。",
+            "attachments": [
+                {
+                    "id": "local-pdf-1",
+                    "kind": "uploaded_pdf",
+                    "display_name": "draft-paper.pdf",
+                    "mime_type": "application/pdf",
+                    "status": "ready",
+                    "metadata": {
+                        "filename": "draft-paper.pdf",
+                        "size": 1024,
+                    },
+                }
+            ],
+            "selected_document_ids": [],
+        },
+    )
+    assert send_response.status_code == 200
+    payload = send_response.json()
+    user_message = payload["user_message"]
+    assistant = payload["assistant_message"]
+
+    assert user_message["attachments"][0]["display_name"] == "draft-paper.pdf"
+    assert user_message["attachments"][0]["document_id"] is None
+    assert assistant["retrieval_status"] == "skipped"
+    assert assistant["warning"] in (None, "")
+    assert assistant["used_document_ids"] == []
+    assert any("draft-paper.pdf" in item["summary"] for item in payload["memory_snapshot"]["items"])
+
+
 def test_chat_context_compacts_long_history_into_claude_session_files(client):
     from app.api.main import get_context_file_store
     from app.config import get_settings

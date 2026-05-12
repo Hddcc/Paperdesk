@@ -88,22 +88,19 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     draftAttachments.value = [...draftAttachments.value, attachment];
   }
 
-  function attachUploadedDocument(document: LibraryDocument) {
+  function queueLocalPdfAttachment(file: File) {
     const attachment: ChatAttachment = {
       id: crypto.randomUUID(),
       kind: "uploaded_pdf",
-      display_name: document.display_name,
-      document_id: document.id,
-      status: document.status,
+      display_name: file.name,
+      mime_type: file.type || "application/pdf",
+      status: "ready",
       metadata: {
-        title: document.title,
-        filename: document.filename
+        filename: file.name,
+        size: file.size
       }
     };
     draftAttachments.value = [...draftAttachments.value, attachment];
-    if (!selectedDocumentIds.value.includes(document.id)) {
-      selectedDocumentIds.value = [...selectedDocumentIds.value, document.id];
-    }
   }
 
   function toggleLibraryDocument(document: LibraryDocument) {
@@ -223,7 +220,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     createNewSession,
     openSession,
     queueImageAttachment,
-    attachUploadedDocument,
+    queueLocalPdfAttachment,
     toggleLibraryDocument,
     removeDraftAttachment,
     sendCurrentMessage,

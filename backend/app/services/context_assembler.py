@@ -251,10 +251,10 @@ class ContextAssembler:
             for citation in message.citations:
                 references.append(f"历史引用：{citation}")
             for attachment in message.attachments:
-                if attachment.document_id:
+                if attachment.kind in {"uploaded_pdf", "library_document"}:
                     references.append(f"历史附件：{attachment.display_name}")
         for attachment in attachments:
-            if attachment.document_id:
+            if attachment.kind in {"uploaded_pdf", "library_document"}:
                 references.append(f"当前附件：{attachment.display_name}")
         for item in evidence_items:
             references.append(f"本轮证据：{item.citation_label}")

@@ -294,6 +294,20 @@ class ChatService:
                 )
                 continue
 
+            if attachment.kind == "uploaded_pdf" and not attachment.document_id:
+                normalized.append(
+                    ChatAttachment(
+                        id=attachment.id or str(uuid4()),
+                        kind="uploaded_pdf",
+                        display_name=attachment.display_name,
+                        mime_type=attachment.mime_type,
+                        file_path=attachment.file_path,
+                        status=attachment.status or "ready",
+                        metadata=attachment.metadata,
+                    )
+                )
+                continue
+
             if attachment.document_id:
                 seen_document_ids.add(attachment.document_id)
                 document = self.library_repository.get_document(attachment.document_id)

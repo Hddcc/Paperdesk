@@ -18,10 +18,10 @@
               class="chat-session-button"
               :class="{ 'chat-session-active': session.id === store.currentSessionId }"
               @click="store.openSession(session.id)"
+              :title="session.title"
             >
-              <strong>{{ session.title }}</strong>
+              <strong class="chat-session-title">{{ session.title }}</strong>
               <p>{{ session.last_message_preview || "从这里继续新的知识对话。" }}</p>
-              <span>{{ formatTime(session.updated_at) }}</span>
             </button>
           </li>
         </ul>
@@ -280,11 +280,7 @@ async function handlePdfSelected(event: Event) {
   if (!file) {
     return;
   }
-  const document = await documentStore.addDocument(file);
-  if (document) {
-    store.attachUploadedDocument(document);
-    await documentStore.refreshDocuments();
-  }
+  store.queueLocalPdfAttachment(file);
   input.value = "";
 }
 

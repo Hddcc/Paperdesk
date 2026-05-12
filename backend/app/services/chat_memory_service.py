@@ -179,26 +179,42 @@ class ChatMemoryService:
         attachments: list[ChatAttachment],
     ) -> None:
         for attachment in attachments:
-            if attachment.kind not in {"uploaded_pdf", "library_document"} or not attachment.document_id:
+            if attachment.kind not in {"uploaded_pdf", "library_document"}:
                 continue
-            document = self.library_repository.get_document(attachment.document_id)
-            if document is None:
+
+            if attachment.document_id:
+                document = self.library_repository.get_document(attachment.document_id)
+                if document is None:
+                    continue
+                self._upsert_memory(
+                    memory_type="reference",
+                    session_id=session_id,
+                    summary=f"曾在对话中引用论文《{document.display_name or document.filename}》",
+                    detail=(
+                        "文档状态："
+                        f"{document.status}；标题："
+                        f"{document.title or document.display_name or document.filename}"
+                    ),
+                    source_kind="library_document",
+                    source_id=document.id,
+                    link_targets=[
+                        ("chat_session", session_id),
+                        ("chat_message", message_id),
+                        ("library_document", document.id),
+                    ],
+                )
                 continue
-            summary = f"曾在对话中引用论文《{document.display_name or document.filename}》。"
-            detail = (
-                f"文档状态：{document.status}；标题：{document.title or document.display_name or document.filename}。"
-            )
+
             self._upsert_memory(
                 memory_type="reference",
                 session_id=session_id,
-                summary=summary,
-                detail=detail,
-                source_kind="library_document",
-                source_id=document.id,
+                summary=f"曾在对话中附加本地 PDF《{attachment.display_name}》",
+                detail=f"附件类型：{attachment.kind}；文件名：{attachment.display_name}",
+                source_kind="chat_attachment",
+                source_id=attachment.id,
                 link_targets=[
                     ("chat_session", session_id),
                     ("chat_message", message_id),
-                    ("library_document", document.id),
                 ],
             )
 
