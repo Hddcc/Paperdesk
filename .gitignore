@@ -13,9 +13,14 @@ backend/paperdesk_backend.egg-info/
 backend/data/
 backend/data/*.db
 backend/workspace/
+backend/runtime/
+backend/.debug-sandbox-*/
 
 __pycache__/
 *.py[cod]
 *.log
 .DS_Store
 .env
+
+.claude/runtime/
+.claude/sessions/
