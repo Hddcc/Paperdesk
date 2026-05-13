@@ -52,6 +52,7 @@ from app.runtime import (
 )
 
 from .export_service import ExportService
+from .research_context_assembler import ResearchContextAssembler
 from .research_workspace_service import ResearchWorkspaceService
 
 
@@ -75,6 +76,7 @@ class ResearchOrchestrator:
         report_writer: ReportWriterAgent,
         export_service: ExportService,
         workspace_service: ResearchWorkspaceService,
+        context_assembler: ResearchContextAssembler,
     ) -> None:
         self.research_repository = research_repository
         self.paper_repository = paper_repository
@@ -88,6 +90,7 @@ class ResearchOrchestrator:
         self.report_writer = report_writer
         self.export_service = export_service
         self.workspace_service = workspace_service
+        self.context_assembler = context_assembler
 
         self.main_runtime = MainAgentRuntime()
         self.scratchpad_store = ScratchpadStore(workspace_service)
@@ -248,6 +251,8 @@ class ResearchOrchestrator:
 
         try:
             while True:
+                candidate_item = self.main_runtime.peek_next_pending_item(runtime_state)
+                self.context_assembler.refresh(runtime_state, active_task=candidate_item)
                 action, task_id = self.main_runtime.next_action(runtime_state)
                 plan_item = self._find_plan_item(runtime_state, task_id)
                 current_task = self._to_todo_task(plan_item) if plan_item is not None else None
@@ -469,7 +474,7 @@ class ResearchOrchestrator:
 
         runtime_state.step_count += 1
         runtime_state.failure_count = 0
-        runtime_state.working_summary = self.main_runtime.summarize_working_notes(runtime_state)
+        self.context_assembler.refresh(runtime_state, active_task=plan_item)
         if active_step is not None:
             active_step.status = ResearchStepStatus.COMPLETED
             runtime_state.tool_history.append(
@@ -498,6 +503,10 @@ class ResearchOrchestrator:
         )
         runtime_state.active_step = None
         runtime_state.current_phase = self.main_runtime.step_phase(action)
+        self.context_assembler.refresh(
+            runtime_state,
+            active_task=self.main_runtime.peek_next_pending_item(runtime_state),
+        )
         state.status = self._status_from_phase(runtime_state.current_phase)
         self._checkpoint(runtime_state, request, status=state.status, stop_reason=None, event_sink=event_sink)
 
@@ -609,6 +618,10 @@ class ResearchOrchestrator:
     ) -> None:
         runtime_state.last_checkpoint_at = datetime.now(timezone.utc)
         runtime_state.stop_reason = stop_reason
+        self.context_assembler.refresh(
+            runtime_state,
+            active_task=self.main_runtime.peek_next_pending_item(runtime_state),
+        )
         self.research_repository.save_runtime_state(
             runtime_state.run_id,
             runtime_state,
@@ -627,6 +640,7 @@ class ResearchOrchestrator:
                 "current_phase": runtime_state.current_phase.value,
                 "step_count": runtime_state.step_count,
                 "stop_reason": runtime_state.stop_reason,
+                "context_state": runtime_state.context_state.model_dump(mode="json"),
             },
         )
         self._emit(
@@ -637,6 +651,7 @@ class ResearchOrchestrator:
                 "current_phase": runtime_state.current_phase.value,
                 "step_count": runtime_state.step_count,
                 "stop_reason": runtime_state.stop_reason,
+                "context_state": runtime_state.context_state.model_dump(mode="json"),
             },
         )
         self._emit_status(

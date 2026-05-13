@@ -8,7 +8,17 @@ import fitz
 
 from app.agents.report_writer import ReportWriterAgent
 from app.agents.reading_summarizer import ReadingSummarizerAgent
-from app.models import EvidenceItem, PaperRecord, TaskSummary
+from app.models import (
+    EvidenceItem,
+    PaperRecord,
+    ResearchEvidenceAssessment,
+    ResearchEvidenceBufferItem,
+    ResearchPlanItem,
+    ResearchRuntimePhase,
+    ResearchRuntimeState,
+    TaskSummary,
+)
+from app.runtime.main_agent_runtime import MainAgentRuntime
 from app.services.arxiv_client import ArxivClient
 from app.services.embedding_service import EmbeddingService
 from app.services.openalex_client import OpenAlexClient
@@ -168,6 +178,9 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert "report_completed" in event_types
     assert "report" in event_types
     assert "done" in event_types
+    checkpoint_event = next(event for event in events if event["type"] == "checkpoint_saved")
+    assert checkpoint_event["context_state"]["budget_tokens"] > 0
+    assert checkpoint_event["context_state"]["sources"]
     assert "任务总结仍采用教程阶段的规则模板" not in body
     assert "在线论文参考：" in body
     assert "[1]" in body
@@ -214,8 +227,20 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert len(run_payload["tasks"]) == 4
     assert len(run_payload["task_summaries"]) == 4
     assert run_payload["runtime_state"]["current_phase"] == "completed"
+    assert run_payload["runtime_state"]["context_state"]["budget_tokens"] > 0
+    assert run_payload["runtime_state"]["context_state"]["stage"] in {
+        "normal",
+        "evidence_compacted",
+        "history_compacted",
+        "truncated",
+    }
+    assert "working_summary" in run_payload["runtime_state"]
+    assert "证据进展" in run_payload["runtime_state"]["working_summary"]
     assert len(run_payload["runtime_state"]["completed_items"]) == 4
     assert run_payload["runtime_state"]["tool_history"]
+    first_buffer = run_payload["runtime_state"]["evidence_buffer"][0]
+    assert first_buffer["compacted_evidence"]
+    assert first_buffer["evidence_assessment"]["total_item_count"] > 0
     assert run_payload["subagent_tasks"] == []
     assert run_payload["task_notifications"] == []
     assert len(run_payload["task_traces"]) >= 8
@@ -513,6 +538,88 @@ def test_research_resume_stream_recovers_failed_run_from_checkpoint(client, monk
     assert run_payload["run"]["status"] == "completed"
     assert run_payload["runtime_state"]["current_phase"] == "completed"
     assert run_payload["runtime_state"]["report_id"]
+
+
+def _runtime_for_decision(assessment: ResearchEvidenceAssessment, *, revise_count: int = 0):
+    plan_item = ResearchPlanItem(
+        task_id="task-1",
+        title="RAG 评估方法",
+        intent="梳理 RAG 评估指标",
+        query="RAG evaluation metrics",
+        revise_count=revise_count,
+        query_history=["RAG evaluation metrics"],
+    )
+    evidence = ResearchEvidenceBufferItem(
+        task_id="task-1",
+        online_completed=True,
+        local_completed=True,
+        evidence_assessment=assessment,
+    )
+    return ResearchRuntimeState(
+        run_id="run-decision",
+        goal="RAG 评估",
+        current_phase=ResearchRuntimePhase.EXECUTING,
+        plan_items=[plan_item],
+        evidence_buffer=[evidence],
+    )
+
+
+def test_main_agent_runtime_revises_when_evidence_quality_is_weak():
+    state = _runtime_for_decision(
+        ResearchEvidenceAssessment(
+            total_item_count=2,
+            relevant_item_count=0,
+            visible_item_count=2,
+            sufficiency_score=0.2,
+            relevance_score=0.0,
+            has_relevant_evidence=False,
+        )
+    )
+
+    action, task_id = MainAgentRuntime().next_action(state)
+
+    assert action.value == "revise_plan"
+    assert task_id == "task-1"
+
+
+def test_main_agent_runtime_degrades_after_revise_when_evidence_stays_weak():
+    state = _runtime_for_decision(
+        ResearchEvidenceAssessment(
+            total_item_count=2,
+            relevant_item_count=0,
+            visible_item_count=2,
+            sufficiency_score=0.2,
+            relevance_score=0.0,
+            has_relevant_evidence=False,
+        ),
+        revise_count=1,
+    )
+
+    action, task_id = MainAgentRuntime().next_action(state)
+
+    assert action.value == "summarize_evidence"
+    assert task_id == "task-1"
+    assert MainAgentRuntime.should_degrade(state.plan_items[0], state.evidence_buffer[0])
+
+
+def test_main_agent_runtime_summarizes_when_evidence_quality_is_sufficient():
+    state = _runtime_for_decision(
+        ResearchEvidenceAssessment(
+            total_item_count=3,
+            relevant_item_count=2,
+            visible_item_count=3,
+            sufficiency_score=0.72,
+            relevance_score=0.67,
+            diversity_score=1.0,
+            coverage=["method", "evaluation"],
+            has_relevant_evidence=True,
+        )
+    )
+
+    action, task_id = MainAgentRuntime().next_action(state)
+
+    assert action.value == "summarize_evidence"
+    assert task_id == "task-1"
 
 
 def test_report_writer_uses_fixed_structure_and_deduplicated_citations():

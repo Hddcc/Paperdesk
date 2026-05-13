@@ -77,6 +77,10 @@ class MainAgentRuntime:
         return "已完成任务：" + "；".join(completed)
 
     @staticmethod
+    def peek_next_pending_item(state: ResearchRuntimeState) -> ResearchPlanItem | None:
+        return MainAgentRuntime._next_pending_item(state)
+
+    @staticmethod
     def _next_pending_item(state: ResearchRuntimeState) -> ResearchPlanItem | None:
         for item in state.plan_items:
             if item.task_id not in state.completed_items:
@@ -94,4 +98,13 @@ class MainAgentRuntime:
 
     @staticmethod
     def _has_sufficient_evidence(evidence: ResearchEvidenceBufferItem) -> bool:
+        assessment = evidence.evidence_assessment
+        if assessment.total_item_count:
+            if assessment.conflict_detected and assessment.sufficiency_score < 0.7:
+                return False
+            return (
+                assessment.has_relevant_evidence
+                and assessment.sufficiency_score >= 0.55
+                and assessment.relevance_score >= 0.25
+            )
         return bool(evidence.paper_records or evidence.evidence_items)

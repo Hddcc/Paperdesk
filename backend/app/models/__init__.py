@@ -34,6 +34,10 @@ from .report import CitationRecord, ReportListItem, ResearchReport, TaskSummary
 from .research import ResearchRequest, ResearchRun, ResearchRunDetail, ResearchState, TodoTask
 from .research_runtime import (
     ResearchActionType,
+    ResearchCompactedEvidenceItem,
+    ResearchContextStage,
+    ResearchContextState,
+    ResearchEvidenceAssessment,
     ResearchEvidenceBufferItem,
     ResearchPlanItem,
     ResearchRuntimePhase,
@@ -100,6 +104,10 @@ __all__ = [
     "RagAskResponse",
     "ReportListItem",
     "ResearchActionType",
+    "ResearchCompactedEvidenceItem",
+    "ResearchContextStage",
+    "ResearchContextState",
+    "ResearchEvidenceAssessment",
     "ResearchEvidenceBufferItem",
     "ResearchPlanItem",
     "ResearchReport",

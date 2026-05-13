@@ -42,6 +42,7 @@ from app.services import (
     PdfParser,
     QueryTranslationService,
     RagService,
+    ResearchContextAssembler,
     ResearchWorkspaceService,
     TextChunker,
 )
@@ -195,6 +196,14 @@ def get_context_assembler() -> ContextAssembler:
 
 
 @lru_cache(maxsize=1)
+def get_research_context_assembler() -> ResearchContextAssembler:
+    return ResearchContextAssembler(
+        budget_service=get_context_budget_service(),
+        settings=get_settings(),
+    )
+
+
+@lru_cache(maxsize=1)
 def get_query_translation_service() -> QueryTranslationService:
     settings = get_settings()
     return QueryTranslationService(
@@ -327,6 +336,7 @@ def get_research_orchestrator() -> ResearchOrchestrator:
         report_writer=get_report_writer(),
         export_service=get_export_service(),
         workspace_service=get_research_workspace_service(),
+        context_assembler=get_research_context_assembler(),
     )
 
 

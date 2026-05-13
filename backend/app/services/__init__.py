@@ -19,6 +19,7 @@ from .paper_selection_service import PaperSelectionService
 from .pdf_parser import PdfParser
 from .query_translation_service import QueryTranslationService
 from .rag_service import RagService
+from .research_context_assembler import ResearchContextAssembler
 from .research_workspace_service import ResearchWorkspaceService
 from .text_chunker import TextChunker
 
@@ -42,6 +43,7 @@ __all__ = [
     "PdfParser",
     "QueryTranslationService",
     "RagService",
+    "ResearchContextAssembler",
     "ResearchWorkspaceService",
     "TextChunker",
 ]
