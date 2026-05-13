@@ -11,6 +11,7 @@ import type {
   ResearchRuntimeState,
   ResearchStreamEvent,
   ResearchTaskState,
+  ResearchTaskRoute,
   TaskSummary,
   TodoTask
 } from "../types/models";
@@ -20,7 +21,9 @@ const DEFAULT_REQUEST: ResearchRequest = {
   top_k_online: 3,
   top_k_local: 3,
   search_provider: null,
-  notes: null
+  notes: null,
+  input_modes: ["prompt"],
+  selected_document_ids: []
 };
 
 export const useResearchStore = defineStore("research", () => {
@@ -36,6 +39,7 @@ export const useResearchStore = defineStore("research", () => {
   const activeTaskId = ref("");
   const finalReport = ref<ResearchReport | null>(null);
   const runtimeState = ref<ResearchRuntimeState | null>(null);
+  const taskRoute = ref<ResearchTaskRoute | null>(null);
 
   const completedCount = computed(
     () => tasks.value.filter((entry) => entry.task.status === "completed").length
@@ -84,7 +88,9 @@ export const useResearchStore = defineStore("research", () => {
       top_k_online: payload.top_k_online ?? DEFAULT_REQUEST.top_k_online,
       top_k_local: payload.top_k_local ?? DEFAULT_REQUEST.top_k_local,
       search_provider: payload.search_provider?.trim() ? payload.search_provider.trim() : null,
-      notes: payload.notes?.trim() ? payload.notes.trim() : null
+      notes: payload.notes?.trim() ? payload.notes.trim() : null,
+      input_modes: payload.input_modes?.length ? payload.input_modes : DEFAULT_REQUEST.input_modes,
+      selected_document_ids: payload.selected_document_ids || []
     };
   }
 
@@ -97,6 +103,7 @@ export const useResearchStore = defineStore("research", () => {
     activeTaskId.value = "";
     finalReport.value = null;
     runtimeState.value = null;
+    taskRoute.value = null;
   }
 
   function appendLog(message: string) {
@@ -211,7 +218,16 @@ export const useResearchStore = defineStore("research", () => {
       case "run_created":
         run.value = event.run as ResearchRun;
         topic.value = run.value.topic;
+        if (event.task_route && typeof event.task_route === "object") {
+          taskRoute.value = event.task_route as ResearchTaskRoute;
+        }
         appendLog(`已创建研究运行：${run.value.topic}`);
+        break;
+      case "task_route":
+        if (event.task_route && typeof event.task_route === "object") {
+          taskRoute.value = event.task_route as ResearchTaskRoute;
+          appendLog(`任务路由：${formatTaskRoute(taskRoute.value)}`);
+        }
         break;
       case "status":
         ensureRunFromEvent(event);
@@ -224,6 +240,7 @@ export const useResearchStore = defineStore("research", () => {
         isRunning.value = true;
         if (event.runtime_state && typeof event.runtime_state === "object") {
           runtimeState.value = event.runtime_state as ResearchRuntimeState;
+          taskRoute.value = runtimeState.value.task_route || taskRoute.value;
         }
         appendLog("已从 checkpoint 恢复研究运行");
         break;
@@ -322,6 +339,7 @@ export const useResearchStore = defineStore("research", () => {
               plan_revision_history: [],
               planner_provider: "rule_based",
               planner_fallback_used: false,
+              task_route: null,
               step_count: 0
             }),
             context_state: event.context_state as ResearchRuntimeState["context_state"],
@@ -329,8 +347,10 @@ export const useResearchStore = defineStore("research", () => {
             step_count: Number(event.step_count || runtimeState.value?.step_count || 0),
             planner_provider: String(event.planner_provider || runtimeState.value?.planner_provider || "rule_based") as ResearchRuntimeState["planner_provider"],
             planner_fallback_used: Boolean(event.planner_fallback_used ?? runtimeState.value?.planner_fallback_used ?? false),
+            task_route: (event.task_route as ResearchTaskRoute | null | undefined) ?? runtimeState.value?.task_route,
             stop_reason: (event.stop_reason as string | null | undefined) ?? runtimeState.value?.stop_reason
           };
+          taskRoute.value = runtimeState.value.task_route || taskRoute.value;
         }
         appendLog(
           `已保存 checkpoint：${String(event.current_phase || "unknown")} / step ${String(
@@ -445,6 +465,7 @@ export const useResearchStore = defineStore("research", () => {
     activeTaskPapers,
     finalReport,
     runtimeState,
+    taskRoute,
     reportMarkdown,
     completedCount,
     canResumeCurrentRun,
@@ -457,3 +478,7 @@ export const useResearchStore = defineStore("research", () => {
     resumeCurrentRun
   };
 });
+
+function formatTaskRoute(route: ResearchTaskRoute) {
+  return `${route.artifact_protocol.title} / ${route.evidence_policy}`;
+}

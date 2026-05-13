@@ -33,9 +33,7 @@
         <div>
           <p class="eyebrow">PaperDesk Agent</p>
           <h2>{{ store.currentSession?.title || "新对话" }}</h2>
-          <p>
-            直接提问，或通过 “+” 添加图片、本地 PDF、库内论文作为上下文。
-          </p>
+          <p>直接提问、上传 PDF，或选择库内论文生成问答、总结、综述与对比结果。</p>
         </div>
       </header>
 
@@ -154,15 +152,22 @@
           <textarea
             v-model="store.composerText"
             class="chat-textarea"
-            placeholder="输入你的问题，或附加图片 / PDF / 论文库文档后一起发送。"
+            placeholder="输入问题，或附加 PDF / 库内论文后发送或生成结果。"
             @keydown="handleKeydown"
           />
           <button
             class="button-primary composer-send"
-            :disabled="store.sending || !store.composerText.trim()"
+            :disabled="store.sending || researchStore.isRunning || !store.composerText.trim()"
             @click="store.sendCurrentMessage"
           >
             {{ store.sending ? "发送中..." : "发送" }}
+          </button>
+          <button
+            class="button-secondary composer-research"
+            :disabled="store.sending || researchStore.isRunning || !store.composerText.trim()"
+            @click="startResearchTask"
+          >
+            {{ researchStore.isRunning ? "研究中..." : "生成结果" }}
           </button>
         </div>
       </div>
@@ -187,14 +192,18 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 
 import MarkdownPreview from "../components/MarkdownPreview.vue";
 import { useDocumentStore } from "../stores/documents";
 import { useKnowledgeStore } from "../stores/knowledge";
-import type { ChatAttachment, ChatMessageRole, LibraryDocument } from "../types/models";
+import { useResearchStore } from "../stores/research";
+import type { ChatAttachment, ChatMessageRole, LibraryDocument, ResearchInputMode } from "../types/models";
 
 const store = useKnowledgeStore();
 const documentStore = useDocumentStore();
+const researchStore = useResearchStore();
+const router = useRouter();
 
 const imageInputRef = ref<HTMLInputElement | null>(null);
 const pdfInputRef = ref<HTMLInputElement | null>(null);
@@ -252,8 +261,42 @@ async function handlePdfSelected(event: Event) {
   if (!file) {
     return;
   }
-  store.queueLocalPdfAttachment(file);
+  try {
+    const document = await documentStore.addDocument(file);
+    if (document) {
+      store.toggleLibraryDocument(document);
+      store.markUploadedTaskDocument(document.id);
+    }
+  } catch {
+    store.queueLocalPdfAttachment(file);
+  }
   input.value = "";
+}
+
+async function startResearchTask() {
+  const content = store.composerText.trim();
+  if (!content) {
+    return;
+  }
+  const selectedIds = [...store.selectedDocumentIds];
+  const inputModes: ResearchInputMode[] = ["prompt"];
+  if (selectedIds.length) {
+    inputModes.push("knowledge_base");
+  }
+  if (store.uploadedTaskDocumentIds.some((documentId) => selectedIds.includes(documentId))) {
+    inputModes.push("uploaded_file");
+  }
+  researchStore.queueResearch({
+    topic: content,
+    top_k_local: Math.max(3, selectedIds.length || 3),
+    top_k_online: 3,
+    search_provider: null,
+    notes: selectedIds.length ? "从知识库入口发起，优先使用已选择的库内论文。" : "从知识库入口发起。",
+    input_modes: inputModes,
+    selected_document_ids: selectedIds
+  });
+  store.clearComposer();
+  await router.push("/research");
 }
 
 async function readFileAsDataUrl(file: File): Promise<string> {

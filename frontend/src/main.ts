@@ -3,7 +3,6 @@ import { createPinia } from "pinia";
 import { createRouter, createWebHistory } from "vue-router";
 
 import App from "./App.vue";
-import HomeView from "./views/HomeView.vue";
 import KnowledgeView from "./views/KnowledgeView.vue";
 import LibraryView from "./views/LibraryView.vue";
 import ResearchView from "./views/ResearchView.vue";
@@ -13,7 +12,7 @@ import "./style.css";
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: "/", name: "home", component: HomeView },
+    { path: "/", redirect: "/knowledge" },
     { path: "/library", name: "library", component: LibraryView },
     { path: "/knowledge", name: "knowledge", component: KnowledgeView },
     { path: "/research", name: "research", component: ResearchView },

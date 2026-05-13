@@ -17,6 +17,53 @@ export interface ResearchRequest {
   top_k_local?: number;
   search_provider?: string | null;
   notes?: string | null;
+  input_modes?: ResearchInputMode[];
+  selected_document_ids?: string[];
+}
+
+export type ResearchInputMode = "prompt" | "uploaded_file" | "knowledge_base";
+export type ResearchTaskType =
+  | "qa"
+  | "paper_summary"
+  | "multi_paper_review"
+  | "comparison"
+  | "method_explainer"
+  | "research_brief";
+export type ResearchEvidencePolicy = "local_first" | "online_first" | "local_only" | "online_supplement";
+export type ResearchExecutionRoute =
+  | "knowledge_qa"
+  | "single_paper_summary"
+  | "main_agent_review"
+  | "comparison_analysis"
+  | "method_explanation"
+  | "research_brief";
+export type ResearchArtifactProtocolType =
+  | "qa"
+  | "paper_summary"
+  | "review"
+  | "comparison"
+  | "method_explainer"
+  | "research_brief";
+
+export interface ResearchArtifactProtocol {
+  protocol_type: ResearchArtifactProtocolType;
+  title: string;
+  required_sections: string[];
+  citation_required: boolean;
+}
+
+export interface ResearchTaskRoute {
+  task_type: ResearchTaskType;
+  input_modes: ResearchInputMode[];
+  evidence_policy: ResearchEvidencePolicy;
+  execution_route: ResearchExecutionRoute;
+  artifact_protocol: ResearchArtifactProtocol;
+  selected_document_ids: string[];
+  needs_local_knowledge: boolean;
+  needs_online_search: boolean;
+  use_main_agent_loop: boolean;
+  allow_single_pass: boolean;
+  rationale: string;
 }
 
 export interface ResearchTaskState {
@@ -307,6 +354,7 @@ export interface ResearchRuntimeState {
     | "writing_report"
     | "completed"
     | "failed";
+  task_route?: ResearchTaskRoute | null;
   plan_items: ResearchPlanItem[];
   completed_items: string[];
   active_step?: ResearchRuntimeStep | null;
@@ -336,6 +384,7 @@ export interface ResearchRunDetail {
   task_summaries: TaskSummary[];
   runtime_state?: ResearchRuntimeState | null;
   report: ResearchReport | null;
+  task_route?: ResearchTaskRoute | null;
 }
 
 export type KnowledgeRetrievalStatus = "ready" | "skipped" | "degraded" | "unavailable";

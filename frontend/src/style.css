@@ -319,6 +319,7 @@ select {
 .info-stack,
 .status-stack,
 .request-summary,
+.route-summary,
 .knowledge-panel-body,
 .task-detail-panel,
 .task-detail-section {
@@ -508,6 +509,18 @@ select {
   background: rgba(15, 23, 42, 0.04);
 }
 
+.route-summary {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(14, 165, 233, 0.08);
+  border: 1px solid rgba(14, 165, 233, 0.14);
+}
+
+.route-summary p {
+  margin: 0;
+  line-height: 1.65;
+}
+
 .task-detail-section h3,
 .task-detail-section h4 {
   margin: 0;
@@ -560,6 +573,18 @@ select {
 .status-badge[data-status="failed"] {
   background: rgba(239, 68, 68, 0.16);
   color: #b91c1c;
+}
+
+.status-badge[data-status="local_first"],
+.status-badge[data-status="local_only"] {
+  background: rgba(20, 184, 166, 0.16);
+  color: #0f766e;
+}
+
+.status-badge[data-status="online_first"],
+.status-badge[data-status="online_supplement"] {
+  background: rgba(59, 130, 246, 0.16);
+  color: #1d4ed8;
 }
 
 .evidence-source {
@@ -936,6 +961,10 @@ select {
 
 .composer-send {
   min-width: 92px;
+}
+
+.composer-research {
+  min-width: 104px;
 }
 
 @media (max-width: 1280px) {

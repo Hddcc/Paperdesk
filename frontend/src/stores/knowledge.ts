@@ -25,6 +25,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
   const composerText = ref("");
   const draftAttachments = ref<ChatAttachment[]>([]);
   const selectedDocumentIds = ref<string[]>([]);
+  const uploadedTaskDocumentIds = ref<string[]>([]);
   const loading = ref(false);
   const sending = ref(false);
   const error = ref("");
@@ -107,6 +108,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     const exists = selectedDocumentIds.value.includes(document.id);
     if (exists) {
       selectedDocumentIds.value = selectedDocumentIds.value.filter((item) => item !== document.id);
+      uploadedTaskDocumentIds.value = uploadedTaskDocumentIds.value.filter((item) => item !== document.id);
       draftAttachments.value = draftAttachments.value.filter(
         (item) => !(item.kind === "library_document" && item.document_id === document.id)
       );
@@ -135,6 +137,13 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     draftAttachments.value = draftAttachments.value.filter((item) => item.id !== attachmentId);
     if (attachment?.document_id) {
       selectedDocumentIds.value = selectedDocumentIds.value.filter((item) => item !== attachment.document_id);
+      uploadedTaskDocumentIds.value = uploadedTaskDocumentIds.value.filter((item) => item !== attachment.document_id);
+    }
+  }
+
+  function markUploadedTaskDocument(documentId: string) {
+    if (!uploadedTaskDocumentIds.value.includes(documentId)) {
+      uploadedTaskDocumentIds.value = [...uploadedTaskDocumentIds.value, documentId];
     }
   }
 
@@ -176,6 +185,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     composerText.value = "";
     draftAttachments.value = [];
     selectedDocumentIds.value = [];
+    uploadedTaskDocumentIds.value = [];
   }
 
   function upsertSession(session: ChatSession) {
@@ -211,6 +221,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     composerText,
     draftAttachments,
     selectedDocumentIds,
+    uploadedTaskDocumentIds,
     loading,
     sending,
     error,
@@ -222,6 +233,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     queueImageAttachment,
     queueLocalPdfAttachment,
     toggleLibraryDocument,
+    markUploadedTaskDocument,
     removeDraftAttachment,
     sendCurrentMessage,
     clearComposer

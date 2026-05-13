@@ -49,6 +49,16 @@
               <span class="request-label">研究主题</span>
               <strong>{{ store.topic }}</strong>
             </div>
+            <div v-if="store.taskRoute" class="route-summary">
+              <span class="status-badge" :data-status="store.taskRoute.evidence_policy">
+                {{ formatTaskType(store.taskRoute.task_type) }}
+              </span>
+              <p>{{ store.taskRoute.rationale }}</p>
+              <p class="card-meta">
+                产物协议：{{ store.taskRoute.artifact_protocol.title }} ·
+                {{ store.taskRoute.artifact_protocol.required_sections.join("、") }}
+              </p>
+            </div>
             <div class="request-summary-grid">
               <p>
                 <span class="request-label">在线论文</span>
@@ -141,6 +151,18 @@ function formatSearchProvider(value: string | null) {
     default:
       return "自动选择";
   }
+}
+
+function formatTaskType(value: string) {
+  const labels: Record<string, string> = {
+    qa: "问答",
+    paper_summary: "单篇总结",
+    multi_paper_review: "多篇综述",
+    comparison: "对比分析",
+    method_explainer: "方法解释",
+    research_brief: "路线建议"
+  };
+  return labels[value] || value;
 }
 
 function formatContextStage(value: string) {

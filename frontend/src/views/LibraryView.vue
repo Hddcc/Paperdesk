@@ -1,19 +1,23 @@
 <template>
-  <section class="page-shell content-grid library-layout" @click="handleShellClick">
-    <article class="panel">
-      <header class="section-head">
-        <h2 class="nowrap-title">本地论文库</h2>
-        <p>上传 PDF 后，系统会自动解析、建库，并在列表里持续更新处理状态。</p>
+  <section class="page-shell library-layout" @click="handleShellClick">
+    <article class="panel library-upload-panel">
+      <header class="section-head library-upload-head">
+        <div>
+          <h2 class="nowrap-title">本地论文库</h2>
+          <p>上传 PDF 后，系统会自动解析、建库，并在列表里持续更新处理状态。</p>
+        </div>
       </header>
 
-      <div class="panel-body">
+      <div class="panel-body library-upload-body">
         <label class="upload-box">
           <span>选择 PDF 上传</span>
           <input type="file" accept=".pdf" :disabled="store.submittingUpload" @change="handleUpload" />
         </label>
-        <p v-if="store.activeUploadName" class="hint-text">当前文件：{{ store.activeUploadName }}</p>
-        <p v-if="store.uploadHint" class="hint-text">{{ store.uploadHint }}</p>
-        <p v-if="store.error" class="error-text">{{ store.error }}</p>
+        <div class="library-upload-status">
+          <p v-if="store.activeUploadName" class="hint-text">当前文件：{{ store.activeUploadName }}</p>
+          <p v-if="store.uploadHint" class="hint-text">{{ store.uploadHint }}</p>
+          <p v-if="store.error" class="error-text">{{ store.error }}</p>
+        </div>
         <div
           v-if="store.completionNotice"
           class="floating-notice"
@@ -27,9 +31,12 @@
       </div>
     </article>
 
-    <article class="panel">
+    <article class="panel library-documents-panel">
       <header class="section-head">
-        <h2>已上传文档</h2>
+        <div>
+          <h2>论文资产</h2>
+          <p>已入库文档是本页主内容，可在这里查看处理状态并维护本地论文库。</p>
+        </div>
         <button class="button-secondary" @click="store.refreshDocuments">刷新</button>
       </header>
 
@@ -112,6 +119,39 @@ function formatDocumentStatus(value: string) {
   position: relative;
 }
 
+.library-layout {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 20px;
+  min-height: 0;
+}
+
+.library-upload-panel {
+  gap: 14px;
+}
+
+.library-upload-head,
+.library-upload-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 20px;
+  align-items: center;
+}
+
+.library-upload-body {
+  align-items: start;
+}
+
+.library-upload-status {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.library-documents-panel {
+  min-height: 0;
+}
+
 .floating-notice {
   margin-top: 16px;
   display: flex;
@@ -138,5 +178,16 @@ function formatDocumentStatus(value: string) {
 
 .notice-close:hover {
   background: rgba(36, 90, 60, 0.14);
+}
+
+@media (max-width: 1024px) {
+  .library-layout {
+    grid-template-rows: auto auto;
+  }
+
+  .library-upload-head,
+  .library-upload-body {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
