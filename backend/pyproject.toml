@@ -27,6 +27,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["app"]
 
+[tool.setuptools.package-data]
+app = ["skills/builtin/*/manifest.json", "skills/builtin/*/SKILL.md"]
+
 [dependency-groups]
 dev = [
   "pytest>=8.3.0",

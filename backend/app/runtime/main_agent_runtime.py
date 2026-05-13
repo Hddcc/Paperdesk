@@ -11,6 +11,7 @@ from app.models import (
     ResearchRuntimePhase,
     ResearchRuntimeState,
     ResearchToolStrategy,
+    ToolDeclaration,
 )
 
 
@@ -21,6 +22,22 @@ class MainAgentRuntime:
     max_no_progress_count: int = 3
     max_same_tool_streak: int = 2
     max_replan_count: int = 2
+
+    def __init__(self, tool_declarations: dict[str, ToolDeclaration] | None = None) -> None:
+        self.tool_declarations = tool_declarations or {}
+
+    def update_tool_declarations(self, tool_declarations: dict[str, ToolDeclaration]) -> None:
+        self.tool_declarations = tool_declarations
+
+    def tool_strategy(
+        self,
+        action: ResearchActionType,
+        *,
+        strategy_id: str | None = None,
+        request: ResearchRequest | None = None,
+        rationale: str = "由主 Agent 在高层动作下选择的具体工具策略。",
+    ) -> ResearchToolStrategy:
+        return self._tool_strategy(action, strategy_id=strategy_id, request=request, rationale=rationale)
 
     @staticmethod
     def should_use_direct_task(request: ResearchRequest) -> bool:
@@ -74,6 +91,12 @@ class MainAgentRuntime:
             )
 
         evidence = self._find_evidence(state, active_item.task_id)
+        route = state.task_route
+        needs_local = route.needs_local_knowledge if route is not None else True
+        needs_online = route.needs_online_search if route is not None else True
+        local_first = route is not None and route.evidence_policy.value in {"local_first", "local_only"}
+        online_required = "online_paper" in active_item.required_evidence or "more_relevant_online_paper" in active_item.required_evidence
+        local_required = "local_document" in active_item.required_evidence or "more_relevant_local_document" in active_item.required_evidence
         if self._same_tool_is_stale(state):
             if active_item.revise_count < 1 and state.replan_count < self.max_replan_count:
                 return self._decision(
@@ -90,14 +113,21 @@ class MainAgentRuntime:
                 strategy_id="summarize_evidence/degraded_closeout",
                 request=request,
             )
-        if not evidence.online_completed:
+        if needs_local and local_required and local_first and not evidence.local_completed:
+            return self._decision(
+                ResearchActionType.SEARCH_LOCAL,
+                active_item.task_id,
+                "当前任务优先使用本地知识库证据。",
+                request=request,
+            )
+        if needs_online and online_required and not evidence.online_completed:
             return self._decision(
                 ResearchActionType.SEARCH_ONLINE,
                 active_item.task_id,
                 "当前任务缺少在线论文候选，优先补充外部证据。",
                 request=request,
             )
-        if not evidence.local_completed:
+        if needs_local and local_required and not evidence.local_completed:
             return self._decision(
                 ResearchActionType.SEARCH_LOCAL,
                 active_item.task_id,
@@ -189,8 +219,8 @@ class MainAgentRuntime:
             )
         return bool(evidence.paper_records or evidence.evidence_items)
 
-    @staticmethod
     def _decision(
+        self,
         action: ResearchActionType,
         task_id: str | None,
         reason: str,
@@ -198,7 +228,7 @@ class MainAgentRuntime:
         strategy_id: str | None = None,
         request: ResearchRequest | None = None,
     ) -> ResearchActionDecision:
-        strategy = MainAgentRuntime._tool_strategy(action, strategy_id=strategy_id, request=request)
+        strategy = self._tool_strategy(action, strategy_id=strategy_id, request=request)
         return ResearchActionDecision(
             action_type=action,
             selected_tool=strategy.strategy_id,
@@ -207,12 +237,13 @@ class MainAgentRuntime:
             target_task_id=task_id,
         )
 
-    @staticmethod
     def _tool_strategy(
+        self,
         action: ResearchActionType,
         *,
         strategy_id: str | None = None,
         request: ResearchRequest | None = None,
+        rationale: str = "由主 Agent 在高层动作下选择的具体工具策略。",
     ) -> ResearchToolStrategy:
         selected_strategy = strategy_id or MainAgentRuntime._default_strategy_id(action, request)
         labels = {
@@ -238,12 +269,13 @@ class MainAgentRuntime:
             }
         if action == ResearchActionType.SEARCH_LOCAL and request is not None:
             parameters = {"top_k_local": request.top_k_local}
+        declaration = self.tool_declarations.get(selected_strategy)
         return ResearchToolStrategy(
             strategy_id=selected_strategy,
             action_type=action,
-            label=labels.get(selected_strategy, selected_strategy),
+            label=declaration.name if declaration is not None else labels.get(selected_strategy, selected_strategy),
             parameters=parameters,
-            rationale="由主 Agent 在高层动作下选择的具体工具策略。",
+            rationale=rationale,
         )
 
     @staticmethod

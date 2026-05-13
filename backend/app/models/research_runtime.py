@@ -11,6 +11,7 @@ from .enums import TodoTaskStatus
 from .paper import EvidenceItem, PaperRecord
 from .report import TaskSummary
 from .runtime import TaskArtifactRef
+from .task_routing import ResearchTaskRoute
 
 
 class ResearchActionType(str, Enum):
@@ -302,6 +303,7 @@ class ResearchRuntimeState(BaseModel):
     run_id: str
     goal: str
     current_phase: ResearchRuntimePhase
+    task_route: ResearchTaskRoute | None = None
     plan_items: list[ResearchPlanItem] = Field(default_factory=list)
     completed_items: list[str] = Field(default_factory=list)
     active_step: ResearchRuntimeStep | None = None

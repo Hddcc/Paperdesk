@@ -1,0 +1,17 @@
+{
+  "skill_id": "method_explainer",
+  "name": "方法解释",
+  "enabled": true,
+  "supported_task_types": ["method_explainer"],
+  "default_execution_mode": "lightweight",
+  "description": "面向概念、方法或技术原理解释，适合生成清晰的定义、流程、适用场景和注意事项；不适合生成完整文献综述。",
+  "artifact_protocol": {
+    "protocol_type": "method_explainer",
+    "title": "方法解释",
+    "required_sections": ["概念定义", "方法流程", "适用场景", "证据来源", "局限与注意事项"],
+    "citation_required": true
+  },
+  "version": "1.0.0",
+  "priority": 10,
+  "skill_file": "SKILL.md"
+}

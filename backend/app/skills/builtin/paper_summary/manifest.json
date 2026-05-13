@@ -1,0 +1,17 @@
+{
+  "skill_id": "paper_summary",
+  "name": "单篇论文总结",
+  "enabled": true,
+  "supported_task_types": ["paper_summary"],
+  "default_execution_mode": "lightweight",
+  "description": "面向一篇本地论文或单个上传文件生成结构化总结，适合快速理解主题、方法、贡献和局限；不适合跨多篇论文做综述。",
+  "artifact_protocol": {
+    "protocol_type": "paper_summary",
+    "title": "单篇论文总结",
+    "required_sections": ["论文主题", "研究问题", "核心方法", "主要贡献", "结果结论", "局限性", "适用场景"],
+    "citation_required": true
+  },
+  "version": "1.0.0",
+  "priority": 10,
+  "skill_file": "SKILL.md"
+}

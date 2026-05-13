@@ -1,0 +1,17 @@
+{
+  "skill_id": "multi_paper_review",
+  "name": "多篇论文综述",
+  "enabled": true,
+  "supported_task_types": ["multi_paper_review"],
+  "default_execution_mode": "main_agent",
+  "description": "面向一个研究主题或多篇论文生成综述型结果，适合组织主题分组、研究方向和趋势归纳；不适合只回答一个短问题。",
+  "artifact_protocol": {
+    "protocol_type": "review",
+    "title": "多篇论文综述",
+    "required_sections": ["研究主题", "子方向或章节结构", "代表论文", "核心方法脉络", "共性与差异", "趋势与不足", "引用来源"],
+    "citation_required": true
+  },
+  "version": "1.0.0",
+  "priority": 10,
+  "skill_file": "SKILL.md"
+}

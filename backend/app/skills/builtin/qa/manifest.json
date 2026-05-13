@@ -1,0 +1,17 @@
+{
+  "skill_id": "qa",
+  "name": "知识问答",
+  "enabled": true,
+  "supported_task_types": ["qa"],
+  "default_execution_mode": "lightweight",
+  "description": "面向指定问题给出有证据边界的回答，适合本地论文库问答或需要少量在线补充的研究问题；不适合生成多篇综述或复杂对比报告。",
+  "artifact_protocol": {
+    "protocol_type": "qa",
+    "title": "问答结果",
+    "required_sections": ["直接答案", "关键证据", "必要引用", "不确定性说明"],
+    "citation_required": true
+  },
+  "version": "1.0.0",
+  "priority": 10,
+  "skill_file": "SKILL.md"
+}

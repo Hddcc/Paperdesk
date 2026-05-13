@@ -139,6 +139,11 @@ class SQLiteDatabase:
                     FOREIGN KEY (report_id) REFERENCES report_records (id)
                 );
 
+                CREATE TABLE IF NOT EXISTS deleted_report_records (
+                    report_id TEXT PRIMARY KEY,
+                    deleted_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS subagent_tasks (
                     id TEXT PRIMARY KEY,
                     run_id TEXT NOT NULL,
@@ -453,6 +458,10 @@ class SQLiteDatabase:
                 SELECT 1 FROM report_records
                 WHERE report_records.id = reports.id
             )
+            AND NOT EXISTS (
+                SELECT 1 FROM deleted_report_records
+                WHERE deleted_report_records.report_id = reports.id
+            )
             """
         )
 
@@ -469,6 +478,12 @@ class SQLiteDatabase:
                 (row["id"],),
             ).fetchone()
             if existing is not None:
+                continue
+            deleted = conn.execute(
+                "SELECT 1 FROM deleted_report_records WHERE report_id = ? LIMIT 1",
+                (row["id"],),
+            ).fetchone()
+            if deleted is not None:
                 continue
             citation_items = self._extract_legacy_citation_items(
                 task_summaries_json=row["task_summaries_json"],

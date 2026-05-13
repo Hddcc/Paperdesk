@@ -1,0 +1,17 @@
+{
+  "skill_id": "research_brief",
+  "name": "研究路线建议",
+  "enabled": true,
+  "supported_task_types": ["research_brief"],
+  "default_execution_mode": "main_agent",
+  "description": "面向研究选题、路线图和后续验证建议，适合整理方向概览、关键问题、可用证据和行动路线；不适合替代完整实验设计。",
+  "artifact_protocol": {
+    "protocol_type": "research_brief",
+    "title": "研究路线建议",
+    "required_sections": ["方向概览", "关键问题", "可用证据", "路线建议", "后续验证"],
+    "citation_required": true
+  },
+  "version": "1.0.0",
+  "priority": 10,
+  "skill_file": "SKILL.md"
+}

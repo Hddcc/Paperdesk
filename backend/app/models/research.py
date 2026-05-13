@@ -16,6 +16,7 @@ from .paper import normalize_search_provider
 from .report import ResearchReport, TaskSummary
 from .research_runtime import ResearchRuntimeState
 from .runtime import StoredAgentTask, TaskArtifactRef, TaskExecutionTrace, TaskNotification
+from .task_routing import ResearchInputMode, ResearchTaskRoute
 
 
 class ResearchRequest(BaseModel):
@@ -26,6 +27,8 @@ class ResearchRequest(BaseModel):
     top_k_local: int = Field(default=3, ge=1, le=10)
     search_provider: str | None = None
     notes: str | None = None
+    input_modes: list[ResearchInputMode] = Field(default_factory=lambda: [ResearchInputMode.PROMPT])
+    selected_document_ids: list[str] = Field(default_factory=list)
 
     @field_validator("search_provider", mode="before")
     @classmethod
@@ -103,3 +106,4 @@ class ResearchRunDetail(BaseModel):
     task_traces: list[TaskExecutionTrace] = Field(default_factory=list)
     task_artifacts: list[TaskArtifactRef] = Field(default_factory=list)
     report: ResearchReport | None = None
+    task_route: ResearchTaskRoute | None = None

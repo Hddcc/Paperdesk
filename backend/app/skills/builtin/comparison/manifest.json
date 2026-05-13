@@ -1,0 +1,17 @@
+{
+  "skill_id": "comparison",
+  "name": "对比分析",
+  "enabled": true,
+  "supported_task_types": ["comparison"],
+  "default_execution_mode": "main_agent",
+  "description": "面向方法、论文或方案之间的对比任务，适合整理对比对象、维度、共性、差异和适用建议；不适合自由闲聊。",
+  "artifact_protocol": {
+    "protocol_type": "comparison",
+    "title": "对比分析",
+    "required_sections": ["对比对象", "对比维度", "各对象表现", "共性", "差异", "适用建议"],
+    "citation_required": true
+  },
+  "version": "1.0.0",
+  "priority": 10,
+  "skill_file": "SKILL.md"
+}

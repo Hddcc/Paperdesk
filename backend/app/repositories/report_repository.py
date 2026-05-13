@@ -138,8 +138,20 @@ class ReportRepository(BaseRepository):
             return None
 
         with self.database.connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO deleted_report_records (report_id, deleted_at)
+                VALUES (?, ?)
+                """,
+                (report_id, datetime.now().astimezone().isoformat()),
+            )
             conn.execute("DELETE FROM citation_records WHERE report_id = ?", (report_id,))
             conn.execute("DELETE FROM report_records WHERE id = ?", (report_id,))
+            legacy_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'reports'"
+            ).fetchone()
+            if legacy_table is not None:
+                conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
 
         return report
 

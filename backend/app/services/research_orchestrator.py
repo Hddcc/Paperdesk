@@ -23,6 +23,7 @@ from app.models import (
     ResearchActionDecision,
     ResearchActionType,
     ResearchEvidenceBufferItem,
+    ResearchEvidencePolicy,
     ResearchPlanItem,
     ResearchPlanOperation,
     ResearchPlanOperationType,
@@ -34,11 +35,15 @@ from app.models import (
     ResearchRuntimeStep,
     ResearchRunStatus,
     ResearchState,
+    ResearchTaskRoute,
+    ResearchTaskType,
     ResearchStepStatus,
+    ResearchToolStrategy,
     ResearchToolCallRecord,
     ResearchToolResult,
     ResearchToolResultClassification,
     ResearchToolResultStatus,
+    SkillDefinition,
     TodoTask,
     TodoTaskStatus,
     TraceEventType,
@@ -56,12 +61,15 @@ from app.runtime import (
     RuleBasedPlannerCandidateProvider,
     ResearchToolExecutor,
     ScratchpadStore,
+    SkillRegistry,
     SubagentRunner,
     TaskRegistry,
+    ToolRegistry,
 )
 
 from .export_service import ExportService
 from .research_context_assembler import ResearchContextAssembler
+from .research_task_router import ResearchTaskRouter
 from .research_workspace_service import ResearchWorkspaceService
 
 
@@ -101,7 +109,11 @@ class ResearchOrchestrator:
         self.workspace_service = workspace_service
         self.context_assembler = context_assembler
 
-        self.main_runtime = MainAgentRuntime()
+        self.tool_registry = ToolRegistry()
+        self.skill_registry = SkillRegistry()
+        self.main_runtime = MainAgentRuntime(
+            {tool.tool_id: tool for tool in self.tool_registry.list_enabled()}
+        )
         self.scratchpad_store = ScratchpadStore(workspace_service)
         self.message_bus = MessageBus(runtime_repository)
         self.task_registry = TaskRegistry(runtime_repository)
@@ -112,6 +124,7 @@ class ResearchOrchestrator:
             scratchpad_store=self.scratchpad_store,
         )
         self.planner_candidate_provider = RuleBasedPlannerCandidateProvider()
+        self.task_router = ResearchTaskRouter()
         self.tool_executor = ResearchToolExecutor(
             topic_planner=topic_planner,
             paper_search_agent=paper_search_agent,
@@ -127,11 +140,13 @@ class ResearchOrchestrator:
         event_sink: EventSink | None = None,
     ) -> ResearchState:
         run_id = str(uuid4())
+        task_route = self._route_request(request)
         run = self.research_repository.create_run(run_id, request.topic, request_payload=request)
         runtime_state = ResearchRuntimeState(
             run_id=run.id,
             goal=request.topic,
             current_phase=self.main_runtime.initial_phase(),
+            task_route=task_route,
         )
         state = ResearchState(
             run_id=run.id,
@@ -146,8 +161,10 @@ class ResearchOrchestrator:
                 "type": "run_created",
                 "run_id": run.id,
                 "run": run.model_dump(mode="json"),
+                "task_route": task_route.model_dump(mode="json"),
             },
         )
+        self._emit_task_route(run.id, task_route, event_sink)
         self._checkpoint(
             runtime_state,
             request,
@@ -155,6 +172,8 @@ class ResearchOrchestrator:
             stop_reason=None,
             event_sink=event_sink,
         )
+        if task_route.allow_single_pass and not task_route.use_main_agent_loop:
+            return self._run_single_pass(state, request, event_sink=event_sink)
         return self._run_loop(state, request, event_sink=event_sink, resumed=False)
 
     def resume(
@@ -187,6 +206,8 @@ class ResearchOrchestrator:
         runtime_state.stop_reason = None
         if runtime_state.current_phase == ResearchRuntimePhase.FAILED:
             runtime_state.current_phase = ResearchRuntimePhase.EXECUTING
+        if runtime_state.task_route is None:
+            runtime_state.task_route = self._route_request(request)
         runtime_state.active_step = None
 
         state = self._load_state_snapshot(run_id, run.topic, runtime_state)
@@ -196,8 +217,11 @@ class ResearchOrchestrator:
                 "type": "research_resumed",
                 "run_id": run_id,
                 "runtime_state": runtime_state.model_dump(mode="json"),
+                "task_route": runtime_state.task_route.model_dump(mode="json") if runtime_state.task_route else None,
             },
         )
+        if runtime_state.task_route is not None:
+            self._emit_task_route(run_id, runtime_state.task_route, event_sink)
         self._emit(
             event_sink,
             {
@@ -213,6 +237,13 @@ class ResearchOrchestrator:
             stop_reason=None,
             event_sink=event_sink,
         )
+        if (
+            runtime_state.task_route is not None
+            and runtime_state.task_route.allow_single_pass
+            and not runtime_state.task_route.use_main_agent_loop
+            and not runtime_state.tool_history
+        ):
+            return self._run_single_pass(state, request, event_sink=event_sink)
         return self._run_loop(state, request, event_sink=event_sink, resumed=True)
 
     def run_stream(self, request: ResearchRequest) -> Iterator[dict]:
@@ -307,6 +338,241 @@ class ResearchOrchestrator:
             self._handle_failure(state, current_task, request, event_sink, exc, resumed=resumed)
             raise
 
+    def _run_single_pass(
+        self,
+        state: ResearchState,
+        request: ResearchRequest,
+        *,
+        event_sink: EventSink | None,
+    ) -> ResearchState:
+        runtime_state = state.runtime_state
+        assert runtime_state is not None
+        documents = self.library_repository.list_documents()
+        current_task: TodoTask | None = None
+
+        try:
+            plan_decision = self._single_pass_decision(
+                ResearchActionType.PLAN,
+                "轻量任务由路由允许单轮执行，先生成单项计划。",
+            )
+            runtime_state.last_decision = plan_decision
+            self._start_step(runtime_state, plan_decision, None, event_sink)
+            plan_result = self._execute_action(
+                runtime_state,
+                request,
+                documents,
+                ResearchActionType.PLAN,
+                None,
+            )
+            self._apply_tool_result(state, request, plan_decision, None, plan_result, event_sink)
+
+            plan_item = runtime_state.plan_items[0] if runtime_state.plan_items else None
+            current_task = self._to_todo_task(plan_item) if plan_item is not None else None
+            if plan_item is None:
+                raise RuntimeError("Lightweight route did not create a plan item")
+
+            if runtime_state.task_route is not None and runtime_state.task_route.needs_local_knowledge:
+                local_decision = self._single_pass_decision(
+                    ResearchActionType.SEARCH_LOCAL,
+                    "轻量任务优先读取已指定的本地材料。",
+                    task_id=plan_item.task_id,
+                )
+                runtime_state.last_decision = local_decision
+                self._start_step(runtime_state, local_decision, plan_item, event_sink)
+                local_result = self._execute_action(
+                    runtime_state,
+                    request,
+                    documents,
+                    ResearchActionType.SEARCH_LOCAL,
+                    plan_item,
+                )
+                self._apply_tool_result(state, request, local_decision, plan_item, local_result, event_sink)
+                if self._should_promote_single_pass_after_local_search(runtime_state, plan_item):
+                    self._promote_route_to_main_loop(runtime_state, request, state)
+                    return self._run_loop(state, request, event_sink=event_sink, resumed=True)
+
+            if runtime_state.task_route is not None and runtime_state.task_route.needs_online_search:
+                online_decision = self._single_pass_decision(
+                    ResearchActionType.SEARCH_ONLINE,
+                    "轻量任务按路由要求补充在线证据。",
+                    task_id=plan_item.task_id,
+                    request=request,
+                )
+                runtime_state.last_decision = online_decision
+                self._start_step(runtime_state, online_decision, plan_item, event_sink)
+                online_result = self._execute_action(
+                    runtime_state,
+                    request,
+                    documents,
+                    ResearchActionType.SEARCH_ONLINE,
+                    plan_item,
+                )
+                self._apply_tool_result(state, request, online_decision, plan_item, online_result, event_sink)
+
+            summary_decision = self._single_pass_decision(
+                ResearchActionType.SUMMARIZE_EVIDENCE,
+                "轻量任务按当前证据直接生成任务总结。",
+                task_id=plan_item.task_id,
+            )
+            runtime_state.last_decision = summary_decision
+            self._start_step(runtime_state, summary_decision, plan_item, event_sink)
+            summary_result = self._execute_action(
+                runtime_state,
+                request,
+                documents,
+                ResearchActionType.SUMMARIZE_EVIDENCE,
+                plan_item,
+            )
+            self._apply_tool_result(state, request, summary_decision, plan_item, summary_result, event_sink)
+
+            finalize_decision = self._single_pass_decision(
+                ResearchActionType.FINALIZE_REPORT,
+                "轻量任务已完成总结，进入任务型结果生成。",
+            )
+            runtime_state.last_decision = finalize_decision
+            self._start_step(runtime_state, finalize_decision, None, event_sink)
+            finalize_result = self._execute_action(
+                runtime_state,
+                request,
+                documents,
+                ResearchActionType.FINALIZE_REPORT,
+                None,
+            )
+            self._apply_tool_result(state, request, finalize_decision, None, finalize_result, event_sink)
+
+            finish_decision = self._single_pass_decision(
+                ResearchActionType.FINISH,
+                "轻量结果已生成，研究流程可以结束。",
+            )
+            runtime_state.last_decision = finish_decision
+            self._start_step(runtime_state, finish_decision, None, event_sink)
+            finish_result = self._execute_action(
+                runtime_state,
+                request,
+                documents,
+                ResearchActionType.FINISH,
+                None,
+            )
+            self._apply_tool_result(state, request, finish_decision, None, finish_result, event_sink)
+
+            runtime_state.current_phase = ResearchRuntimePhase.COMPLETED
+            state.status = ResearchRunStatus.COMPLETED
+            self.research_repository.update_run_status(state.run_id, state.status, stop_reason=None)
+            self._emit(event_sink, {"type": "done", "run_id": state.run_id})
+            return state
+        except Exception as exc:
+            self._handle_failure(state, current_task, request, event_sink, exc, resumed=False)
+            raise
+
+    def _promote_route_to_main_loop(
+        self,
+        runtime_state: ResearchRuntimeState,
+        request: ResearchRequest,
+        state: ResearchState,
+    ) -> None:
+        if runtime_state.task_route is not None:
+            runtime_state.task_route.use_main_agent_loop = True
+            runtime_state.task_route.allow_single_pass = False
+            runtime_state.task_route.needs_online_search = True
+            runtime_state.task_route.evidence_policy = ResearchEvidencePolicy.ONLINE_SUPPLEMENT
+            runtime_state.task_route.rationale = (
+                f"{runtime_state.task_route.rationale} 本地证据不足，已升级到主 Agent 路径。"
+            )
+        for item in runtime_state.plan_items:
+            item.status = TodoTaskStatus.PENDING
+            if item.task_id in runtime_state.completed_items:
+                runtime_state.completed_items.remove(item.task_id)
+        state.todo_tasks = [self._to_todo_task(item) for item in runtime_state.plan_items]
+        for task in state.todo_tasks:
+            self.research_repository.update_task(state.run_id, task)
+
+    def _should_promote_single_pass_after_local_search(
+        self,
+        runtime_state: ResearchRuntimeState,
+        plan_item: ResearchPlanItem,
+    ) -> bool:
+        if runtime_state.task_route is None:
+            return False
+        if runtime_state.task_route.task_type == ResearchTaskType.PAPER_SUMMARY:
+            return False
+        if runtime_state.task_route.task_type not in {
+            ResearchTaskType.QA,
+            ResearchTaskType.METHOD_EXPLAINER,
+        }:
+            return False
+        evidence = self._get_or_create_buffer(runtime_state, plan_item.task_id)
+        assessment = evidence.evidence_assessment
+        if not evidence.evidence_items:
+            return True
+        return not assessment.has_relevant_evidence or assessment.sufficiency_score < 0.35
+
+    def _single_pass_decision(
+        self,
+        action: ResearchActionType,
+        reason: str,
+        *,
+        task_id: str | None = None,
+        request: ResearchRequest | None = None,
+    ) -> ResearchActionDecision:
+        strategy_id = self._strategy_id_for_action(action, request)
+        return ResearchActionDecision(
+            action_type=action,
+            selected_tool=strategy_id,
+            tool_strategy=self.main_runtime.tool_strategy(
+                action,
+                strategy_id=strategy_id,
+                request=request,
+                rationale="由任务路由直接选择的轻量执行策略。",
+            ),
+            reason=reason,
+            target_task_id=task_id,
+        )
+
+    @staticmethod
+    def _strategy_id_for_action(action: ResearchActionType, request: ResearchRequest | None = None) -> str:
+        if action == ResearchActionType.PLAN:
+            return "plan/rule_based_initial"
+        if action == ResearchActionType.SEARCH_ONLINE:
+            provider = (request.search_provider if request is not None else None) or ""
+            provider = provider.casefold()
+            if provider == "openalex":
+                return "search_online/openalex_primary"
+            if provider == "arxiv":
+                return "search_online/arxiv_primary"
+            return "search_online/mixed_broad_recall"
+        if action == ResearchActionType.SEARCH_LOCAL:
+            return "search_local/vector_recall_default"
+        if action == ResearchActionType.SUMMARIZE_EVIDENCE:
+            return "summarize_evidence/task_level_merge"
+        if action == ResearchActionType.FINALIZE_REPORT:
+            return "finalize_report/task_artifact_writer"
+        if action == ResearchActionType.FINISH:
+            return "finish/runtime_complete"
+        return "fail/runtime_stop"
+
+    @staticmethod
+    def _strategy_label(strategy_id: str) -> str:
+        labels = {
+            "plan/rule_based_initial": "规则初始规划",
+            "search_online/openalex_primary": "OpenAlex 优先检索",
+            "search_online/arxiv_primary": "arXiv 优先检索",
+            "search_online/mixed_broad_recall": "混合宽召回检索",
+            "search_local/vector_recall_default": "默认向量召回",
+            "summarize_evidence/task_level_merge": "任务级证据合并",
+            "finalize_report/task_artifact_writer": "任务型结果生成",
+            "finish/runtime_complete": "运行完成",
+            "fail/runtime_stop": "运行停止",
+        }
+        return labels.get(strategy_id, strategy_id)
+
+    @staticmethod
+    def _strategy_parameters(action: ResearchActionType, request: ResearchRequest | None) -> dict[str, object]:
+        if action == ResearchActionType.SEARCH_ONLINE and request is not None:
+            return {"search_provider": request.search_provider, "top_k_online": request.top_k_online}
+        if action == ResearchActionType.SEARCH_LOCAL and request is not None:
+            return {"top_k_local": request.top_k_local}
+        return {}
+
     def _execute_action(
         self,
         runtime_state: ResearchRuntimeState,
@@ -320,14 +586,17 @@ class ResearchOrchestrator:
                 runtime_state.run_id,
                 request,
                 direct_task=self.main_runtime.should_use_direct_task(request),
+                task_route=runtime_state.task_route,
+                active_skill=self._active_skill(runtime_state),
             )
         if action == ResearchActionType.SEARCH_ONLINE and plan_item is not None:
             return self.tool_executor.search_online(runtime_state.run_id, plan_item, request)
         if action == ResearchActionType.SEARCH_LOCAL and plan_item is not None:
+            route_documents = self._documents_for_request(request, documents)
             return self.tool_executor.search_local(
                 runtime_state.run_id,
                 plan_item,
-                documents,
+                route_documents,
                 top_k_local=request.top_k_local,
             )
         if action == ResearchActionType.REVISE_PLAN and plan_item is not None:
@@ -370,6 +639,7 @@ class ResearchOrchestrator:
                 runtime_state.run_id,
                 request.topic,
                 state_task_summaries(runtime_state),
+                task_route=runtime_state.task_route,
             )
         if action == ResearchActionType.FINISH:
             return ResearchToolResult(
@@ -444,6 +714,13 @@ class ResearchOrchestrator:
             plan_item.attempt_count += 1
             self.research_repository.update_task(state.run_id, self._to_todo_task(plan_item))
             self._emit_task_status(state.run_id, plan_item, "本地证据检索完成。", event_sink)
+            if (
+                runtime_state.task_route is not None
+                and runtime_state.task_route.evidence_policy.value == "local_first"
+                and not evidence.evidence_items
+            ):
+                runtime_state.task_route.needs_online_search = True
+                runtime_state.task_route.evidence_policy = ResearchEvidencePolicy.ONLINE_SUPPLEMENT
         elif action == ResearchActionType.REVISE_PLAN and plan_item is not None:
             candidate = self._candidate_from_result(result)
             if candidate is not None:
@@ -453,7 +730,10 @@ class ResearchOrchestrator:
             plan_item.revise_count += 1
             plan_item.attempt_count += 1
             runtime_state.replan_count += 1
-            plan_item.required_evidence = ["more_relevant_online_paper", "more_relevant_local_document"]
+            if runtime_state.task_route is None or runtime_state.task_route.needs_online_search:
+                plan_item.required_evidence = ["more_relevant_online_paper", "more_relevant_local_document"]
+            else:
+                plan_item.required_evidence = ["more_relevant_local_document"]
             plan_item.notes.append(result.summary)
             applied_plan_ops = self._apply_plan_operations(
                 runtime_state,
@@ -764,6 +1044,7 @@ class ResearchOrchestrator:
                 "context_state": runtime_state.context_state.model_dump(mode="json"),
                 "planner_provider": runtime_state.planner_provider.value,
                 "planner_fallback_used": runtime_state.planner_fallback_used,
+                "task_route": runtime_state.task_route.model_dump(mode="json") if runtime_state.task_route else None,
             },
         )
         self._emit(
@@ -777,6 +1058,7 @@ class ResearchOrchestrator:
                 "context_state": runtime_state.context_state.model_dump(mode="json"),
                 "planner_provider": runtime_state.planner_provider.value,
                 "planner_fallback_used": runtime_state.planner_fallback_used,
+                "task_route": runtime_state.task_route.model_dump(mode="json") if runtime_state.task_route else None,
             },
         )
         self._emit_status(
@@ -856,6 +1138,51 @@ class ResearchOrchestrator:
             if item.task_id == task_id:
                 return item
         return None
+
+    def _route_request(self, request: ResearchRequest) -> ResearchTaskRoute:
+        documents = self._documents_for_request(request, self.library_repository.list_documents())
+        task_route = self.task_router.route(request, ready_documents=documents)
+        active_skill = self.skill_registry.default_for(task_route.task_type)
+        if active_skill is not None:
+            task_route.active_skill_id = active_skill.skill_id
+            task_route.artifact_protocol = active_skill.artifact_protocol
+            if active_skill.default_execution_mode.value == "lightweight" and task_route.allow_single_pass:
+                task_route.use_main_agent_loop = False
+        return task_route
+
+    def _active_skill(self, runtime_state: ResearchRuntimeState) -> SkillDefinition | None:
+        if runtime_state.task_route is None or runtime_state.task_route.active_skill_id is None:
+            return None
+        definition = self.skill_registry.load_definition(runtime_state.task_route.active_skill_id)
+        if definition is not None:
+            return definition
+        manifest = self.skill_registry.default_for(runtime_state.task_route.task_type)
+        if manifest is None:
+            return None
+        return self.skill_registry.load_definition(manifest.skill_id)
+
+    @staticmethod
+    def _documents_for_request(request: ResearchRequest, documents) -> list:
+        ready_documents = [document for document in documents if document.status == "ready"]
+        if not request.selected_document_ids:
+            return ready_documents
+        selected = set(request.selected_document_ids)
+        return [document for document in ready_documents if document.id in selected]
+
+    def _emit_task_route(
+        self,
+        run_id: str,
+        task_route: ResearchTaskRoute,
+        event_sink: EventSink | None,
+    ) -> None:
+        self._emit(
+            event_sink,
+            {
+                "type": "task_route",
+                "run_id": run_id,
+                "task_route": task_route.model_dump(mode="json"),
+            },
+        )
 
     @staticmethod
     def _candidate_from_result(result: ResearchToolResult) -> ResearchPlannerCandidate | None:

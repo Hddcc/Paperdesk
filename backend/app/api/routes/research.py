@@ -81,16 +81,18 @@ def get_research_run(
     tasks = research_repository.list_tasks(task_id)
     report = report_repository.get_report_by_run_id(task_id)
     task_summaries = report.task_summaries if report is not None else _build_task_summaries(tasks)
+    runtime_state = research_repository.get_runtime_state(task_id)
     return ResearchRunDetail(
         run=run,
         tasks=tasks,
         task_summaries=task_summaries,
-        runtime_state=research_repository.get_runtime_state(task_id),
+        runtime_state=runtime_state,
         subagent_tasks=runtime_repository.list_tasks(task_id),
         task_notifications=runtime_repository.list_notifications(task_id),
         task_traces=runtime_repository.list_traces(task_id),
         task_artifacts=runtime_repository.list_artifacts(task_id),
         report=report,
+        task_route=runtime_state.task_route if runtime_state is not None else None,
     )
 
 

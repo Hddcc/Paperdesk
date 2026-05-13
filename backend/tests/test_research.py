@@ -163,7 +163,7 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
 
     response = client.post(
         "/api/research/stream",
-        json={"topic": "RAG 系统中的评估方法"},
+        json={"topic": "RAG 系统中的评估方法综述"},
         headers={"Accept": "text/event-stream"},
     )
     assert response.status_code == 200
@@ -205,20 +205,25 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     report_response = client.get(f"/api/reports/{reports[0]['id']}")
     assert report_response.status_code == 200
     report = report_response.json()
-    assert report["topic"] == "RAG 系统中的评估方法"
-    assert "## 1. 研究概览" in report["markdown"]
-    assert "## 2. 分任务总结整合" in report["markdown"]
-    assert "## 3. 关键观点归纳" in report["markdown"]
-    assert "## 4. 局限与待补充问题" in report["markdown"]
+    assert report["topic"] == "RAG 系统中的评估方法综述"
+    assert "## 综述脉络与主题分组" in report["markdown"]
+    assert "## 关键研究方向" in report["markdown"]
+    assert "## 趋势归纳" in report["markdown"]
+    assert "## 证据来源与引用映射" in report["markdown"]
+    assert "## 局限与待补充问题" in report["markdown"]
     assert "## 参考来源" in report["markdown"]
-    assert "### 2.1 " in report["markdown"]
-    assert "### 2.4 " in report["markdown"]
     assert "固定多 Agent 研究工作流自动生成" not in report["markdown"]
     assert "导出路径：" not in report["markdown"]
     assert report["citation_items"]
     assert "任务总结仍采用教程阶段的规则模板" not in report["markdown"]
     assert "在线论文参考：" not in report["markdown"]
     assert "Local PDF: library.pdf, p.1." in report["markdown"]
+    assert "本地知识库证据" in report["markdown"]
+    assert "在线检索证据" in report["markdown"]
+    assert "混合结论" in report["markdown"]
+    assert "强结论只应来自有明确引用编号或本地页码支撑的内容" in report["markdown"]
+    assert "产物协议" in report["markdown"]
+    assert "多篇论文综述" in report["markdown"]
     assert report["citations"]
     assert report["citations"][0].startswith("[1] ")
     assert any(line.startswith("[") for line in report["citations"])
@@ -245,10 +250,25 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert run_payload["runtime_state"]["plan_items"][0]["objective"]
     assert run_payload["runtime_state"]["plan_items"][0]["done_criteria"]
     assert run_payload["runtime_state"]["plan_items"][0]["suggested_tools"]
+    assert run_payload["task_route"]["active_skill_id"] == "multi_paper_review"
+    assert set(run_payload["runtime_state"]["plan_items"][0]["suggested_tools"]) >= {
+        "plan/rule_based_initial",
+        "search_local/vector_recall_default",
+        "search_online/mixed_broad_recall",
+        "summarize_evidence/task_level_merge",
+        "finalize_report/report_writer_default",
+    }
     assert "no_progress_count" in run_payload["runtime_state"]
     assert "same_tool_streak" in run_payload["runtime_state"]
     assert run_payload["runtime_state"]["planner_provider"] == "rule_based"
     assert "plan_revision_history" in run_payload["runtime_state"]
+    assert run_payload["task_route"]["task_type"] == "multi_paper_review"
+    assert run_payload["task_route"]["evidence_policy"] == "local_first"
+    assert run_payload["task_route"]["artifact_protocol"]["title"] == "多篇论文综述"
+    assert "产物协议" in run_payload["report"]["markdown"]
+    assert "多篇论文综述" in run_payload["report"]["markdown"]
+    assert "## 综述脉络与主题分组" in run_payload["report"]["markdown"]
+    assert "## 证据来源与引用映射" in run_payload["report"]["markdown"]
     first_tool_record = run_payload["runtime_state"]["tool_history"][0]
     assert first_tool_record["selected_tool"] == "plan/rule_based_initial"
     assert first_tool_record["tool_strategy"]["strategy_id"] == first_tool_record["selected_tool"]
@@ -260,6 +280,12 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     )
     assert online_tool_record["selected_tool"] == "search_online/mixed_broad_recall"
     assert online_tool_record["tool_strategy"]["action_type"] == "search_online"
+    first_evidence_action = next(
+        record["action"]
+        for record in run_payload["runtime_state"]["tool_history"]
+        if record["action"] in {"search_online", "search_local"}
+    )
+    assert first_evidence_action == "search_local"
     first_buffer = run_payload["runtime_state"]["evidence_buffer"][0]
     assert first_buffer["compacted_evidence"]
     assert first_buffer["evidence_assessment"]["total_item_count"] > 0
@@ -324,7 +350,8 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert len(todo_payload) == 4
     assert all(item["status"] == "pending" for item in todo_payload)
     assert "在线论文参考：" in (run_dir / "task_1_summary.md").read_text(encoding="utf-8")
-    assert final_report_markdown == export_response.text.strip()
+    assert report["markdown"] == export_response.text.strip()
+    assert "产物协议" in final_report_markdown
 
 def test_irrelevant_local_document_is_not_used_as_evidence(client, monkeypatch):
     _patch_research_dependencies(monkeypatch)
@@ -359,8 +386,8 @@ def test_irrelevant_local_document_is_not_used_as_evidence(client, monkeypatch):
     report_payload = report_event["report"]
     report_markdown = report_payload["markdown"]
 
-    assert "## 4. 局限与待补充问题" in report_markdown
-    assert "本轮未检索到可直接采用的本地 PDF 证据" in report_markdown
+    assert "## 结论边界" in report_markdown
+    assert "本轮存在证据不足或无直接证据的任务" in report_markdown
     assert "Local PDF:" not in report_markdown
     assert "unrelated.pdf" not in report_markdown
 
@@ -370,7 +397,7 @@ def test_irrelevant_local_document_is_not_used_as_evidence(client, monkeypatch):
     report_response = client.get(f"/api/reports/{report_id}")
     assert report_response.status_code == 200
     report = report_response.json()
-    assert "本轮未检索到可直接采用的本地 PDF 证据" in report["markdown"]
+    assert "本轮存在证据不足或无直接证据的任务" in report["markdown"]
     assert "Local PDF:" not in report["markdown"]
     assert "unrelated.pdf" not in report["markdown"]
 
@@ -381,7 +408,7 @@ def test_report_can_be_deleted_from_history(client, monkeypatch):
 
     response = client.post(
         "/api/research/stream",
-        json={"topic": "RAG 系统中的评估方法"},
+        json={"topic": "RAG 系统中的评估方法综述"},
         headers={"Accept": "text/event-stream"},
     )
     assert response.status_code == 200
@@ -474,6 +501,96 @@ def test_legacy_technical_note_is_hidden_in_report_preview(client):
     assert "任务正文。" in payload["task_summaries"][0]["summary"]
 
 
+def test_deleted_legacy_report_is_not_migrated_back(client):
+    from app.api.main import get_repository
+    from app.repositories import SQLiteRepository
+
+    repository = get_repository()
+    with repository.database.connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reports (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                topic TEXT NOT NULL,
+                markdown TEXT NOT NULL,
+                citations TEXT NOT NULL,
+                task_summaries_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO research_runs (id, topic, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "run-legacy-delete",
+                "Legacy Delete Topic",
+                "completed",
+                "2026-05-10T00:00:00+00:00",
+                "2026-05-10T00:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO reports (id, run_id, topic, markdown, citations, task_summaries_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "report-legacy-delete",
+                "run-legacy-delete",
+                "Legacy Delete Topic",
+                "# Legacy Delete",
+                "",
+                "[]",
+                "2026-05-10T00:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO report_records (id, run_id, topic, markdown, citations_text, task_summaries_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "report-legacy-delete",
+                "run-legacy-delete",
+                "Legacy Delete Topic",
+                "# Legacy Delete",
+                "",
+                "[]",
+                "2026-05-10T00:00:00+00:00",
+            ),
+        )
+
+    delete_response = client.delete("/api/reports/report-legacy-delete")
+    assert delete_response.status_code == 200
+
+    SQLiteRepository(Path(os.environ["SQLITE_PATH"]))
+    list_response = client.get("/api/reports")
+    assert list_response.status_code == 200
+    assert all(item["id"] != "report-legacy-delete" for item in list_response.json())
+
+    conn = sqlite3.connect(os.environ["SQLITE_PATH"])
+    try:
+        report_count = conn.execute(
+            "SELECT COUNT(*) FROM report_records WHERE id = 'report-legacy-delete'"
+        ).fetchone()[0]
+        legacy_count = conn.execute(
+            "SELECT COUNT(*) FROM reports WHERE id = 'report-legacy-delete'"
+        ).fetchone()[0]
+        tombstone_count = conn.execute(
+            "SELECT COUNT(*) FROM deleted_report_records WHERE report_id = 'report-legacy-delete'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert report_count == 0
+    assert legacy_count == 0
+    assert tombstone_count == 1
+
+
 def test_research_stream_marks_run_and_task_failed_when_task_stage_breaks(client, monkeypatch):
     _patch_research_dependencies(monkeypatch)
     _upload_library_pdf(client)
@@ -485,7 +602,7 @@ def test_research_stream_marks_run_and_task_failed_when_task_stage_breaks(client
 
     response = client.post(
         "/api/research/stream",
-        json={"topic": "RAG 系统中的评估方法"},
+        json={"topic": "RAG 系统中的评估方法综述", "search_provider": "all"},
         headers={"Accept": "text/event-stream"},
     )
     assert response.status_code == 200
@@ -518,6 +635,136 @@ def test_research_stream_marks_run_and_task_failed_when_task_stage_breaks(client
     assert not (run_dir / "final_report.md").exists()
 
 
+def test_research_task_route_respects_selected_knowledge_documents(client, monkeypatch):
+    observed_queries: list[str] = []
+    _patch_research_dependencies(monkeypatch, observed_queries)
+    _upload_library_pdf(client)
+    documents_response = client.get("/api/documents")
+    assert documents_response.status_code == 200
+    document_id = documents_response.json()[0]["id"]
+
+    response = client.post(
+        "/api/research/stream",
+        json={
+            "topic": "总结这篇论文的方法和贡献",
+            "input_modes": ["prompt", "knowledge_base"],
+            "selected_document_ids": [document_id],
+            "top_k_local": 3,
+        },
+        headers={"Accept": "text/event-stream"},
+    )
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    route_event = next(event for event in events if event["type"] == "task_route")
+    assert route_event["task_route"]["task_type"] == "paper_summary"
+    assert route_event["task_route"]["evidence_policy"] == "local_only"
+    assert route_event["task_route"]["needs_online_search"] is False
+    assert route_event["task_route"]["selected_document_ids"] == [document_id]
+
+    run_id = next(event["run_id"] for event in events if event["type"] == "run_created")
+    run_response = client.get(f"/api/research/{run_id}")
+    assert run_response.status_code == 200
+    payload = run_response.json()
+    assert payload["task_route"]["task_type"] == "paper_summary"
+    assert payload["task_route"]["use_main_agent_loop"] is False
+    assert payload["task_route"]["allow_single_pass"] is True
+    actions = [record["action"] for record in payload["runtime_state"]["tool_history"]]
+    assert "search_local" in actions
+    assert "search_online" not in actions
+    assert "revise_plan" not in actions
+    assert len(payload["tasks"]) == 1
+    assert payload["tasks"][0]["title"].startswith("单篇论文总结")
+    assert "单篇论文总结" in payload["report"]["markdown"]
+    assert "## 论文主题" in payload["report"]["markdown"]
+    assert "## 核心方法" in payload["report"]["markdown"]
+    assert "## 证据来源与引用映射" in payload["report"]["markdown"]
+    assert "## 结论边界" in payload["report"]["markdown"]
+    assert "本地知识库证据" in payload["report"]["markdown"]
+    assert "## 1. 研究概览" not in payload["report"]["markdown"]
+    assert not observed_queries
+
+
+def test_lightweight_qa_route_uses_single_pass_result_builder(client, monkeypatch):
+    _patch_research_dependencies(monkeypatch)
+    _upload_library_pdf(client)
+    documents_response = client.get("/api/documents")
+    assert documents_response.status_code == 200
+    document_id = documents_response.json()[0]["id"]
+
+    response = client.post(
+        "/api/research/stream",
+        json={
+            "topic": "这篇材料如何评估 RAG 系统",
+            "input_modes": ["prompt", "knowledge_base"],
+            "selected_document_ids": [document_id],
+            "top_k_local": 3,
+        },
+        headers={"Accept": "text/event-stream"},
+    )
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    run_id = next(event["run_id"] for event in events if event["type"] == "run_created")
+    run_response = client.get(f"/api/research/{run_id}")
+    assert run_response.status_code == 200
+    payload = run_response.json()
+
+    assert payload["task_route"]["task_type"] == "qa"
+    assert payload["task_route"]["allow_single_pass"] is True
+    assert len(payload["tasks"]) == 1
+    actions = [record["action"] for record in payload["runtime_state"]["tool_history"]]
+    assert actions == ["plan", "search_local", "summarize_evidence", "finalize_report", "finish"]
+    assert "## 直接答案" in payload["report"]["markdown"]
+    assert "## 关键证据" in payload["report"]["markdown"]
+    assert "## 证据来源与引用映射" in payload["report"]["markdown"]
+    assert "## 结论边界" in payload["report"]["markdown"]
+    assert "## 1. 研究概览" not in payload["report"]["markdown"]
+
+
+def test_uploaded_file_input_mode_participates_in_task_route(client, monkeypatch):
+    _patch_research_dependencies(monkeypatch)
+    _upload_library_pdf(client)
+    documents_response = client.get("/api/documents")
+    assert documents_response.status_code == 200
+    document_id = documents_response.json()[0]["id"]
+
+    response = client.post(
+        "/api/research/stream",
+        json={
+            "topic": "总结刚上传论文的核心贡献",
+            "input_modes": ["prompt", "uploaded_file"],
+            "selected_document_ids": [document_id],
+            "top_k_local": 3,
+        },
+        headers={"Accept": "text/event-stream"},
+    )
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    route_event = next(event for event in events if event["type"] == "task_route")
+
+    assert route_event["task_route"]["task_type"] == "paper_summary"
+    assert "uploaded_file" in route_event["task_route"]["input_modes"]
+    assert "knowledge_base" in route_event["task_route"]["input_modes"]
+    assert route_event["task_route"]["selected_document_ids"] == [document_id]
+    assert route_event["task_route"]["needs_local_knowledge"] is True
+
+
+def test_comparison_route_stays_on_main_agent_path(client, monkeypatch):
+    _patch_research_dependencies(monkeypatch)
+    _upload_library_pdf(client)
+
+    response = client.post(
+        "/api/research/stream",
+        json={"topic": "对比 RAG 评估中的忠实性和鲁棒性方法"},
+        headers={"Accept": "text/event-stream"},
+    )
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    route_event = next(event for event in events if event["type"] == "task_route")
+    assert route_event["task_route"]["task_type"] == "comparison"
+    assert route_event["task_route"]["use_main_agent_loop"] is True
+    assert route_event["task_route"]["allow_single_pass"] is False
+
+
 def test_research_resume_stream_recovers_failed_run_from_checkpoint(client, monkeypatch):
     _patch_research_dependencies(monkeypatch)
     _upload_library_pdf(client)
@@ -535,7 +782,7 @@ def test_research_resume_stream_recovers_failed_run_from_checkpoint(client, monk
 
     first_response = client.post(
         "/api/research/stream",
-        json={"topic": "RAG 系统中的评估方法"},
+        json={"topic": "RAG 系统中的评估方法综述", "search_provider": "all"},
         headers={"Accept": "text/event-stream"},
     )
     assert first_response.status_code == 200
@@ -580,7 +827,7 @@ def test_retryable_tool_error_records_decision_classification(client, monkeypatc
 
     response = client.post(
         "/api/research/stream",
-        json={"topic": "RAG 系统中的评估方法"},
+        json={"topic": "RAG 系统中的评估方法综述", "search_provider": "all"},
         headers={"Accept": "text/event-stream"},
     )
     assert response.status_code == 200
