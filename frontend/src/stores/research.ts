@@ -304,6 +304,26 @@ export const useResearchStore = defineStore("research", () => {
         );
         break;
       case "checkpoint_saved":
+        if (event.context_state && typeof event.context_state === "object") {
+          runtimeState.value = {
+            ...(runtimeState.value || {
+              run_id: String(event.run_id || ""),
+              goal: topic.value,
+              current_phase: "planning",
+              plan_items: [],
+              completed_items: [],
+              tool_history: [],
+              evidence_buffer: [],
+              working_summary: "",
+              failure_count: 0,
+              step_count: 0
+            }),
+            context_state: event.context_state as ResearchRuntimeState["context_state"],
+            current_phase: String(event.current_phase || runtimeState.value?.current_phase || "planning") as ResearchRuntimeState["current_phase"],
+            step_count: Number(event.step_count || runtimeState.value?.step_count || 0),
+            stop_reason: (event.stop_reason as string | null | undefined) ?? runtimeState.value?.stop_reason
+          };
+        }
         appendLog(
           `已保存 checkpoint：${String(event.current_phase || "unknown")} / step ${String(
             event.step_count || 0

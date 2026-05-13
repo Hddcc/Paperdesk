@@ -165,9 +165,59 @@ export interface ResearchEvidenceBufferItem {
   task_id: string;
   paper_records: PaperRecord[];
   evidence_items: EvidenceItem[];
+  compacted_evidence: ResearchCompactedEvidenceItem[];
+  evidence_assessment: ResearchEvidenceAssessment;
   online_completed: boolean;
   local_completed: boolean;
   degraded: boolean;
+}
+
+export type ResearchContextStage =
+  | "normal"
+  | "evidence_compacted"
+  | "history_compacted"
+  | "truncated";
+
+export interface ResearchCompactedEvidenceItem {
+  task_id: string;
+  source_key: string;
+  source_type: string;
+  citation: string;
+  title: string;
+  page_number?: number | null;
+  excerpt: string;
+  relevance: string;
+  coverage: string[];
+  potential_conflict: boolean;
+  visible: boolean;
+}
+
+export interface ResearchEvidenceAssessment {
+  total_item_count: number;
+  paper_count: number;
+  local_evidence_count: number;
+  relevant_item_count: number;
+  visible_item_count: number;
+  compacted_item_count: number;
+  sufficiency_score: number;
+  relevance_score: number;
+  diversity_score: number;
+  coverage: string[];
+  conflict_detected: boolean;
+  has_relevant_evidence: boolean;
+  rationale: string;
+}
+
+export interface ResearchContextState {
+  stage: ResearchContextStage;
+  estimated_tokens: number;
+  budget_tokens: number;
+  sources: string[];
+  last_compacted_at?: string | null;
+  active_task_id?: string | null;
+  visible_step_count: number;
+  evidence_items_compacted: number;
+  history_compacted: boolean;
 }
 
 export interface ResearchPlanItem {
@@ -198,6 +248,7 @@ export interface ResearchRuntimeState {
   active_step?: ResearchRuntimeStep | null;
   tool_history: ResearchToolCallRecord[];
   evidence_buffer: ResearchEvidenceBufferItem[];
+  context_state: ResearchContextState;
   working_summary: string;
   failure_count: number;
   stop_reason?: string | null;

@@ -15,6 +15,25 @@
             <span>{{ store.status }}</span>
           </div>
 
+          <div v-if="contextState" class="research-context-strip">
+            <span class="status-badge" :data-status="contextState.stage">
+              {{ formatContextStage(contextState.stage) }}
+            </span>
+            <span>{{ contextState.estimated_tokens }} / {{ contextState.budget_tokens }} tokens</span>
+            <span>可见步骤 {{ contextState.visible_step_count }}</span>
+            <span>压缩证据 {{ contextState.evidence_items_compacted }}</span>
+          </div>
+
+          <div v-if="contextState?.sources.length" class="research-context-sources">
+            <span
+              v-for="source in contextState.sources"
+              :key="source"
+              class="memory-chip"
+            >
+              {{ formatContextSource(source) }}
+            </span>
+          </div>
+
           <button
             v-if="store.canResumeCurrentRun"
             class="ghost-button"
@@ -89,7 +108,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { computed, onMounted } from "vue";
 
 import MarkdownPreview from "../components/MarkdownPreview.vue";
 import ResearchLaunchPanel from "../components/ResearchLaunchPanel.vue";
@@ -99,6 +118,7 @@ import { useResearchStore } from "../stores/research";
 import type { ResearchRequest } from "../types/models";
 
 const store = useResearchStore();
+const contextState = computed(() => store.runtimeState?.context_state || null);
 
 onMounted(() => {
   if (store.hasPendingRequest) {
@@ -121,5 +141,31 @@ function formatSearchProvider(value: string | null) {
     default:
       return "自动选择";
   }
+}
+
+function formatContextStage(value: string) {
+  switch (value) {
+    case "evidence_compacted":
+      return "证据已压缩";
+    case "history_compacted":
+      return "历史已摘要";
+    case "truncated":
+      return "上下文截断";
+    default:
+      return "上下文正常";
+  }
+}
+
+function formatContextSource(value: string) {
+  const labels: Record<string, string> = {
+    research_rules: "研究规则",
+    run_goal: "运行目标",
+    working_summary: "工作记忆",
+    active_task: "当前任务",
+    recent_steps: "近期步骤",
+    compacted_evidence: "压缩证据",
+    completed_task_summaries: "任务摘要"
+  };
+  return labels[value] || value;
 }
 </script>

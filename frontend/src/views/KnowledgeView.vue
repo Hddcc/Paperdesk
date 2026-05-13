@@ -39,34 +39,6 @@
         </div>
       </header>
 
-      <div v-if="store.memorySnapshot?.items.length" class="memory-strip">
-        <span class="memory-label">记忆</span>
-        <div class="memory-chip-list">
-          <span v-for="item in store.memorySnapshot.items" :key="item.id" class="memory-chip">
-            {{ item.summary }}
-          </span>
-        </div>
-      </div>
-
-      <div v-if="store.contextState" class="memory-strip">
-        <span class="memory-label">上下文</span>
-        <div class="memory-chip-list">
-          <span class="memory-chip">
-            {{ formatContextStage(store.contextState.stage) }}
-          </span>
-          <span class="memory-chip">
-            {{ store.contextState.estimated_tokens }} / {{ store.contextState.budget_tokens }} tokens
-          </span>
-          <span
-            v-for="source in store.contextState.sources"
-            :key="source"
-            class="memory-chip"
-          >
-            {{ formatContextSource(source) }}
-          </span>
-        </div>
-      </div>
-
       <div class="panel-body panel-scroll chat-message-panel">
         <div v-if="store.loading" class="empty-state">正在加载会话…</div>
 
@@ -348,39 +320,4 @@ function formatTime(value: string) {
   });
 }
 
-function formatContextStage(stage: string) {
-  switch (stage) {
-    case "evidence_compacted":
-      return "证据已轻压缩";
-    case "history_compacted":
-      return "历史已摘要";
-    case "truncated":
-      return "已强制截断";
-    default:
-      return "正常上下文";
-  }
-}
-
-function formatContextSource(source: string) {
-  switch (source) {
-    case "system_instruction":
-      return "系统指令";
-    case "project_rules":
-      return "项目规则";
-    case "user_preferences":
-      return "用户偏好";
-    case "session_summary":
-      return "会话摘要";
-    case "compact_summary":
-      return "压缩摘要";
-    case "recent_messages":
-      return "最近消息";
-    case "attachments":
-      return "本轮附件";
-    case "rag_evidence":
-      return "RAG 证据";
-    default:
-      return source;
-  }
-}
 </script>

@@ -477,6 +477,22 @@ select {
   background: rgba(250, 204, 21, 0.18);
 }
 
+.research-context-strip,
+.research-context-sources {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.research-context-strip {
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(31, 75, 69, 0.08);
+  color: #334155;
+  font-size: 13px;
+}
+
 .request-label {
   display: block;
   margin-bottom: 4px;
