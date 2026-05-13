@@ -95,10 +95,25 @@ class ResearchContextAssembler:
                 [
                     "当前 active task：",
                     f"- 标题：{active_task.title}",
+                    f"- 目标：{active_task.objective}",
+                    f"- 完成标准：{active_task.done_criteria}",
+                    f"- 优先级：{active_task.priority}",
                     f"- 意图：{active_task.intent}",
                     f"- Query：{active_task.query}",
                     f"- Revise 次数：{active_task.revise_count}",
+                    f"- Attempt 次数：{active_task.attempt_count}",
+                    f"- 期望证据：{','.join(active_task.required_evidence) or '未指定'}",
                 ]
+            )
+        lines.append(
+            "动态推进状态："
+            f"replan={state.replan_count}, no_progress={state.no_progress_count}, "
+            f"same_tool_streak={state.same_tool_streak}"
+        )
+        if state.last_decision is not None:
+            lines.append(
+                f"上一轮决策：{state.last_decision.action_type.value} / "
+                f"{state.last_decision.reason}"
             )
         recent_steps = state.tool_history[-self.max_visible_steps :]
         if recent_steps:

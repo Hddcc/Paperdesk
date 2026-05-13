@@ -18,6 +18,7 @@ from app.models import (
     ResearchRequest,
     ResearchRuntimeState,
     ResearchToolResult,
+    ResearchToolResultClassification,
     ResearchToolResultStatus,
     TaskArtifactRef,
     TodoTask,
@@ -65,10 +66,15 @@ class ResearchToolExecutor:
                 title=task.title,
                 intent=task.intent,
                 query=task.query,
+                objective=task.intent or task.title,
+                done_criteria="形成可引用的任务级研究总结；若证据不足，说明降级边界。",
+                priority=index + 1,
+                suggested_tools=["search_online", "search_local", "summarize_evidence"],
+                required_evidence=["online_paper", "local_document"],
                 query_history=[task.query],
                 status=task.status,
             )
-            for task in tasks
+            for index, task in enumerate(tasks)
         ]
         artifact = self._write_json_artifact(
             run_id,
@@ -79,6 +85,7 @@ class ResearchToolExecutor:
         )
         return ResearchToolResult(
             status=ResearchToolResultStatus.COMPLETED,
+            classification=ResearchToolResultClassification.SUCCESS_SUFFICIENT,
             summary=f"Planned {len(plan_items)} research tasks.",
             payload={"plan_items": [item.model_dump(mode="json") for item in plan_items]},
             artifacts=[artifact],
@@ -123,6 +130,7 @@ class ResearchToolExecutor:
         ]
         return ResearchToolResult(
             status=ResearchToolResultStatus.COMPLETED,
+            classification=ResearchToolResultClassification.SUCCESS_INSUFFICIENT,
             summary=f"Collected {len(paper_records)} online paper candidates.",
             payload={"paper_records": payload},
             artifacts=artifacts,
@@ -170,6 +178,7 @@ class ResearchToolExecutor:
         ]
         return ResearchToolResult(
             status=ResearchToolResultStatus.COMPLETED,
+            classification=ResearchToolResultClassification.SUCCESS_INSUFFICIENT,
             summary=f"Collected {len(evidence_items)} local evidence items.",
             payload={"evidence_items": payload},
             artifacts=artifacts,
@@ -204,6 +213,7 @@ class ResearchToolExecutor:
         )
         return ResearchToolResult(
             status=ResearchToolResultStatus.COMPLETED,
+            classification=ResearchToolResultClassification.SUCCESS_SUFFICIENT,
             summary="Task summary completed.",
             payload={"task_summary": summary.model_dump(mode="json")},
             artifacts=[artifact],
@@ -224,6 +234,7 @@ class ResearchToolExecutor:
         )
         return ResearchToolResult(
             status=ResearchToolResultStatus.COMPLETED,
+            classification=ResearchToolResultClassification.SUCCESS_SUFFICIENT,
             summary="Final report generated.",
             payload={"report": report.model_dump(mode="json")},
             artifacts=[artifact],

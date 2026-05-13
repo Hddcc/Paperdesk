@@ -13,12 +13,16 @@ from app.models import (
     PaperRecord,
     ResearchEvidenceAssessment,
     ResearchEvidenceBufferItem,
+    ResearchPlanOperation,
+    ResearchPlanOperationType,
     ResearchPlanItem,
     ResearchRuntimePhase,
     ResearchRuntimeState,
     TaskSummary,
 )
 from app.runtime.main_agent_runtime import MainAgentRuntime
+from app.runtime.planner_candidate_provider import RuleBasedPlannerCandidateProvider
+from app.services.research_orchestrator import ResearchOrchestrator
 from app.services.arxiv_client import ArxivClient
 from app.services.embedding_service import EmbeddingService
 from app.services.openalex_client import OpenAlexClient
@@ -238,6 +242,24 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert "证据进展" in run_payload["runtime_state"]["working_summary"]
     assert len(run_payload["runtime_state"]["completed_items"]) == 4
     assert run_payload["runtime_state"]["tool_history"]
+    assert run_payload["runtime_state"]["plan_items"][0]["objective"]
+    assert run_payload["runtime_state"]["plan_items"][0]["done_criteria"]
+    assert run_payload["runtime_state"]["plan_items"][0]["suggested_tools"]
+    assert "no_progress_count" in run_payload["runtime_state"]
+    assert "same_tool_streak" in run_payload["runtime_state"]
+    assert run_payload["runtime_state"]["planner_provider"] == "rule_based"
+    assert "plan_revision_history" in run_payload["runtime_state"]
+    first_tool_record = run_payload["runtime_state"]["tool_history"][0]
+    assert first_tool_record["selected_tool"] == "plan/rule_based_initial"
+    assert first_tool_record["tool_strategy"]["strategy_id"] == first_tool_record["selected_tool"]
+    assert first_tool_record["decision_reason"]
+    assert first_tool_record["result_classification"]
+    online_tool_record = next(
+        record for record in run_payload["runtime_state"]["tool_history"]
+        if record["action"] == "search_online"
+    )
+    assert online_tool_record["selected_tool"] == "search_online/mixed_broad_recall"
+    assert online_tool_record["tool_strategy"]["action_type"] == "search_online"
     first_buffer = run_payload["runtime_state"]["evidence_buffer"][0]
     assert first_buffer["compacted_evidence"]
     assert first_buffer["evidence_assessment"]["total_item_count"] > 0
@@ -540,6 +562,37 @@ def test_research_resume_stream_recovers_failed_run_from_checkpoint(client, monk
     assert run_payload["runtime_state"]["report_id"]
 
 
+def test_retryable_tool_error_records_decision_classification(client, monkeypatch):
+    _patch_research_dependencies(monkeypatch)
+    _upload_library_pdf(client)
+
+    call_state = {"failed_once": False}
+
+    def flaky_search(self, task, *, top_k, search_provider):
+        _ = top_k
+        _ = search_provider
+        if not call_state["failed_once"]:
+            call_state["failed_once"] = True
+            raise RuntimeError("temporary provider outage")
+        return []
+
+    monkeypatch.setattr("app.agents.paper_search_agent.PaperSearchAgent.search", flaky_search)
+
+    response = client.post(
+        "/api/research/stream",
+        json={"topic": "RAG 系统中的评估方法"},
+        headers={"Accept": "text/event-stream"},
+    )
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    assert "done" in [event["type"] for event in events]
+    failed_event = next(event for event in events if event["type"] == "agent_step_failed")
+    assert failed_event["result_classification"] == "retryable_error"
+    assert failed_event["selected_tool"] == "search_online/mixed_broad_recall"
+    assert failed_event["tool_strategy"]["strategy_id"] == "search_online/mixed_broad_recall"
+    assert "temporary provider outage" in failed_event["error"]
+
+
 def _runtime_for_decision(assessment: ResearchEvidenceAssessment, *, revise_count: int = 0):
     plan_item = ResearchPlanItem(
         task_id="task-1",
@@ -576,10 +629,13 @@ def test_main_agent_runtime_revises_when_evidence_quality_is_weak():
         )
     )
 
-    action, task_id = MainAgentRuntime().next_action(state)
+    decision = MainAgentRuntime().next_action(state)
 
-    assert action.value == "revise_plan"
-    assert task_id == "task-1"
+    assert decision.action_type.value == "revise_plan"
+    assert decision.target_task_id == "task-1"
+    assert decision.selected_tool == "revise_plan/rewrite_query"
+    assert decision.tool_strategy.strategy_id == "revise_plan/rewrite_query"
+    assert "证据不足" in decision.reason
 
 
 def test_main_agent_runtime_degrades_after_revise_when_evidence_stays_weak():
@@ -595,10 +651,11 @@ def test_main_agent_runtime_degrades_after_revise_when_evidence_stays_weak():
         revise_count=1,
     )
 
-    action, task_id = MainAgentRuntime().next_action(state)
+    decision = MainAgentRuntime().next_action(state)
 
-    assert action.value == "summarize_evidence"
-    assert task_id == "task-1"
+    assert decision.action_type.value == "summarize_evidence"
+    assert decision.target_task_id == "task-1"
+    assert decision.selected_tool == "summarize_evidence/degraded_closeout"
     assert MainAgentRuntime.should_degrade(state.plan_items[0], state.evidence_buffer[0])
 
 
@@ -616,10 +673,152 @@ def test_main_agent_runtime_summarizes_when_evidence_quality_is_sufficient():
         )
     )
 
-    action, task_id = MainAgentRuntime().next_action(state)
+    decision = MainAgentRuntime().next_action(state)
 
-    assert action.value == "summarize_evidence"
-    assert task_id == "task-1"
+    assert decision.action_type.value == "summarize_evidence"
+    assert decision.target_task_id == "task-1"
+    assert decision.selected_tool == "summarize_evidence/task_level_merge"
+
+
+def test_main_agent_runtime_replans_on_stale_repeated_tool():
+    state = _runtime_for_decision(
+        ResearchEvidenceAssessment(
+            total_item_count=0,
+            sufficiency_score=0.0,
+            relevance_score=0.0,
+            has_relevant_evidence=False,
+        )
+    )
+    state.same_tool_streak = 2
+    state.no_progress_count = 1
+    state.last_tool_signature = "search_local:task-1:abc"
+
+    decision = MainAgentRuntime().next_action(state)
+
+    assert decision.action_type.value == "revise_plan"
+    assert decision.target_task_id == "task-1"
+    assert decision.selected_tool == "revise_plan/reorder_priority"
+    assert "没有新增信息" in decision.reason
+
+
+def test_main_agent_runtime_stops_after_no_progress_limit():
+    state = _runtime_for_decision(
+        ResearchEvidenceAssessment(
+            total_item_count=0,
+            sufficiency_score=0.0,
+            relevance_score=0.0,
+            has_relevant_evidence=False,
+        )
+    )
+    state.no_progress_count = MainAgentRuntime.max_no_progress_count
+
+    decision = MainAgentRuntime().next_action(state)
+
+    assert decision.action_type.value == "fail"
+    assert "无增量" in decision.reason
+
+
+def test_rule_planner_candidate_splits_weak_broad_task():
+    plan_item = ResearchPlanItem(
+        task_id="task-1",
+        title="RAG 方法、应用与挑战",
+        intent="同时梳理方法、应用与挑战",
+        query="RAG methods applications limitations",
+        query_history=["RAG methods applications limitations"],
+    )
+    state = ResearchRuntimeState(
+        run_id="run-decision",
+        goal="RAG 评估",
+        current_phase=ResearchRuntimePhase.EXECUTING,
+        plan_items=[plan_item],
+        evidence_buffer=[
+            ResearchEvidenceBufferItem(
+                task_id="task-1",
+                online_completed=True,
+                local_completed=True,
+                evidence_assessment=ResearchEvidenceAssessment(
+                    total_item_count=2,
+                    relevant_item_count=0,
+                    visible_item_count=2,
+                    sufficiency_score=0.2,
+                    relevance_score=0.0,
+                    has_relevant_evidence=False,
+                ),
+            )
+        ],
+    )
+    decision = MainAgentRuntime().next_action(state)
+
+    candidate = RuleBasedPlannerCandidateProvider().propose(state, decision, state.plan_items[0])
+
+    assert candidate.provider.value == "rule_based"
+    assert candidate.candidate_tool == "revise_plan/split_task"
+    assert candidate.candidate_plan_ops[0].operation_type == ResearchPlanOperationType.SPLIT_ITEM
+    assert candidate.candidate_plan_ops[0].new_task_id.startswith("task-1-split-")
+
+
+def test_plan_operations_insert_split_task_and_reorder_pending_items():
+    first = ResearchPlanItem(
+        task_id="task-1",
+        title="宽泛任务",
+        intent="同时梳理方法与应用",
+        query="topic methods applications",
+        priority=1,
+    )
+    second = ResearchPlanItem(
+        task_id="task-2",
+        title="后续任务",
+        intent="梳理局限",
+        query="topic limitations",
+        priority=2,
+    )
+    state = ResearchRuntimeState(
+        run_id="run-plan-ops",
+        goal="topic",
+        current_phase=ResearchRuntimePhase.EXECUTING,
+        plan_items=[first, second],
+        evidence_buffer=[ResearchEvidenceBufferItem(task_id="task-1")],
+    )
+    split_op = ResearchPlanOperation(
+        operation_type=ResearchPlanOperationType.SPLIT_ITEM,
+        target_task_id="task-1",
+        new_task_id="task-1-split-test",
+        title="宽泛任务：补充证据线索",
+        intent="补充更窄证据",
+        query="topic focused evidence",
+        priority=2,
+        reason="测试拆分",
+    )
+
+    applied = ResearchOrchestrator._apply_plan_operations(
+        state,
+        first,
+        [split_op],
+        revised_query="topic methods applications evidence detail",
+    )
+
+    assert [operation.operation_type for operation in applied] == [ResearchPlanOperationType.SPLIT_ITEM]
+    assert [item.task_id for item in state.plan_items] == ["task-1", "task-1-split-test", "task-2"]
+    assert state.plan_revision_history[0].operation_type == ResearchPlanOperationType.SPLIT_ITEM
+    assert state.last_plan_operation.operation_type == ResearchPlanOperationType.SPLIT_ITEM
+    assert any(buffer.task_id == "task-1-split-test" for buffer in state.evidence_buffer)
+
+    reorder_op = ResearchPlanOperation(
+        operation_type=ResearchPlanOperationType.REORDER_ITEMS,
+        target_task_id="task-1",
+        ordered_task_ids=["task-2", "task-1-split-test", "task-1"],
+        reason="测试重排",
+    )
+    applied = ResearchOrchestrator._apply_plan_operations(
+        state,
+        first,
+        [reorder_op],
+        revised_query=first.query,
+    )
+
+    assert [operation.operation_type for operation in applied] == [ResearchPlanOperationType.REORDER_ITEMS]
+    assert [item.task_id for item in state.plan_items] == ["task-2", "task-1-split-test", "task-1"]
+    assert [item.priority for item in state.plan_items] == [1, 2, 3]
 
 
 def test_report_writer_uses_fixed_structure_and_deduplicated_citations():

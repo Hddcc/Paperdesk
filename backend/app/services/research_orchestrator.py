@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
+import hashlib
 from queue import Queue
 from threading import Thread
 from uuid import uuid4
@@ -18,8 +19,14 @@ from app.agents import (
 from app.models import (
     EvidenceItem,
     PaperRecord,
+    PlannerProviderType,
+    ResearchActionDecision,
     ResearchActionType,
+    ResearchEvidenceBufferItem,
     ResearchPlanItem,
+    ResearchPlanOperation,
+    ResearchPlanOperationType,
+    ResearchPlannerCandidate,
     ResearchRequest,
     ResearchReport,
     ResearchRuntimePhase,
@@ -30,6 +37,7 @@ from app.models import (
     ResearchStepStatus,
     ResearchToolCallRecord,
     ResearchToolResult,
+    ResearchToolResultClassification,
     ResearchToolResultStatus,
     TodoTask,
     TodoTaskStatus,
@@ -45,6 +53,7 @@ from app.repositories import (
 from app.runtime import (
     MainAgentRuntime,
     MessageBus,
+    RuleBasedPlannerCandidateProvider,
     ResearchToolExecutor,
     ScratchpadStore,
     SubagentRunner,
@@ -102,6 +111,7 @@ class ResearchOrchestrator:
             message_bus=self.message_bus,
             scratchpad_store=self.scratchpad_store,
         )
+        self.planner_candidate_provider = RuleBasedPlannerCandidateProvider()
         self.tool_executor = ResearchToolExecutor(
             topic_planner=topic_planner,
             paper_search_agent=paper_search_agent,
@@ -253,25 +263,36 @@ class ResearchOrchestrator:
             while True:
                 candidate_item = self.main_runtime.peek_next_pending_item(runtime_state)
                 self.context_assembler.refresh(runtime_state, active_task=candidate_item)
-                action, task_id = self.main_runtime.next_action(runtime_state)
+                decision = self.main_runtime.next_action(runtime_state, request)
+                runtime_state.last_decision = decision
+                action = decision.action_type
+                task_id = decision.target_task_id
                 plan_item = self._find_plan_item(runtime_state, task_id)
                 current_task = self._to_todo_task(plan_item) if plan_item is not None else None
-                self._start_step(runtime_state, action, plan_item, event_sink)
+                self._start_step(runtime_state, decision, plan_item, event_sink)
 
-                result = self._execute_action(
-                    runtime_state,
-                    request,
-                    documents,
-                    action,
-                    plan_item,
-                )
+                try:
+                    result = self._execute_action(
+                        runtime_state,
+                        request,
+                        documents,
+                        action,
+                        plan_item,
+                    )
+                except Exception as exc:
+                    result = ResearchToolResult(
+                        status=ResearchToolResultStatus.FAILED,
+                        summary=str(exc),
+                        retryable=action in {ResearchActionType.SEARCH_ONLINE, ResearchActionType.SEARCH_LOCAL},
+                        error=str(exc),
+                    )
                 if result.status == ResearchToolResultStatus.FAILED:
-                    self._handle_tool_failure(runtime_state, request, action, plan_item, result, event_sink)
+                    self._handle_tool_failure(runtime_state, request, decision, plan_item, result, event_sink)
                     if result.retryable and runtime_state.failure_count < 3:
                         continue
                     raise RuntimeError(result.error or result.summary)
 
-                self._apply_tool_result(state, request, action, plan_item, result, event_sink)
+                self._apply_tool_result(state, request, decision, plan_item, result, event_sink)
                 current_task = None
 
                 if action == ResearchActionType.FINISH:
@@ -310,11 +331,29 @@ class ResearchOrchestrator:
                 top_k_local=request.top_k_local,
             )
         if action == ResearchActionType.REVISE_PLAN and plan_item is not None:
-            revised_query = f"{request.topic} {plan_item.intent}".strip()
+            candidate = self.planner_candidate_provider.propose(
+                runtime_state,
+                runtime_state.last_decision or ResearchActionDecision(
+                    action_type=action,
+                    selected_tool="revise_plan/rewrite_query",
+                    reason="Fallback planner decision.",
+                    target_task_id=plan_item.task_id,
+                ),
+                plan_item,
+            )
+            operation = candidate.candidate_plan_ops[0] if candidate.candidate_plan_ops else None
+            revised_query = (
+                f"{request.topic} {plan_item.intent}".strip()
+                if operation is None or not operation.query
+                else operation.query
+            )
             return ResearchToolResult(
                 status=ResearchToolResultStatus.COMPLETED,
-                summary=f"Revised task query to focus on {plan_item.intent}.",
-                payload={"query": revised_query},
+                summary=candidate.reason or f"Revised task query to focus on {plan_item.intent}.",
+                payload={
+                    "query": revised_query,
+                    "planner_candidate": candidate.model_dump(mode="json"),
+                },
                 retryable=False,
             )
         if action == ResearchActionType.SUMMARIZE_EVIDENCE and plan_item is not None:
@@ -355,7 +394,7 @@ class ResearchOrchestrator:
         self,
         state: ResearchState,
         request: ResearchRequest,
-        action: ResearchActionType,
+        decision: ResearchActionDecision,
         plan_item: ResearchPlanItem | None,
         result: ResearchToolResult,
         event_sink: EventSink | None,
@@ -365,6 +404,13 @@ class ResearchOrchestrator:
         now = datetime.now(timezone.utc)
         active_step = runtime_state.active_step
         task_id = plan_item.task_id if plan_item is not None else None
+        action = decision.action_type
+        tool_signature = self._tool_signature(action, plan_item, request, selected_tool=decision.selected_tool)
+        before_keys = self._evidence_keys(runtime_state, plan_item.task_id) if plan_item is not None else set()
+        applied_plan_ops: list[ResearchPlanOperation] = []
+        planner_provider: PlannerProviderType | None = None
+        planner_fallback_used = False
+        existing_task_ids = {task.id for task in state.todo_tasks}
 
         if action == ResearchActionType.PLAN:
             runtime_state.plan_items = [
@@ -387,6 +433,7 @@ class ResearchOrchestrator:
             evidence.paper_records = [PaperRecord(**item) for item in result.payload.get("paper_records", [])]
             evidence.online_completed = True
             plan_item.status = TodoTaskStatus.IN_PROGRESS
+            plan_item.attempt_count += 1
             self.research_repository.update_task(state.run_id, self._to_todo_task(plan_item))
             self._emit_task_status(state.run_id, plan_item, "在线论文检索完成。", event_sink)
         elif action == ResearchActionType.SEARCH_LOCAL and plan_item is not None:
@@ -394,26 +441,55 @@ class ResearchOrchestrator:
             evidence.evidence_items = [EvidenceItem(**item) for item in result.payload.get("evidence_items", [])]
             evidence.local_completed = True
             plan_item.status = TodoTaskStatus.IN_PROGRESS
+            plan_item.attempt_count += 1
             self.research_repository.update_task(state.run_id, self._to_todo_task(plan_item))
             self._emit_task_status(state.run_id, plan_item, "本地证据检索完成。", event_sink)
         elif action == ResearchActionType.REVISE_PLAN and plan_item is not None:
+            candidate = self._candidate_from_result(result)
+            if candidate is not None:
+                planner_provider = candidate.provider
+                planner_fallback_used = candidate.fallback_used
             revised_query = str(result.payload.get("query") or plan_item.query).strip()
-            if revised_query and revised_query != plan_item.query:
-                plan_item.query = revised_query
-                plan_item.query_history.append(revised_query)
             plan_item.revise_count += 1
+            plan_item.attempt_count += 1
+            runtime_state.replan_count += 1
+            plan_item.required_evidence = ["more_relevant_online_paper", "more_relevant_local_document"]
+            plan_item.notes.append(result.summary)
+            applied_plan_ops = self._apply_plan_operations(
+                runtime_state,
+                plan_item,
+                candidate.candidate_plan_ops if candidate is not None else [],
+                revised_query=revised_query,
+            )
             evidence = self._get_or_create_buffer(runtime_state, plan_item.task_id)
             evidence.paper_records = []
             evidence.evidence_items = []
+            evidence.compacted_evidence = []
             evidence.online_completed = False
             evidence.local_completed = False
-            self.research_repository.update_task(state.run_id, self._to_todo_task(plan_item))
+            state.todo_tasks = [self._to_todo_task(item) for item in runtime_state.plan_items]
+            new_tasks = [task for task in state.todo_tasks if task.id not in existing_task_ids]
+            if new_tasks:
+                self.research_repository.save_todo_tasks(state.run_id, new_tasks)
+            for task in state.todo_tasks:
+                if task.id in existing_task_ids:
+                    self.research_repository.update_task(state.run_id, task)
+            self.workspace_service.write_todo_tasks(state.run_id, state.todo_tasks)
             self._emit_task_status(state.run_id, plan_item, result.summary, event_sink)
+            self._emit(
+                event_sink,
+                {
+                    "type": "todo_list",
+                    "run_id": state.run_id,
+                    "tasks": [task.model_dump(mode="json") for task in state.todo_tasks],
+                },
+            )
         elif action == ResearchActionType.SUMMARIZE_EVIDENCE and plan_item is not None:
             evidence = self._get_or_create_buffer(runtime_state, plan_item.task_id)
             if self.main_runtime.should_degrade(plan_item, evidence):
                 evidence.degraded = True
                 plan_item.degraded = True
+                plan_item.notes.append("证据不足，按当前材料降级收束。")
             task_summary = plan_item.to_task_summary(evidence)
             if result.payload.get("task_summary"):
                 task_summary = task_summary.model_validate(result.payload["task_summary"])
@@ -475,6 +551,8 @@ class ResearchOrchestrator:
         runtime_state.step_count += 1
         runtime_state.failure_count = 0
         self.context_assembler.refresh(runtime_state, active_task=plan_item)
+        result.classification = self._classify_result(runtime_state, action, plan_item, result, before_keys)
+        self._update_progress_controls(runtime_state, tool_signature, result.classification)
         if active_step is not None:
             active_step.status = ResearchStepStatus.COMPLETED
             runtime_state.tool_history.append(
@@ -484,6 +562,13 @@ class ResearchOrchestrator:
                     task_id=task_id,
                     status=ResearchToolResultStatus.COMPLETED,
                     summary=result.summary,
+                    selected_tool=decision.selected_tool,
+                    tool_strategy=decision.tool_strategy,
+                    decision_reason=decision.reason,
+                    result_classification=result.classification,
+                    planner_provider=planner_provider,
+                    planner_fallback_used=planner_fallback_used,
+                    plan_operations=applied_plan_ops,
                     retryable=result.retryable,
                     paper_count=len(result.payload.get("paper_records", [])),
                     evidence_count=len(result.payload.get("evidence_items", [])),
@@ -498,6 +583,13 @@ class ResearchOrchestrator:
                 "run_id": state.run_id,
                 "task_id": task_id,
                 "action": action.value,
+                "selected_tool": decision.selected_tool,
+                "tool_strategy": decision.tool_strategy.model_dump(mode="json") if decision.tool_strategy else None,
+                "reason": decision.reason,
+                "planner_provider": planner_provider.value if planner_provider else None,
+                "planner_fallback_used": planner_fallback_used,
+                "plan_operations": [operation.model_dump(mode="json") for operation in applied_plan_ops],
+                "result_classification": result.classification.value if result.classification else None,
                 "summary": result.summary,
             },
         )
@@ -514,12 +606,23 @@ class ResearchOrchestrator:
         self,
         runtime_state: ResearchRuntimeState,
         request: ResearchRequest,
-        action: ResearchActionType,
+        decision: ResearchActionDecision,
         plan_item: ResearchPlanItem | None,
         result: ResearchToolResult,
         event_sink: EventSink | None,
     ) -> None:
+        action = decision.action_type
         runtime_state.failure_count += 1
+        result.classification = (
+            ResearchToolResultClassification.RETRYABLE_ERROR
+            if result.retryable
+            else ResearchToolResultClassification.NON_RETRYABLE_ERROR
+        )
+        self._update_progress_controls(
+            runtime_state,
+            self._tool_signature(action, plan_item, request, selected_tool=decision.selected_tool),
+            result.classification,
+        )
         runtime_state.stop_reason = result.error or result.summary
         active_step = runtime_state.active_step
         if active_step is not None:
@@ -531,6 +634,10 @@ class ResearchOrchestrator:
                     task_id=plan_item.task_id if plan_item is not None else None,
                     status=ResearchToolResultStatus.FAILED,
                     summary=result.summary,
+                    selected_tool=decision.selected_tool,
+                    tool_strategy=decision.tool_strategy,
+                    decision_reason=decision.reason,
+                    result_classification=result.classification,
                     retryable=result.retryable,
                     error=result.error or result.summary,
                     artifact_refs=result.artifacts,
@@ -544,6 +651,10 @@ class ResearchOrchestrator:
                 "run_id": runtime_state.run_id,
                 "task_id": plan_item.task_id if plan_item is not None else None,
                 "action": action.value,
+                "selected_tool": decision.selected_tool,
+                "tool_strategy": decision.tool_strategy.model_dump(mode="json") if decision.tool_strategy else None,
+                "reason": decision.reason,
+                "result_classification": result.classification.value,
                 "error": result.error or result.summary,
                 "retryable": result.retryable,
             },
@@ -570,16 +681,20 @@ class ResearchOrchestrator:
     def _start_step(
         self,
         runtime_state: ResearchRuntimeState,
-        action: ResearchActionType,
+        decision: ResearchActionDecision,
         plan_item: ResearchPlanItem | None,
         event_sink: EventSink | None,
     ) -> None:
+        action = decision.action_type
         runtime_state.current_phase = self.main_runtime.step_phase(action)
         runtime_state.active_step = ResearchRuntimeStep(
             step_id=str(uuid4()),
             action=action,
             task_id=plan_item.task_id if plan_item is not None else None,
             attempt=runtime_state.failure_count + 1,
+            selected_tool=decision.selected_tool,
+            tool_strategy=decision.tool_strategy,
+            reason=decision.reason,
             started_at=datetime.now(timezone.utc),
         )
         self.message_bus.append_trace(
@@ -592,6 +707,9 @@ class ResearchOrchestrator:
                 "action": action.value,
                 "task_id": plan_item.task_id if plan_item is not None else None,
                 "title": plan_item.title if plan_item is not None else None,
+                "selected_tool": decision.selected_tool,
+                "tool_strategy": decision.tool_strategy.model_dump(mode="json") if decision.tool_strategy else None,
+                "reason": decision.reason,
                 "attempt": runtime_state.active_step.attempt,
             },
         )
@@ -603,6 +721,9 @@ class ResearchOrchestrator:
                 "task_id": plan_item.task_id if plan_item is not None else None,
                 "action": action.value,
                 "title": plan_item.title if plan_item is not None else None,
+                "selected_tool": decision.selected_tool,
+                "tool_strategy": decision.tool_strategy.model_dump(mode="json") if decision.tool_strategy else None,
+                "reason": decision.reason,
                 "attempt": runtime_state.active_step.attempt,
             },
         )
@@ -641,6 +762,8 @@ class ResearchOrchestrator:
                 "step_count": runtime_state.step_count,
                 "stop_reason": runtime_state.stop_reason,
                 "context_state": runtime_state.context_state.model_dump(mode="json"),
+                "planner_provider": runtime_state.planner_provider.value,
+                "planner_fallback_used": runtime_state.planner_fallback_used,
             },
         )
         self._emit(
@@ -652,6 +775,8 @@ class ResearchOrchestrator:
                 "step_count": runtime_state.step_count,
                 "stop_reason": runtime_state.stop_reason,
                 "context_state": runtime_state.context_state.model_dump(mode="json"),
+                "planner_provider": runtime_state.planner_provider.value,
+                "planner_fallback_used": runtime_state.planner_fallback_used,
             },
         )
         self._emit_status(
@@ -731,6 +856,218 @@ class ResearchOrchestrator:
             if item.task_id == task_id:
                 return item
         return None
+
+    @staticmethod
+    def _candidate_from_result(result: ResearchToolResult) -> ResearchPlannerCandidate | None:
+        candidate_payload = result.payload.get("planner_candidate")
+        if not isinstance(candidate_payload, dict):
+            return None
+        return ResearchPlannerCandidate.model_validate(candidate_payload)
+
+    @staticmethod
+    def _apply_plan_operations(
+        runtime_state: ResearchRuntimeState,
+        plan_item: ResearchPlanItem,
+        operations: list[ResearchPlanOperation],
+        *,
+        revised_query: str,
+    ) -> list[ResearchPlanOperation]:
+        if not operations:
+            operations = [
+                ResearchPlanOperation(
+                    operation_type=ResearchPlanOperationType.REWRITE_QUERY,
+                    target_task_id=plan_item.task_id,
+                    query=revised_query,
+                    reason="默认改写 query，不调整计划结构。",
+                )
+            ]
+
+        applied: list[ResearchPlanOperation] = []
+        now = datetime.now(timezone.utc)
+        for operation in operations:
+            op = operation.model_copy(deep=True)
+            op.applied_at = now
+            if op.operation_type == ResearchPlanOperationType.REWRITE_QUERY:
+                if revised_query and revised_query != plan_item.query:
+                    plan_item.query = revised_query
+                    plan_item.query_history.append(revised_query)
+                applied.append(op)
+            elif op.operation_type == ResearchPlanOperationType.SPLIT_ITEM:
+                if ResearchOrchestrator._insert_split_item(runtime_state, plan_item, op):
+                    applied.append(op)
+            elif op.operation_type == ResearchPlanOperationType.REORDER_ITEMS:
+                if ResearchOrchestrator._reorder_pending_items(runtime_state, op):
+                    applied.append(op)
+            elif op.operation_type in {
+                ResearchPlanOperationType.INSERT_ITEM,
+                ResearchPlanOperationType.MERGE_ITEMS,
+                ResearchPlanOperationType.CLOSE_ITEM,
+            }:
+                continue
+
+        for op in applied:
+            runtime_state.plan_revision_history.append(op)
+            runtime_state.last_plan_operation = op
+            plan_item.notes.append(f"计划调整：{op.operation_type.value} - {op.reason}")
+        runtime_state.planner_provider = PlannerProviderType.RULE_BASED
+        runtime_state.planner_fallback_used = False
+        return applied
+
+    @staticmethod
+    def _insert_split_item(
+        runtime_state: ResearchRuntimeState,
+        plan_item: ResearchPlanItem,
+        operation: ResearchPlanOperation,
+    ) -> bool:
+        if not operation.new_task_id:
+            return False
+        if any(item.task_id == operation.new_task_id for item in runtime_state.plan_items):
+            return False
+        try:
+            index = runtime_state.plan_items.index(plan_item)
+        except ValueError:
+            return False
+        new_item = ResearchPlanItem(
+            task_id=operation.new_task_id,
+            title=operation.title or f"{plan_item.title}：补充证据线索",
+            intent=operation.intent or plan_item.intent,
+            query=operation.query or plan_item.query,
+            objective=operation.intent or plan_item.objective,
+            done_criteria=plan_item.done_criteria,
+            priority=operation.priority or plan_item.priority + 1,
+            suggested_tools=plan_item.suggested_tools,
+            required_evidence=plan_item.required_evidence,
+            query_history=[operation.query or plan_item.query],
+            status=TodoTaskStatus.PENDING,
+            notes=[f"由任务 {plan_item.task_id} 拆分生成。"],
+        )
+        runtime_state.plan_items.insert(index + 1, new_item)
+        runtime_state.evidence_buffer.append(ResearchEvidenceBufferItem(task_id=new_item.task_id))
+        return True
+
+    @staticmethod
+    def _reorder_pending_items(runtime_state: ResearchRuntimeState, operation: ResearchPlanOperation) -> bool:
+        if not operation.ordered_task_ids:
+            return False
+        completed = [item for item in runtime_state.plan_items if item.task_id in runtime_state.completed_items]
+        pending = [item for item in runtime_state.plan_items if item.task_id not in runtime_state.completed_items]
+        pending_by_id = {item.task_id: item for item in pending}
+        if any(task_id not in pending_by_id for task_id in operation.ordered_task_ids):
+            return False
+        ordered_pending = [pending_by_id[task_id] for task_id in operation.ordered_task_ids]
+        ordered_pending.extend(item for item in pending if item.task_id not in operation.ordered_task_ids)
+        for index, item in enumerate(ordered_pending, start=1):
+            item.priority = index
+        runtime_state.plan_items = completed + ordered_pending
+        return True
+
+    @staticmethod
+    def _tool_signature(
+        action: ResearchActionType,
+        plan_item: ResearchPlanItem | None,
+        request: ResearchRequest,
+        *,
+        selected_tool: str | None = None,
+    ) -> str:
+        parts = [
+            action.value,
+            selected_tool or action.value,
+            plan_item.task_id if plan_item is not None else "",
+            plan_item.query if plan_item is not None else request.topic,
+            request.search_provider or "",
+            str(request.top_k_online if action == ResearchActionType.SEARCH_ONLINE else request.top_k_local),
+        ]
+        digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:12]
+        task_part = plan_item.task_id if plan_item is not None else "run"
+        return f"{action.value}:{task_part}:{digest}"
+
+    def _classify_result(
+        self,
+        runtime_state: ResearchRuntimeState,
+        action: ResearchActionType,
+        plan_item: ResearchPlanItem | None,
+        result: ResearchToolResult,
+        before_keys: set[str],
+    ) -> ResearchToolResultClassification:
+        if result.status == ResearchToolResultStatus.FAILED:
+            return (
+                ResearchToolResultClassification.RETRYABLE_ERROR
+                if result.retryable
+                else ResearchToolResultClassification.NON_RETRYABLE_ERROR
+            )
+        if action in {
+            ResearchActionType.PLAN,
+            ResearchActionType.SUMMARIZE_EVIDENCE,
+            ResearchActionType.FINALIZE_REPORT,
+            ResearchActionType.FINISH,
+        }:
+            return ResearchToolResultClassification.SUCCESS_SUFFICIENT
+        if action == ResearchActionType.REVISE_PLAN:
+            return ResearchToolResultClassification.SUCCESS_INSUFFICIENT
+        if action in {ResearchActionType.SEARCH_ONLINE, ResearchActionType.SEARCH_LOCAL} and plan_item is not None:
+            after_keys = self._evidence_keys(runtime_state, plan_item.task_id)
+            if after_keys <= before_keys:
+                return ResearchToolResultClassification.NO_INCREMENT
+            evidence = self._get_or_create_buffer(runtime_state, plan_item.task_id)
+            if self.main_runtime.should_degrade(plan_item, evidence):
+                return ResearchToolResultClassification.SUCCESS_INSUFFICIENT
+            return (
+                ResearchToolResultClassification.SUCCESS_SUFFICIENT
+                if self.main_runtime._has_sufficient_evidence(evidence)
+                else ResearchToolResultClassification.SUCCESS_INSUFFICIENT
+            )
+        return result.classification or ResearchToolResultClassification.SUCCESS_SUFFICIENT
+
+    @staticmethod
+    def _update_progress_controls(
+        runtime_state: ResearchRuntimeState,
+        tool_signature: str,
+        classification: ResearchToolResultClassification,
+    ) -> None:
+        if runtime_state.last_tool_signature == tool_signature:
+            runtime_state.same_tool_streak += 1
+        else:
+            runtime_state.same_tool_streak = 1
+            runtime_state.last_tool_signature = tool_signature
+
+        if classification in {
+            ResearchToolResultClassification.NO_INCREMENT,
+            ResearchToolResultClassification.RETRYABLE_ERROR,
+            ResearchToolResultClassification.NON_RETRYABLE_ERROR,
+        }:
+            runtime_state.no_progress_count += 1
+        else:
+            runtime_state.no_progress_count = 0
+
+    @staticmethod
+    def _evidence_keys(runtime_state: ResearchRuntimeState, task_id: str) -> set[str]:
+        evidence = next(
+            (item for item in runtime_state.evidence_buffer if item.task_id == task_id),
+            None,
+        )
+        if evidence is None:
+            return set()
+        keys: set[str] = set()
+        for paper in evidence.paper_records:
+            if paper.doi:
+                keys.add(f"paper:doi:{paper.doi.casefold()}")
+            elif paper.url:
+                keys.add(f"paper:url:{paper.url.casefold()}")
+            else:
+                keys.add(f"paper:title:{' '.join(paper.title.casefold().split())}")
+        for item in evidence.evidence_items:
+            quote = " ".join((item.quote or item.snippet).casefold().split())[:120]
+            keys.add(
+                ":".join(
+                    [
+                        "local",
+                        item.document_id or item.source_id,
+                        str(item.page_number or ""),
+                        quote,
+                    ]
+                )
+            )
+        return keys
 
     @staticmethod
     def _get_or_create_buffer(runtime_state: ResearchRuntimeState, task_id: str):

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .enums import TodoTaskStatus
 from .paper import EvidenceItem, PaperRecord
@@ -42,6 +42,16 @@ class ResearchToolResultStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+class ResearchToolResultClassification(str, Enum):
+    """Decision-facing classification for a completed tool observation."""
+
+    SUCCESS_SUFFICIENT = "success_sufficient"
+    SUCCESS_INSUFFICIENT = "success_insufficient"
+    RETRYABLE_ERROR = "retryable_error"
+    NON_RETRYABLE_ERROR = "non_retryable_error"
+    NO_INCREMENT = "no_increment"
+
+
 class ResearchRuntimePhase(str, Enum):
     """High-level runtime phase exposed in checkpoints and detail payloads."""
 
@@ -60,6 +70,63 @@ class ResearchContextStage(str, Enum):
     EVIDENCE_COMPACTED = "evidence_compacted"
     HISTORY_COMPACTED = "history_compacted"
     TRUNCATED = "truncated"
+
+
+class PlannerProviderType(str, Enum):
+    """Planner candidate providers available to the main-agent runtime."""
+
+    RULE_BASED = "rule_based"
+    LLM_CANDIDATE = "llm_candidate"
+    HYBRID_CANDIDATE = "hybrid_candidate"
+
+
+class ResearchPlanOperationType(str, Enum):
+    """Plan structure operations proposed by planner candidates."""
+
+    REWRITE_QUERY = "rewrite_query"
+    INSERT_ITEM = "insert_item"
+    SPLIT_ITEM = "split_item"
+    MERGE_ITEMS = "merge_items"
+    REORDER_ITEMS = "reorder_items"
+    CLOSE_ITEM = "close_item"
+
+
+class ResearchToolStrategy(BaseModel):
+    """Concrete strategy selected under a high-level research action."""
+
+    strategy_id: str
+    action_type: ResearchActionType
+    label: str
+    parameters: dict = Field(default_factory=dict)
+    rationale: str = ""
+
+
+class ResearchPlanOperation(BaseModel):
+    """Validated plan operation that can be persisted in runtime history."""
+
+    operation_type: ResearchPlanOperationType
+    target_task_id: str | None = None
+    source_task_ids: list[str] = Field(default_factory=list)
+    new_task_id: str | None = None
+    title: str | None = None
+    intent: str | None = None
+    query: str | None = None
+    priority: int | None = None
+    ordered_task_ids: list[str] = Field(default_factory=list)
+    reason: str = ""
+    applied_at: datetime | None = None
+
+
+class ResearchPlannerCandidate(BaseModel):
+    """Candidate suggestion from a planner provider before runtime adjudication."""
+
+    candidate_action: ResearchActionType
+    candidate_tool: str
+    candidate_plan_ops: list[ResearchPlanOperation] = Field(default_factory=list)
+    confidence: float = 0.0
+    reason: str = ""
+    provider: PlannerProviderType = PlannerProviderType.RULE_BASED
+    fallback_used: bool = False
 
 
 class ResearchCompactedEvidenceItem(BaseModel):
@@ -117,6 +184,9 @@ class ResearchRuntimeStep(BaseModel):
     action: ResearchActionType
     task_id: str | None = None
     attempt: int = 1
+    selected_tool: str | None = None
+    tool_strategy: ResearchToolStrategy | None = None
+    reason: str = ""
     status: ResearchStepStatus = ResearchStepStatus.RUNNING
     started_at: datetime
 
@@ -129,6 +199,13 @@ class ResearchToolCallRecord(BaseModel):
     task_id: str | None = None
     status: ResearchToolResultStatus
     summary: str
+    selected_tool: str | None = None
+    tool_strategy: ResearchToolStrategy | None = None
+    decision_reason: str = ""
+    result_classification: ResearchToolResultClassification | None = None
+    planner_provider: PlannerProviderType | None = None
+    planner_fallback_used: bool = False
+    plan_operations: list[ResearchPlanOperation] = Field(default_factory=list)
     retryable: bool = False
     error: str | None = None
     paper_count: int = 0
@@ -157,12 +234,33 @@ class ResearchPlanItem(BaseModel):
     title: str
     intent: str
     query: str
+    objective: str = ""
+    done_criteria: str = ""
     status: TodoTaskStatus = TodoTaskStatus.PENDING
+    priority: int = 100
+    suggested_tools: list[str] = Field(default_factory=list)
+    required_evidence: list[str] = Field(default_factory=list)
+    attempt_count: int = 0
+    notes: list[str] = Field(default_factory=list)
     revise_count: int = 0
     query_history: list[str] = Field(default_factory=list)
     summary: str | None = None
     summary_markdown: str | None = None
     degraded: bool = False
+
+    @model_validator(mode="after")
+    def fill_dynamic_planning_defaults(self) -> "ResearchPlanItem":
+        if not self.objective:
+            self.objective = self.intent or self.title
+        if not self.done_criteria:
+            self.done_criteria = "形成有引用依据的任务级总结，或在证据不足时明确降级边界。"
+        if not self.suggested_tools:
+            self.suggested_tools = ["search_online", "search_local", "summarize_evidence"]
+        if not self.required_evidence:
+            self.required_evidence = ["online_paper", "local_document"]
+        if not self.query_history and self.query:
+            self.query_history = [self.query]
+        return self
 
     def to_task_summary(self, evidence: ResearchEvidenceBufferItem) -> TaskSummary:
         return TaskSummary(
@@ -181,10 +279,21 @@ class ResearchToolResult(BaseModel):
 
     status: ResearchToolResultStatus
     summary: str
+    classification: ResearchToolResultClassification | None = None
     payload: dict = Field(default_factory=dict)
     artifacts: list[TaskArtifactRef] = Field(default_factory=list)
     retryable: bool = False
     error: str | None = None
+
+
+class ResearchActionDecision(BaseModel):
+    """Structured decision produced by the main-agent controller."""
+
+    action_type: ResearchActionType
+    selected_tool: str | None = None
+    tool_strategy: ResearchToolStrategy | None = None
+    reason: str
+    target_task_id: str | None = None
 
 
 class ResearchRuntimeState(BaseModel):
@@ -201,6 +310,15 @@ class ResearchRuntimeState(BaseModel):
     context_state: ResearchContextState = Field(default_factory=ResearchContextState)
     working_summary: str = ""
     failure_count: int = 0
+    replan_count: int = 0
+    no_progress_count: int = 0
+    same_tool_streak: int = 0
+    last_tool_signature: str | None = None
+    last_decision: ResearchActionDecision | None = None
+    plan_revision_history: list[ResearchPlanOperation] = Field(default_factory=list)
+    last_plan_operation: ResearchPlanOperation | None = None
+    planner_provider: PlannerProviderType = PlannerProviderType.RULE_BASED
+    planner_fallback_used: bool = False
     stop_reason: str | None = None
     last_checkpoint_at: datetime | None = None
     step_count: int = 0
