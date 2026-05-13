@@ -139,14 +139,56 @@ export type ResearchActionType =
   | "finish"
   | "fail";
 
+export type PlannerProviderType = "rule_based" | "llm_candidate" | "hybrid_candidate";
+
+export type ResearchPlanOperationType =
+  | "rewrite_query"
+  | "insert_item"
+  | "split_item"
+  | "merge_items"
+  | "reorder_items"
+  | "close_item";
+
+export interface ResearchToolStrategy {
+  strategy_id: string;
+  action_type: ResearchActionType;
+  label: string;
+  parameters: Record<string, unknown>;
+  rationale: string;
+}
+
+export interface ResearchPlanOperation {
+  operation_type: ResearchPlanOperationType;
+  target_task_id?: string | null;
+  source_task_ids: string[];
+  new_task_id?: string | null;
+  title?: string | null;
+  intent?: string | null;
+  query?: string | null;
+  priority?: number | null;
+  ordered_task_ids: string[];
+  reason: string;
+  applied_at?: string | null;
+}
+
 export interface ResearchRuntimeStep {
   step_id: string;
   action: ResearchActionType;
   task_id?: string | null;
   attempt: number;
+  selected_tool?: string | null;
+  tool_strategy?: ResearchToolStrategy | null;
+  reason: string;
   status: "running" | "completed" | "failed";
   started_at: string;
 }
+
+export type ResearchToolResultClassification =
+  | "success_sufficient"
+  | "success_insufficient"
+  | "retryable_error"
+  | "non_retryable_error"
+  | "no_increment";
 
 export interface ResearchToolCallRecord {
   step_id: string;
@@ -154,6 +196,13 @@ export interface ResearchToolCallRecord {
   task_id?: string | null;
   status: "completed" | "failed" | "skipped";
   summary: string;
+  selected_tool?: string | null;
+  tool_strategy?: ResearchToolStrategy | null;
+  decision_reason: string;
+  result_classification?: ResearchToolResultClassification | null;
+  planner_provider?: PlannerProviderType | null;
+  planner_fallback_used: boolean;
+  plan_operations: ResearchPlanOperation[];
   retryable: boolean;
   error?: string | null;
   paper_count: number;
@@ -225,12 +274,27 @@ export interface ResearchPlanItem {
   title: string;
   intent: string;
   query: string;
+  objective: string;
+  done_criteria: string;
   status: TodoTaskStatus;
+  priority: number;
+  suggested_tools: string[];
+  required_evidence: string[];
+  attempt_count: number;
+  notes: string[];
   revise_count: number;
   query_history: string[];
   summary?: string | null;
   summary_markdown?: string | null;
   degraded: boolean;
+}
+
+export interface ResearchActionDecision {
+  action_type: ResearchActionType;
+  selected_tool?: string | null;
+  tool_strategy?: ResearchToolStrategy | null;
+  reason: string;
+  target_task_id?: string | null;
 }
 
 export interface ResearchRuntimeState {
@@ -251,6 +315,15 @@ export interface ResearchRuntimeState {
   context_state: ResearchContextState;
   working_summary: string;
   failure_count: number;
+  replan_count: number;
+  no_progress_count: number;
+  same_tool_streak: number;
+  last_tool_signature?: string | null;
+  last_decision?: ResearchActionDecision | null;
+  plan_revision_history: ResearchPlanOperation[];
+  last_plan_operation?: ResearchPlanOperation | null;
+  planner_provider: PlannerProviderType;
+  planner_fallback_used: boolean;
   stop_reason?: string | null;
   last_checkpoint_at?: string | null;
   step_count: number;

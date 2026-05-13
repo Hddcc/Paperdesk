@@ -316,11 +316,19 @@ export const useResearchStore = defineStore("research", () => {
               evidence_buffer: [],
               working_summary: "",
               failure_count: 0,
+              replan_count: 0,
+              no_progress_count: 0,
+              same_tool_streak: 0,
+              plan_revision_history: [],
+              planner_provider: "rule_based",
+              planner_fallback_used: false,
               step_count: 0
             }),
             context_state: event.context_state as ResearchRuntimeState["context_state"],
             current_phase: String(event.current_phase || runtimeState.value?.current_phase || "planning") as ResearchRuntimeState["current_phase"],
             step_count: Number(event.step_count || runtimeState.value?.step_count || 0),
+            planner_provider: String(event.planner_provider || runtimeState.value?.planner_provider || "rule_based") as ResearchRuntimeState["planner_provider"],
+            planner_fallback_used: Boolean(event.planner_fallback_used ?? runtimeState.value?.planner_fallback_used ?? false),
             stop_reason: (event.stop_reason as string | null | undefined) ?? runtimeState.value?.stop_reason
           };
         }
