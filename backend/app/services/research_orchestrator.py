@@ -56,8 +56,10 @@ from app.repositories import (
     RuntimeRepository,
 )
 from app.runtime import (
+    default_read_only_academic_mcp_declarations,
     MainAgentRuntime,
     MessageBus,
+    ReadOnlyMcpAdapter,
     RuleBasedPlannerCandidateProvider,
     ResearchToolExecutor,
     ScratchpadStore,
@@ -109,7 +111,14 @@ class ResearchOrchestrator:
         self.workspace_service = workspace_service
         self.context_assembler = context_assembler
 
-        self.tool_registry = ToolRegistry()
+        mcp_tools = ReadOnlyMcpAdapter(
+            allowed_tool_ids={
+                "mcp/academic_search",
+                "mcp/academic_metadata",
+                "mcp/read_only_web_fetch",
+            }
+        ).normalize(default_read_only_academic_mcp_declarations())
+        self.tool_registry = ToolRegistry(mcp_tools)
         self.skill_registry = SkillRegistry()
         self.main_runtime = MainAgentRuntime(
             {tool.tool_id: tool for tool in self.tool_registry.list_enabled()}
@@ -528,13 +537,14 @@ class ResearchOrchestrator:
             target_task_id=task_id,
         )
 
-    @staticmethod
-    def _strategy_id_for_action(action: ResearchActionType, request: ResearchRequest | None = None) -> str:
+    def _strategy_id_for_action(self, action: ResearchActionType, request: ResearchRequest | None = None) -> str:
         if action == ResearchActionType.PLAN:
             return "plan/rule_based_initial"
         if action == ResearchActionType.SEARCH_ONLINE:
             provider = (request.search_provider if request is not None else None) or ""
             provider = provider.casefold()
+            if provider in {"", "all", "auto"} and self.tool_registry.get("mcp/academic_search") is not None:
+                return "mcp/academic_search"
             if provider == "openalex":
                 return "search_online/openalex_primary"
             if provider == "arxiv":
@@ -590,7 +600,17 @@ class ResearchOrchestrator:
                 active_skill=self._active_skill(runtime_state),
             )
         if action == ResearchActionType.SEARCH_ONLINE and plan_item is not None:
-            return self.tool_executor.search_online(runtime_state.run_id, plan_item, request)
+            selected_tool = (
+                runtime_state.active_step.selected_tool
+                if runtime_state.active_step is not None
+                else None
+            )
+            return self.tool_executor.search_online(
+                runtime_state.run_id,
+                plan_item,
+                request,
+                selected_tool=selected_tool,
+            )
         if action == ResearchActionType.SEARCH_LOCAL and plan_item is not None:
             route_documents = self._documents_for_request(request, documents)
             return self.tool_executor.search_local(

@@ -5,6 +5,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from app.models import ResearchActionType, ToolDeclaration, ToolSource
+from .mcp_adapter import (
+    ReadOnlyMcpAdapter,
+    default_read_only_academic_mcp_declarations,
+)
 
 
 class ToolRegistry:
@@ -14,7 +18,8 @@ class ToolRegistry:
         self._tools: dict[str, ToolDeclaration] = {}
         for declaration in builtin_tool_declarations():
             self.register(declaration)
-        for declaration in declarations or []:
+        external_declarations = list(declarations) if declarations is not None else default_mcp_tool_declarations()
+        for declaration in external_declarations:
             self.register(declaration)
 
     def register(self, declaration: ToolDeclaration) -> None:
@@ -169,6 +174,18 @@ def builtin_tool_declarations() -> list[ToolDeclaration]:
             common_output,
         ),
     ]
+
+
+def default_mcp_tool_declarations() -> list[ToolDeclaration]:
+    """Expose the first read-only academic MCP tools through the unified registry."""
+
+    allowed_ids = {
+        "mcp/academic_search",
+        "mcp/academic_metadata",
+        "mcp/read_only_web_fetch",
+    }
+    adapter = ReadOnlyMcpAdapter(allowed_tool_ids=allowed_ids)
+    return adapter.normalize(default_read_only_academic_mcp_declarations())
 
 
 def _tool(

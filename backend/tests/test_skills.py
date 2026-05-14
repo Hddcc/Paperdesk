@@ -82,7 +82,8 @@ def test_skill_available_tools_resolve_to_tool_declarations():
     declarations = tool_registry.filter_enabled(skill.available_tools)
 
     assert {tool.tool_id for tool in declarations} == set(skill.available_tools)
-    assert all(tool.source == ToolSource.BUILTIN for tool in declarations)
+    assert any(tool.tool_id == "mcp/academic_search" and tool.source == ToolSource.MCP for tool in declarations)
+    assert any(tool.source == ToolSource.BUILTIN for tool in declarations)
     assert all(tool.input_schema for tool in declarations)
     assert all(tool.output_schema for tool in declarations)
 
@@ -94,6 +95,7 @@ def test_tool_registry_declarations_are_serializable():
 
     assert tools
     assert any(tool.tool_id == "search_online/mixed_broad_recall" for tool in tools)
+    assert any(tool.tool_id == "mcp/academic_search" and tool.source == ToolSource.MCP for tool in tools)
     for tool in tools:
         payload = tool.model_dump(mode="json")
         assert payload["tool_id"]
@@ -150,3 +152,14 @@ def test_mcp_absence_keeps_builtin_tools_available():
 
     assert registry.get("plan/rule_based_initial") is not None
     assert registry.get("search_local/vector_recall_default") is not None
+
+
+def test_default_tool_registry_exposes_read_only_academic_mcp_tools():
+    registry = ToolRegistry()
+
+    academic_search = registry.get("mcp/academic_search")
+
+    assert academic_search is not None
+    assert academic_search.source == ToolSource.MCP
+    assert academic_search.read_only is True
+    assert academic_search.input_schema["action_type"] == "search_online"

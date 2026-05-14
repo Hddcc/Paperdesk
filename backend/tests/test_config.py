@@ -23,6 +23,9 @@ def test_settings_read_env_file_and_prepare_runtime_paths(sandbox_dir) -> None:
                 "EMBEDDING_PROVIDER=local",
                 "EMBEDDING_MODEL=test-embedding",
                 "EMBEDDING_WARMUP_ON_START=false",
+                "EMBEDDING_CACHE_DIR=./runtime/huggingface",
+                "EMBEDDING_HF_ENDPOINT=https://hf-mirror.example",
+                "EMBEDDING_LOCAL_FILES_ONLY=true",
                 "SQLITE_PATH=./runtime/paperdesk.db",
                 "MILVUS_URI=http://milvus.example:19530",
                 "MILVUS_TOKEN=milvus-token",
@@ -53,6 +56,9 @@ def test_settings_read_env_file_and_prepare_runtime_paths(sandbox_dir) -> None:
     assert settings.embedding_provider == "local"
     assert settings.embedding_model == "test-embedding"
     assert settings.embedding_warmup_on_start is False
+    assert settings.embedding_cache_path == settings.resolve_path("./runtime/huggingface")
+    assert settings.embedding_hf_endpoint == "https://hf-mirror.example"
+    assert settings.embedding_local_files_only is True
     assert settings.milvus_uri == "http://milvus.example:19530"
     assert settings.effective_milvus_uri == "http://milvus.example:19530"
     assert settings.uses_embedded_milvus is False

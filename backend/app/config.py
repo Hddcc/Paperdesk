@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     embedding_provider: str = "local"
     embedding_model: str = "BAAI/bge-m3"
     embedding_warmup_on_start: bool = True
+    embedding_cache_dir: str | None = None
+    embedding_hf_endpoint: str | None = None
+    embedding_local_files_only: bool = False
     sqlite_path: str = "./data/paperdesk.db"
     chroma_path: str = "./data/chroma"
     milvus_uri: str | None = None
@@ -65,6 +68,8 @@ class Settings(BaseSettings):
         "llm_base_url",
         "llm_api_key",
         "openalex_api_key",
+        "embedding_cache_dir",
+        "embedding_hf_endpoint",
         "milvus_uri",
         "milvus_token",
         mode="before",
@@ -164,7 +169,7 @@ class Settings(BaseSettings):
 
     def ensure_directories(self) -> None:
         """Create required runtime directories."""
-        for directory in (
+        directories = [
             self.sqlite_file.parent,
             self.chroma_storage_path,
             self.milvus_lite_file.parent,
@@ -176,8 +181,18 @@ class Settings(BaseSettings):
             self.claude_path,
             self.claude_path / "runtime",
             self.claude_path / "sessions",
-        ):
+        ]
+        if self.embedding_cache_path is not None:
+            directories.append(self.embedding_cache_path)
+
+        for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def embedding_cache_path(self) -> Path | None:
+        if self.embedding_cache_dir is None:
+            return None
+        return self.resolve_path(self.embedding_cache_dir)
 
 
 @lru_cache(maxsize=1)

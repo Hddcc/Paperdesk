@@ -35,7 +35,7 @@ class MainAgentRuntime:
         *,
         strategy_id: str | None = None,
         request: ResearchRequest | None = None,
-        rationale: str = "由主 Agent 在高层动作下选择的具体工具策略。",
+        rationale: str = "由主 Agent 在高层动作下选择具体工具策略。",
     ) -> ResearchToolStrategy:
         return self._tool_strategy(action, strategy_id=strategy_id, request=request, rationale=rationale)
 
@@ -125,6 +125,7 @@ class MainAgentRuntime:
                 ResearchActionType.SEARCH_ONLINE,
                 active_item.task_id,
                 "当前任务缺少在线论文候选，优先补充外部证据。",
+                strategy_id=self._search_online_strategy_for_item(active_item, request),
                 request=request,
             )
         if needs_local and local_required and not evidence.local_completed:
@@ -243,9 +244,9 @@ class MainAgentRuntime:
         *,
         strategy_id: str | None = None,
         request: ResearchRequest | None = None,
-        rationale: str = "由主 Agent 在高层动作下选择的具体工具策略。",
+        rationale: str = "由主 Agent 在高层动作下选择具体工具策略。",
     ) -> ResearchToolStrategy:
-        selected_strategy = strategy_id or MainAgentRuntime._default_strategy_id(action, request)
+        selected_strategy = strategy_id or self._default_strategy_id(action, request)
         labels = {
             "plan/rule_based_initial": "规则初始规划",
             "search_online/openalex_primary": "OpenAlex 优先检索",
@@ -278,13 +279,14 @@ class MainAgentRuntime:
             rationale=rationale,
         )
 
-    @staticmethod
-    def _default_strategy_id(action: ResearchActionType, request: ResearchRequest | None) -> str:
+    def _default_strategy_id(self, action: ResearchActionType, request: ResearchRequest | None) -> str:
         if action == ResearchActionType.PLAN:
             return "plan/rule_based_initial"
         if action == ResearchActionType.SEARCH_ONLINE:
             provider = (request.search_provider if request is not None else None) or ""
             provider = provider.casefold()
+            if provider in {"", "all", "auto"} and "mcp/academic_search" in self.tool_declarations:
+                return "mcp/academic_search"
             if provider == "openalex":
                 return "search_online/openalex_primary"
             if provider == "arxiv":
@@ -306,9 +308,23 @@ class MainAgentRuntime:
     def _revise_strategy_for_task(task: ResearchPlanItem) -> str:
         broad_markers = ("同时", "多个", "综合")
         combined_text = f"{task.title} {task.intent} {task.query}"
-        if any(marker in combined_text for marker in broad_markers):
+        if any(marker in combined_text for marker in broad_markers) or "、" in task.title:
             return "revise_plan/split_task"
         return "revise_plan/rewrite_query"
+
+    def _search_online_strategy_for_item(
+        self,
+        item: ResearchPlanItem,
+        request: ResearchRequest | None,
+    ) -> str:
+        if (
+            "mcp/academic_search" in item.suggested_tools
+            and "mcp/academic_search" in self.tool_declarations
+        ):
+            provider = (request.search_provider if request is not None else None) or ""
+            if provider.casefold() in {"", "all", "auto"}:
+                return "mcp/academic_search"
+        return self._default_strategy_id(ResearchActionType.SEARCH_ONLINE, request)
 
     def _same_tool_is_stale(self, state: ResearchRuntimeState) -> bool:
         if state.same_tool_streak < self.max_same_tool_streak:

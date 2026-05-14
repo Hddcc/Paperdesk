@@ -14,6 +14,7 @@
     "search_online/mixed_broad_recall",
     "search_online/openalex_primary",
     "search_online/arxiv_primary",
+    "mcp/academic_search",
     "summarize_evidence/task_level_merge",
     "summarize_evidence/degraded_closeout",
     "revise_plan/rewrite_query",

@@ -251,10 +251,16 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert run_payload["runtime_state"]["plan_items"][0]["done_criteria"]
     assert run_payload["runtime_state"]["plan_items"][0]["suggested_tools"]
     assert run_payload["task_route"]["active_skill_id"] == "multi_paper_review"
-    assert set(run_payload["runtime_state"]["plan_items"][0]["suggested_tools"]) >= {
+    planned_tools = {
+        tool
+        for item in run_payload["runtime_state"]["plan_items"]
+        for tool in item["suggested_tools"]
+    }
+    assert planned_tools >= {
         "plan/rule_based_initial",
         "search_local/vector_recall_default",
         "search_online/mixed_broad_recall",
+        "mcp/academic_search",
         "summarize_evidence/task_level_merge",
         "finalize_report/report_writer_default",
     }
@@ -278,8 +284,9 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
         record for record in run_payload["runtime_state"]["tool_history"]
         if record["action"] == "search_online"
     )
-    assert online_tool_record["selected_tool"] == "search_online/mixed_broad_recall"
+    assert online_tool_record["selected_tool"] == "mcp/academic_search"
     assert online_tool_record["tool_strategy"]["action_type"] == "search_online"
+    assert online_tool_record["tool_strategy"]["label"] == "External academic search"
     first_evidence_action = next(
         record["action"]
         for record in run_payload["runtime_state"]["tool_history"]
@@ -835,8 +842,8 @@ def test_retryable_tool_error_records_decision_classification(client, monkeypatc
     assert "done" in [event["type"] for event in events]
     failed_event = next(event for event in events if event["type"] == "agent_step_failed")
     assert failed_event["result_classification"] == "retryable_error"
-    assert failed_event["selected_tool"] == "search_online/mixed_broad_recall"
-    assert failed_event["tool_strategy"]["strategy_id"] == "search_online/mixed_broad_recall"
+    assert failed_event["selected_tool"] == "mcp/academic_search"
+    assert failed_event["tool_strategy"]["strategy_id"] == "mcp/academic_search"
     assert "temporary provider outage" in failed_event["error"]
 
 

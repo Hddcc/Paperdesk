@@ -115,6 +115,8 @@ class ResearchToolExecutor:
         run_id: str,
         task: ResearchPlanItem,
         request: ResearchRequest,
+        *,
+        selected_tool: str | None = None,
     ) -> ResearchToolResult:
         todo_task = self._to_todo_task(task)
         paper_records = self.paper_search_agent.search(
@@ -147,11 +149,20 @@ class ResearchToolExecutor:
                 description="Compact online paper summary",
             ),
         ]
+        source_note = (
+            " External read-only academic capability was selected through the unified tool registry."
+            if selected_tool and selected_tool.startswith("mcp/")
+            else ""
+        )
         return ResearchToolResult(
             status=ResearchToolResultStatus.COMPLETED,
             classification=ResearchToolResultClassification.SUCCESS_INSUFFICIENT,
-            summary=f"Collected {len(paper_records)} online paper candidates.",
-            payload={"paper_records": payload},
+            summary=f"Collected {len(paper_records)} online paper candidates.{source_note}",
+            payload={
+                "paper_records": payload,
+                "tool_source": "mcp" if selected_tool and selected_tool.startswith("mcp/") else "builtin",
+                "selected_tool": selected_tool,
+            },
             artifacts=artifacts,
             retryable=True,
         )
