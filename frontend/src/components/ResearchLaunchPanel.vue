@@ -47,6 +47,7 @@
       </label>
 
       <button class="button-primary" :disabled="disabled || !canSubmit" type="submit">
+        <Rocket :size="16" />
         {{ disabled ? "研究进行中..." : submitLabel }}
       </button>
     </form>
@@ -55,6 +56,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { Rocket } from "lucide-vue-next";
 
 import type { ResearchRequest } from "../types/models";
 
@@ -107,7 +109,13 @@ function emitSubmit() {
     top_k_online: clampCount(topKOnline.value),
     top_k_local: clampCount(topKLocal.value),
     search_provider: searchProvider.value || null,
-    notes: notes.value.trim() || null
+    notes: notes.value.trim() || null,
+    input_modes: props.initialRequest.input_modes?.length
+      ? [...props.initialRequest.input_modes]
+      : ["prompt"],
+    selected_document_ids: props.initialRequest.selected_document_ids
+      ? [...props.initialRequest.selected_document_ids]
+      : []
   });
 }
 

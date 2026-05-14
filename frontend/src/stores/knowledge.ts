@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 
 import {
   createChatSession,
+  deleteChatSession,
   getChatSessionDetail,
   listChatSessions,
   sendChatMessage
@@ -63,6 +64,35 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     sessions.value = [session, ...sessions.value];
     await openSession(session.id);
     return session;
+  }
+
+  async function removeSession(sessionId: string) {
+    loading.value = true;
+    error.value = "";
+    try {
+      await deleteChatSession(sessionId);
+      const remaining = sessions.value.filter((item) => item.id !== sessionId);
+      sessions.value = remaining;
+      if (currentSessionId.value !== sessionId) {
+        return;
+      }
+      currentSessionId.value = "";
+      messages.value = [];
+      memorySnapshot.value = null;
+      contextState.value = null;
+      clearComposer();
+      retrievalNotice.value = "";
+      if (remaining.length) {
+        await openSession(remaining[0].id);
+      } else {
+        await createNewSession();
+      }
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "删除会话失败";
+      throw err;
+    } finally {
+      loading.value = false;
+    }
   }
 
   async function openSession(sessionId: string) {
@@ -229,6 +259,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     bootstrap,
     refreshSessions,
     createNewSession,
+    removeSession,
     openSession,
     queueImageAttachment,
     queueLocalPdfAttachment,

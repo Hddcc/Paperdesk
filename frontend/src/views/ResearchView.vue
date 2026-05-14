@@ -41,6 +41,7 @@
             :disabled="store.isRunning"
             @click="store.resumeCurrentRun"
           >
+            <RefreshCcw :size="16" />
             恢复当前运行
           </button>
 
@@ -88,8 +89,19 @@
         description="你也可以直接在工作台里修改参数并重新开始一轮研究。"
         submit-label="开始研究"
         :disabled="store.isRunning"
-        :initial-request="store.lastRequest"
+        :initial-request="launchRequest"
         @submit="handleSubmit"
+      />
+
+      <TaskQuickLaunchPanel
+        v-if="store.lastRequest.selected_document_ids?.length"
+        compact
+        title="围绕当前材料继续"
+        :document-count="store.lastRequest.selected_document_ids?.length || 0"
+        :has-uploaded-context="hasUploadedContext"
+        :disabled="store.isRunning"
+        @fill="fillQuickAction"
+        @submit="submitQuickAction"
       />
 
       <ResearchTaskList
@@ -118,17 +130,21 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { RefreshCcw } from "lucide-vue-next";
 
 import MarkdownPreview from "../components/MarkdownPreview.vue";
 import ResearchLaunchPanel from "../components/ResearchLaunchPanel.vue";
 import ResearchTaskList from "../components/ResearchTaskList.vue";
+import TaskQuickLaunchPanel, { type QuickLaunchAction } from "../components/TaskQuickLaunchPanel.vue";
 import TaskSummaryPanel from "../components/TaskSummaryPanel.vue";
 import { useResearchStore } from "../stores/research";
 import type { ResearchRequest } from "../types/models";
 
 const store = useResearchStore();
 const contextState = computed(() => store.runtimeState?.context_state || null);
+const hasUploadedContext = computed(() => store.lastRequest.input_modes?.includes("uploaded_file") ?? false);
+const launchRequest = ref<Partial<ResearchRequest>>({ ...store.lastRequest });
 
 onMounted(() => {
   if (store.hasPendingRequest) {
@@ -136,8 +152,32 @@ onMounted(() => {
   }
 });
 
+watch(
+  () => store.lastRequest,
+  (request) => {
+    launchRequest.value = { ...request };
+  },
+  { deep: true }
+);
+
 async function handleSubmit(payload: ResearchRequest) {
   await store.startResearch(payload);
+}
+
+function fillQuickAction(action: QuickLaunchAction) {
+  launchRequest.value = {
+    ...store.lastRequest,
+    topic: action.prompt,
+    notes: action.notes
+  };
+}
+
+async function submitQuickAction(action: QuickLaunchAction) {
+  await store.startResearch({
+    ...store.lastRequest,
+    topic: action.prompt,
+    notes: action.notes
+  });
 }
 
 function formatSearchProvider(value: string | null) {

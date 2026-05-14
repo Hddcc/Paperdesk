@@ -3,18 +3,29 @@
     <article class="panel">
       <header class="section-head">
         <h2>历史报告</h2>
-        <button class="button-secondary" @click="store.refreshReports">刷新</button>
+        <button class="button-secondary" @click="store.refreshReports">
+          <RefreshCcw :size="16" />
+          刷新
+        </button>
       </header>
       <div class="panel-body panel-scroll">
         <ul class="report-list">
-          <li v-for="report in store.reports" :key="report.id" class="report-card">
+          <li
+            v-for="report in store.reports"
+            :key="report.id"
+            class="report-card"
+            :class="{ 'report-card-active': report.id === store.activeReport?.id }"
+          >
             <div class="report-card-row">
               <button class="report-link report-card-main" @click="store.loadReport(report.id)">
                 <strong class="card-title">{{ report.topic }}</strong>
                 <span class="card-meta">{{ formatTime(report.created_at) }}</span>
               </button>
               <div class="card-actions">
-                <button class="button-danger action-button" @click="store.removeReport(report.id)">删除</button>
+                <button class="button-danger action-button" @click="store.removeReport(report.id)">
+                  <Trash2 :size="15" />
+                  删除
+                </button>
               </div>
             </div>
           </li>
@@ -37,6 +48,7 @@
           :disabled="!store.activeReport || exporting"
           @click="handleExport"
         >
+          <Download :size="16" />
           {{ exporting ? "导出中..." : "导出 Markdown" }}
         </button>
       </header>
@@ -51,6 +63,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
+import { Download, RefreshCcw, Trash2 } from "lucide-vue-next";
 
 import MarkdownPreview from "../components/MarkdownPreview.vue";
 import { exportReportMarkdown } from "../services/api";

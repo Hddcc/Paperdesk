@@ -5,6 +5,10 @@ import type {
   ChatSession,
   ChatSessionCreateRequest,
   ChatSessionDetail,
+  DocumentCategory,
+  DocumentCategoryAssignmentRequest,
+  DocumentCategoryCreateRequest,
+  DocumentCategoryUpdateRequest,
   LibraryDocument,
   MemorySnapshot,
   PaperAnalysisRequest,
@@ -78,6 +82,76 @@ export async function deleteDocument(documentId: string): Promise<LibraryDocumen
   }
 }
 
+export async function listDocumentCategories(): Promise<DocumentCategory[]> {
+  try {
+    const response = await fetch(`${baseUrl}/api/document-categories`, {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" }
+    });
+    return parseJson<DocumentCategory[]>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "加载分类失败");
+  }
+}
+
+export async function createDocumentCategory(
+  payload: DocumentCategoryCreateRequest
+): Promise<DocumentCategory> {
+  try {
+    const response = await fetch(`${baseUrl}/api/document-categories`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    return parseJson<DocumentCategory>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "创建分类失败");
+  }
+}
+
+export async function updateDocumentCategory(
+  categoryId: string,
+  payload: DocumentCategoryUpdateRequest
+): Promise<DocumentCategory> {
+  try {
+    const response = await fetch(`${baseUrl}/api/document-categories/${categoryId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    return parseJson<DocumentCategory>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "更新分类失败");
+  }
+}
+
+export async function deleteDocumentCategory(categoryId: string): Promise<DocumentCategory> {
+  try {
+    const response = await fetch(`${baseUrl}/api/document-categories/${categoryId}`, {
+      method: "DELETE"
+    });
+    return parseJson<DocumentCategory>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "删除分类失败");
+  }
+}
+
+export async function assignDocumentCategories(
+  documentId: string,
+  payload: DocumentCategoryAssignmentRequest
+): Promise<LibraryDocument> {
+  try {
+    const response = await fetch(`${baseUrl}/api/documents/${documentId}/categories`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    return parseJson<LibraryDocument>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "保存论文分类失败");
+  }
+}
+
 export async function askKnowledgeQuestion(payload: RagAskRequest): Promise<RagAnswer> {
   try {
     const response = await fetch(`${baseUrl}/api/rag/ask`, {
@@ -110,6 +184,17 @@ export async function createChatSession(payload: ChatSessionCreateRequest = {}):
     return parseJson<ChatSession>(response);
   } catch (err) {
     throw normalizeFetchError(err, "创建会话失败");
+  }
+}
+
+export async function deleteChatSession(sessionId: string): Promise<ChatSession> {
+  try {
+    const response = await fetch(`${baseUrl}/api/chat/sessions/${sessionId}`, {
+      method: "DELETE"
+    });
+    return parseJson<ChatSession>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "删除会话失败");
   }
 }
 

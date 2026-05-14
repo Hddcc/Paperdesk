@@ -111,6 +111,29 @@ export interface LibraryDocument {
   version?: number;
   created_at?: string;
   uploaded_at: string;
+  categories: DocumentCategory[];
+}
+
+export interface DocumentCategory {
+  id: string;
+  name: string;
+  color?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentCategoryCreateRequest {
+  name: string;
+  color?: string | null;
+}
+
+export interface DocumentCategoryUpdateRequest {
+  name?: string | null;
+  color?: string | null;
+}
+
+export interface DocumentCategoryAssignmentRequest {
+  category_ids: string[];
 }
 
 export interface EvidenceItem {

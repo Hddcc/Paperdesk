@@ -1,12 +1,23 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { computed, ref } from "vue";
 
-import { deleteDocument, listDocuments, uploadDocument } from "../services/api";
-import type { LibraryDocument } from "../types/models";
+import {
+  assignDocumentCategories,
+  createDocumentCategory,
+  deleteDocument,
+  deleteDocumentCategory,
+  listDocumentCategories,
+  listDocuments,
+  uploadDocument
+} from "../services/api";
+import type { DocumentCategory, LibraryDocument } from "../types/models";
 
 export const useDocumentStore = defineStore("documents", () => {
   const documents = ref<LibraryDocument[]>([]);
+  const categories = ref<DocumentCategory[]>([]);
+  const activeCategoryId = ref<string | null>(null);
   const loading = ref(false);
+  const categoryLoading = ref(false);
   const error = ref("");
   const uploadHint = ref("");
   const completionNotice = ref("");
@@ -15,6 +26,15 @@ export const useDocumentStore = defineStore("documents", () => {
   const processingUploads = ref<string[]>([]);
   let pollingPromise: Promise<void> | null = null;
   let noticeTimer: number | null = null;
+
+  const visibleDocuments = computed(() => {
+    if (!activeCategoryId.value) {
+      return documents.value;
+    }
+    return documents.value.filter((document) =>
+      document.categories?.some((category) => category.id === activeCategoryId.value)
+    );
+  });
 
   function syncProcessingUploads() {
     processingUploads.value = documents.value
@@ -72,6 +92,98 @@ export const useDocumentStore = defineStore("documents", () => {
     await fetchDocuments();
   }
 
+  async function refreshCategories() {
+    categoryLoading.value = true;
+    error.value = "";
+    try {
+      categories.value = await listDocumentCategories();
+      if (
+        activeCategoryId.value &&
+        !categories.value.some((category) => category.id === activeCategoryId.value)
+      ) {
+        activeCategoryId.value = null;
+      }
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "加载分类失败";
+    } finally {
+      categoryLoading.value = false;
+    }
+  }
+
+  async function bootstrapLibrary() {
+    await Promise.all([refreshDocuments(), refreshCategories()]);
+  }
+
+  function setActiveCategory(categoryId: string | null) {
+    activeCategoryId.value = categoryId;
+  }
+
+  async function addCategory(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      return;
+    }
+    error.value = "";
+    const palette = ["#0f5fb8", "#047c71", "#6957d8", "#b76a00", "#b42318"];
+    try {
+      const category = await createDocumentCategory({
+        name: trimmed,
+        color: palette[categories.value.length % palette.length]
+      });
+      categories.value = [...categories.value, category];
+      activeCategoryId.value = category.id;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "创建分类失败";
+      throw err;
+    }
+  }
+
+  async function removeCategory(categoryId: string) {
+    const previousCategories = categories.value;
+    const previousDocuments = documents.value;
+    categories.value = categories.value.filter((category) => category.id !== categoryId);
+    documents.value = documents.value.map((document) => ({
+      ...document,
+      categories: document.categories.filter((category) => category.id !== categoryId)
+    }));
+    if (activeCategoryId.value === categoryId) {
+      activeCategoryId.value = null;
+    }
+    error.value = "";
+    try {
+      await deleteDocumentCategory(categoryId);
+    } catch (err) {
+      categories.value = previousCategories;
+      documents.value = previousDocuments;
+      error.value = err instanceof Error ? err.message : "删除分类失败";
+      throw err;
+    }
+  }
+
+  async function saveDocumentCategories(documentId: string, categoryIds: string[]) {
+    const previousDocuments = documents.value;
+    const selectedCategories = categories.value.filter((category) => categoryIds.includes(category.id));
+    documents.value = documents.value.map((document) =>
+      document.id === documentId
+        ? {
+            ...document,
+            categories: selectedCategories
+          }
+        : document
+    );
+    error.value = "";
+    try {
+      const updated = await assignDocumentCategories(documentId, {
+        category_ids: categoryIds
+      });
+      upsertDocument(updated);
+    } catch (err) {
+      documents.value = previousDocuments;
+      error.value = err instanceof Error ? err.message : "保存论文分类失败";
+      throw err;
+    }
+  }
+
   async function addDocument(file: File): Promise<LibraryDocument | undefined> {
     submittingUpload.value = true;
     activeUploadName.value = file.name;
@@ -106,18 +218,23 @@ export const useDocumentStore = defineStore("documents", () => {
   }
 
   async function removeDocument(documentId: string) {
-    loading.value = true;
+    const previousDocuments = documents.value;
+    const previousProcessingUploads = processingUploads.value;
+    const targetDocument = documents.value.find((item) => item.id === documentId);
+
+    documents.value = documents.value.filter((item) => item.id !== documentId);
+    processingUploads.value = processingUploads.value.filter((item) => item !== documentId);
     error.value = "";
     try {
       await deleteDocument(documentId);
-      documents.value = documents.value.filter((item) => item.id !== documentId);
-      processingUploads.value = processingUploads.value.filter((item) => item !== documentId);
       clearProcessingHintIfIdle();
     } catch (err) {
       error.value = err instanceof Error ? err.message : "删除文档失败";
+      if (targetDocument) {
+        documents.value = previousDocuments;
+        processingUploads.value = previousProcessingUploads;
+      }
       throw err;
-    } finally {
-      loading.value = false;
     }
   }
 
@@ -198,15 +315,25 @@ export const useDocumentStore = defineStore("documents", () => {
 
   return {
     documents,
+    visibleDocuments,
+    categories,
+    activeCategoryId,
     loading,
+    categoryLoading,
     error,
     uploadHint,
     completionNotice,
     activeUploadName,
     submittingUpload,
+    bootstrapLibrary,
     refreshDocuments,
+    refreshCategories,
     addDocument,
     removeDocument,
+    addCategory,
+    removeCategory,
+    saveDocumentCategories,
+    setActiveCategory,
     dismissCompletionNotice
   };
 });

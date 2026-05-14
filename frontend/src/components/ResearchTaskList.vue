@@ -15,7 +15,10 @@
             @click="$emit('select', entry.task.id)"
           >
             <div class="task-title-row">
-              <strong class="card-title">{{ entry.task.title }}</strong>
+              <strong class="card-title">
+                <CircleDot :size="15" aria-hidden="true" />
+                {{ entry.task.title }}
+              </strong>
               <span class="status-badge" :data-status="entry.task.status">
                 {{ formatTaskStatus(entry.task.status) }}
               </span>
@@ -31,6 +34,7 @@
 </template>
 
 <script setup lang="ts">
+import { CircleDot } from "lucide-vue-next";
 import type { ResearchTaskState } from "../types/models";
 
 defineProps<{

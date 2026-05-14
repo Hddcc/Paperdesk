@@ -3,25 +3,35 @@
     <aside class="chat-session-panel panel">
       <header class="chat-panel-head">
         <div>
-          <p class="eyebrow">Knowledge Chat</p>
+          <p class="eyebrow">知识对话</p>
           <h2>知识库对话</h2>
         </div>
         <button class="button-secondary" :disabled="store.loading" @click="store.createNewSession">
+          <Plus :size="16" />
           新建对话
         </button>
       </header>
 
       <div class="panel-body panel-scroll">
         <ul class="chat-session-list">
-          <li v-for="session in store.sessions" :key="session.id">
+          <li v-for="session in store.sessions" :key="session.id" class="chat-session-row">
             <button
               class="chat-session-button"
               :class="{ 'chat-session-active': session.id === store.currentSessionId }"
               @click="store.openSession(session.id)"
-              :title="session.title"
+              :title="sessionSummary(session)"
             >
-              <strong class="chat-session-title">{{ session.title }}</strong>
-              <p>{{ session.last_message_preview || "从这里继续新的知识对话。" }}</p>
+              <span class="chat-session-title">{{ sessionSummary(session) }}</span>
+            </button>
+            <button
+              class="chat-session-delete"
+              type="button"
+              aria-label="删除对话"
+              title="删除对话"
+              :disabled="store.loading"
+              @click.stop="store.removeSession(session.id)"
+            >
+              <Trash2 :size="15" aria-hidden="true" />
             </button>
           </li>
         </ul>
@@ -31,9 +41,9 @@
     <article class="panel chat-stage">
       <header class="chat-stage-head">
         <div>
-          <p class="eyebrow">PaperDesk Agent</p>
+          <p class="eyebrow">PaperDesk 助手</p>
           <h2>{{ store.currentSession?.title || "新对话" }}</h2>
-          <p>直接提问、上传 PDF，或选择库内论文生成问答、总结、综述与对比结果。</p>
+          <p>可直接提问，也可以附加图片或论文材料，再生成问答、总结、综述与对比结果。</p>
         </div>
       </header>
 
@@ -106,6 +116,7 @@
       <div class="chat-composer">
         <div v-if="store.retrievalNotice" class="hint-text">{{ store.retrievalNotice }}</div>
         <p v-if="store.error" class="error-text">{{ store.error }}</p>
+        <p v-if="documentStore.error" class="error-text">{{ documentStore.error }}</p>
 
         <div v-if="store.draftAttachments.length" class="draft-strip">
           <div class="memory-chip-list">
@@ -121,10 +132,18 @@
           </div>
         </div>
 
+        <TaskQuickLaunchPanel
+          :document-count="store.selectedDocumentIds.length"
+          :has-uploaded-context="hasUploadedSelection"
+          :disabled="store.sending || researchStore.isRunning"
+          @fill="fillQuickAction"
+          @submit="submitQuickAction"
+        />
+
         <div v-if="showDocumentPicker" class="document-picker-sheet">
           <div class="sheet-head">
             <strong>从论文库选择</strong>
-            <button class="button-secondary" @click="showDocumentPicker = false">收起</button>
+          <button class="button-secondary" @click="showDocumentPicker = false">收起</button>
           </div>
           <div class="document-pick-grid">
             <button
@@ -138,6 +157,9 @@
               <p class="card-meta">{{ document.title || "未提取标题" }}</p>
               <p class="card-meta">{{ document.page_count || 0 }} 页 · {{ formatDocumentStatus(document.status) }}</p>
             </button>
+            <p v-if="!readyDocuments.length" class="empty-state">
+              暂无可选择的已入库论文，请先到本地论文库上传并等待处理完成。
+            </p>
           </div>
         </div>
 
@@ -148,7 +170,9 @@
         </div>
 
         <div class="composer-shell">
-          <button class="composer-plus" @click="showAttachMenu = !showAttachMenu">+</button>
+          <button class="composer-plus" aria-label="添加附件" @click="showAttachMenu = !showAttachMenu">
+            <Paperclip :size="19" />
+          </button>
           <textarea
             v-model="store.composerText"
             class="chat-textarea"
@@ -160,6 +184,7 @@
             :disabled="store.sending || researchStore.isRunning || !store.composerText.trim()"
             @click="store.sendCurrentMessage"
           >
+            <SendHorizontal :size="16" />
             {{ store.sending ? "发送中..." : "发送" }}
           </button>
           <button
@@ -167,6 +192,7 @@
             :disabled="store.sending || researchStore.isRunning || !store.composerText.trim()"
             @click="startResearchTask"
           >
+            <Sparkles :size="16" />
             {{ researchStore.isRunning ? "研究中..." : "生成结果" }}
           </button>
         </div>
@@ -192,13 +218,15 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { Paperclip, Plus, SendHorizontal, Sparkles, Trash2 } from "lucide-vue-next";
 import { useRouter } from "vue-router";
 
 import MarkdownPreview from "../components/MarkdownPreview.vue";
+import TaskQuickLaunchPanel, { type QuickLaunchAction } from "../components/TaskQuickLaunchPanel.vue";
 import { useDocumentStore } from "../stores/documents";
 import { useKnowledgeStore } from "../stores/knowledge";
 import { useResearchStore } from "../stores/research";
-import type { ChatAttachment, ChatMessageRole, LibraryDocument, ResearchInputMode } from "../types/models";
+import type { ChatAttachment, ChatMessageRole, ChatSession, LibraryDocument, ResearchInputMode } from "../types/models";
 
 const store = useKnowledgeStore();
 const documentStore = useDocumentStore();
@@ -212,6 +240,9 @@ const showDocumentPicker = ref(false);
 
 const readyDocuments = computed(() =>
   documentStore.documents.filter((document) => document.status === "ready")
+);
+const hasUploadedSelection = computed(() =>
+  store.uploadedTaskDocumentIds.some((documentId) => store.selectedDocumentIds.includes(documentId))
 );
 
 onMounted(async () => {
@@ -278,12 +309,24 @@ async function startResearchTask() {
   if (!content) {
     return;
   }
+  await queueResearchFromKnowledge(content, "从知识库入口发起，优先使用已选择的库内论文。");
+}
+
+function fillQuickAction(action: QuickLaunchAction) {
+  store.composerText = action.prompt;
+}
+
+async function submitQuickAction(action: QuickLaunchAction) {
+  await queueResearchFromKnowledge(action.prompt, action.notes);
+}
+
+async function queueResearchFromKnowledge(content: string, notes: string) {
   const selectedIds = [...store.selectedDocumentIds];
   const inputModes: ResearchInputMode[] = ["prompt"];
   if (selectedIds.length) {
     inputModes.push("knowledge_base");
   }
-  if (store.uploadedTaskDocumentIds.some((documentId) => selectedIds.includes(documentId))) {
+  if (hasUploadedSelection.value) {
     inputModes.push("uploaded_file");
   }
   researchStore.queueResearch({
@@ -291,7 +334,7 @@ async function startResearchTask() {
     top_k_local: Math.max(3, selectedIds.length || 3),
     top_k_online: 3,
     search_provider: null,
-    notes: selectedIds.length ? "从知识库入口发起，优先使用已选择的库内论文。" : "从知识库入口发起。",
+    notes: selectedIds.length ? notes : "从知识库入口发起。",
     input_modes: inputModes,
     selected_document_ids: selectedIds
   });
@@ -326,6 +369,10 @@ function formatRole(role: ChatMessageRole) {
     default:
       return "你";
   }
+}
+
+function sessionSummary(session: ChatSession) {
+  return session.title || session.last_message_preview || "从这里继续新的知识对话。";
 }
 
 function formatAttachmentKind(kind: string) {
