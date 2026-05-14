@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import re
+import shutil
 from uuid import uuid4
 
 from openai import OpenAI
@@ -58,6 +59,14 @@ class ChatService:
         session = self.chat_repository.create_session(title or "新对话")
         self.memory_service.record_project_context(session_id=session.id, title=session.title)
         return session
+
+    def delete_session(self, session_id: str) -> ChatSession:
+        session = self._require_session(session_id)
+        deleted = self.chat_repository.delete_session(session_id)
+        session_dir = self.context_assembler.file_store.get_session_dir(session_id)
+        if session_dir.exists():
+            shutil.rmtree(session_dir)
+        return deleted or session
 
     def get_session_detail(self, session_id: str) -> ChatSessionDetail:
         session = self._require_session(session_id)

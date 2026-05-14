@@ -114,6 +114,23 @@ class SQLiteDatabase:
                     FOREIGN KEY (document_id) REFERENCES library_documents (id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS document_categories (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    color TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS document_category_links (
+                    category_id TEXT NOT NULL,
+                    document_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (category_id, document_id),
+                    FOREIGN KEY (category_id) REFERENCES document_categories (id) ON DELETE CASCADE,
+                    FOREIGN KEY (document_id) REFERENCES library_documents (id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS report_records (
                     id TEXT PRIMARY KEY,
                     run_id TEXT NOT NULL,

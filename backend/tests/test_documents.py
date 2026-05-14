@@ -159,6 +159,58 @@ def test_document_upload_accepts_second_different_pdf_without_connection_break(c
     assert {item["status"] for item in documents} == {"ready"}
 
 
+def test_document_categories_are_persistent_and_do_not_delete_documents(client, monkeypatch):
+    monkeypatch.setattr(
+        EmbeddingService,
+        "embed_texts",
+        lambda self, texts: [[float(index + 1), 1.0, 0.5] for index, _ in enumerate(texts)],
+    )
+
+    upload = client.post(
+        "/api/documents/upload",
+        files={
+            "file": (
+                "category.pdf",
+                BytesIO(_build_pdf_bytes("category paper text " * 20, title="Category Paper")),
+                "application/pdf",
+            )
+        },
+    )
+    assert upload.status_code == 200
+    document = _wait_for_document_status(client, upload.json()["id"], "ready")
+
+    first = client.post("/api/document-categories", json={"name": "视觉增强", "color": "#0f5fb8"})
+    second = client.post("/api/document-categories", json={"name": "RAG", "color": "#047c71"})
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_category = first.json()
+    second_category = second.json()
+
+    assign = client.put(
+        f"/api/documents/{document['id']}/categories",
+        json={"category_ids": [first_category["id"], second_category["id"]]},
+    )
+    assert assign.status_code == 200
+    assert {item["name"] for item in assign.json()["categories"]} == {"视觉增强", "RAG"}
+
+    listed = client.get("/api/documents")
+    assert listed.status_code == 200
+    listed_document = next(item for item in listed.json() if item["id"] == document["id"])
+    assert {item["id"] for item in listed_document["categories"]} == {
+        first_category["id"],
+        second_category["id"],
+    }
+
+    delete_category = client.delete(f"/api/document-categories/{first_category['id']}")
+    assert delete_category.status_code == 200
+
+    list_after_delete = client.get("/api/documents")
+    assert list_after_delete.status_code == 200
+    remaining_document = next(item for item in list_after_delete.json() if item["id"] == document["id"])
+    assert remaining_document["id"] == document["id"]
+    assert [item["id"] for item in remaining_document["categories"]] == [second_category["id"]]
+
+
 def test_document_upload_marks_failed_when_embedding_generation_breaks(client, monkeypatch):
     def fake_embed_failure(self, texts):
         _ = texts

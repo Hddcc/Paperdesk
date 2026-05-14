@@ -15,7 +15,14 @@ from .chat import (
     MemorySnapshot,
 )
 from .enums import EvidenceSourceType, ResearchRunStatus, TodoTaskStatus
-from .library import ChunkRecord, LibraryDocument
+from .library import (
+    ChunkRecord,
+    DocumentCategory,
+    DocumentCategoryAssignmentRequest,
+    DocumentCategoryCreateRequest,
+    DocumentCategoryUpdateRequest,
+    LibraryDocument,
+)
 from .paper import (
     EvidenceItem,
     PaperAnalysisRequest,
@@ -100,6 +107,10 @@ __all__ = [
     "ContinueTask",
     "ControlMessageType",
     "CoordinatorDecision",
+    "DocumentCategory",
+    "DocumentCategoryAssignmentRequest",
+    "DocumentCategoryCreateRequest",
+    "DocumentCategoryUpdateRequest",
     "EvidenceItem",
     "EvidenceSourceType",
     "Heartbeat",

@@ -32,6 +32,18 @@ def create_session(
     return session.model_dump(mode="json")
 
 
+@router.delete("/sessions/{session_id}")
+def delete_session(
+    session_id: str,
+    service: ChatService = Depends(get_chat_service),
+) -> dict:
+    try:
+        session = service.delete_session(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return session.model_dump(mode="json")
+
+
 @router.get("/sessions/{session_id}")
 def get_session_detail(
     session_id: str,

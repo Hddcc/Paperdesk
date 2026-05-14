@@ -14,7 +14,7 @@ from uuid import uuid4
 from fastapi import HTTPException, UploadFile
 
 from app.models import LibraryDocument
-from app.repositories import LibraryRepository
+from app.repositories import CategoryRepository, LibraryRepository
 from app.vectorstores import AbstractVectorStore
 
 from .knowledge_ingestion_service import KnowledgeIngestionService
@@ -29,8 +29,10 @@ class DocumentLibraryService:
         vectorstore: AbstractVectorStore,
         upload_dir: Path,
         ingestion_service: KnowledgeIngestionService,
+        category_repository: CategoryRepository | None = None,
     ) -> None:
         self.repository = repository
+        self.category_repository = category_repository
         self.vectorstore = vectorstore
         self.upload_dir = upload_dir
         self.ingestion_service = ingestion_service
@@ -136,7 +138,16 @@ class DocumentLibraryService:
 
     def list_documents(self) -> list[LibraryDocument]:
         self._recover_processing_documents()
-        return self.repository.list_documents()
+        documents = self.repository.list_documents()
+        if self.category_repository is None:
+            return documents
+        categories_by_document_id = self.category_repository.list_categories_by_document_ids(
+            [document.id for document in documents]
+        )
+        return [
+            document.model_copy(update={"categories": categories_by_document_id.get(document.id, [])})
+            for document in documents
+        ]
 
     def delete_document(self, document_id: str) -> LibraryDocument:
         document = self.repository.delete_document(document_id)

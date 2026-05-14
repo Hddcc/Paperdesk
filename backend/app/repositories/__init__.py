@@ -1,6 +1,7 @@
 """Repository layer for SQLite-backed business facts."""
 
 from .base import SQLiteDatabase
+from .category_repository import CategoryRepository
 from .chat_repository import ChatRepository
 from .chunk_repository import ChunkRepository
 from .library_repository import LibraryRepository
@@ -12,6 +13,7 @@ from .sqlite_repository import SQLiteRepository
 
 __all__ = [
     "ChatRepository",
+    "CategoryRepository",
     "ChunkRepository",
     "LibraryRepository",
     "PaperRepository",

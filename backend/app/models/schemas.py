@@ -1,6 +1,13 @@
 """Backward-compatible schema imports."""
 
-from .library import ChunkRecord, LibraryDocument
+from .library import (
+    ChunkRecord,
+    DocumentCategory,
+    DocumentCategoryAssignmentRequest,
+    DocumentCategoryCreateRequest,
+    DocumentCategoryUpdateRequest,
+    LibraryDocument,
+)
 from .paper import (
     EvidenceItem,
     PaperAnalysisRequest,
@@ -22,6 +29,10 @@ from .research_runtime import ResearchContextState, ResearchRuntimeState
 __all__ = [
     "ChunkRecord",
     "CitationRecord",
+    "DocumentCategory",
+    "DocumentCategoryAssignmentRequest",
+    "DocumentCategoryCreateRequest",
+    "DocumentCategoryUpdateRequest",
     "EvidenceItem",
     "LibraryDocument",
     "PaperAnalysisRequest",

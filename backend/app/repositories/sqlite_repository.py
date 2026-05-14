@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.models import LibraryDocument, PaperRecord, ReportListItem, ResearchReport, ResearchRun, TodoTask
+from app.models import DocumentCategory, LibraryDocument, PaperRecord, ReportListItem, ResearchReport, ResearchRun, TodoTask
 from app.models.enums import ResearchRunStatus
 
 from .base import SQLiteDatabase
+from .category_repository import CategoryRepository
 from .chat_repository import ChatRepository
 from .chunk_repository import ChunkRepository
 from .library_repository import LibraryRepository
@@ -23,6 +24,7 @@ class SQLiteRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
         self.database = SQLiteDatabase(database_path)
+        self.category = CategoryRepository(self.database)
         self.chunk = ChunkRepository(self.database)
         self.library = LibraryRepository(self.database)
         self.research = ResearchRepository(self.database)
@@ -35,13 +37,25 @@ class SQLiteRepository:
         return self.library.create_document(document)
 
     def list_documents(self) -> list[LibraryDocument]:
-        return self.library.list_documents()
+        documents = self.library.list_documents()
+        categories_by_document_id = self.category.list_categories_by_document_ids(
+            [document.id for document in documents]
+        )
+        return [
+            document.model_copy(update={"categories": categories_by_document_id.get(document.id, [])})
+            for document in documents
+        ]
 
     def list_chunks(self, document_ids: list[str] | None = None):
         return self.chunk.list_chunks(document_ids=document_ids)
 
     def get_document(self, document_id: str) -> LibraryDocument | None:
-        return self.library.get_document(document_id)
+        document = self.library.get_document(document_id)
+        if document is None:
+            return None
+        return document.model_copy(
+            update={"categories": self.category.list_document_categories(document_id)}
+        )
 
     def get_document_by_sha256(self, sha256: str) -> LibraryDocument | None:
         return self.library.get_by_sha256(sha256)
@@ -51,6 +65,37 @@ class SQLiteRepository:
 
     def delete_document(self, document_id: str) -> LibraryDocument | None:
         return self.library.delete_document(document_id)
+
+    def list_categories(self) -> list[DocumentCategory]:
+        return self.category.list_categories()
+
+    def create_category(self, name: str, color: str | None = None) -> DocumentCategory:
+        return self.category.create_category(name=name, color=color)
+
+    def update_category(
+        self,
+        category_id: str,
+        *,
+        name: str | None = None,
+        color: str | None = None,
+    ) -> DocumentCategory | None:
+        return self.category.update_category(category_id, name=name, color=color)
+
+    def delete_category(self, category_id: str) -> DocumentCategory | None:
+        return self.category.delete_category(category_id)
+
+    def replace_document_categories(
+        self,
+        document_id: str,
+        category_ids: list[str],
+    ) -> LibraryDocument | None:
+        categories = self.category.replace_document_categories(document_id, category_ids)
+        if categories is None:
+            return None
+        document = self.library.get_document(document_id)
+        if document is None:
+            return None
+        return document.model_copy(update={"categories": categories})
 
     def create_run(self, run_id: str, topic: str) -> ResearchRun:
         return self.research.create_run(run_id, topic)

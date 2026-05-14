@@ -97,6 +97,23 @@ def test_chat_session_round_trip_and_memory_snapshot(client):
     assert detail["context_state"]["budget_tokens"] > 0
 
 
+def test_delete_chat_session_removes_it_from_list(client):
+    create_response = client.post("/api/chat/sessions", json={"title": "待删除对话"})
+    assert create_response.status_code == 200
+    session = create_response.json()
+
+    delete_response = client.delete(f"/api/chat/sessions/{session['id']}")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["id"] == session["id"]
+
+    list_response = client.get("/api/chat/sessions")
+    assert list_response.status_code == 200
+    assert all(item["id"] != session["id"] for item in list_response.json())
+
+    detail_response = client.get(f"/api/chat/sessions/{session['id']}")
+    assert detail_response.status_code == 404
+
+
 def test_chat_uses_selected_library_documents(client, monkeypatch):
     document = _upload_document(client, monkeypatch)
     create_response = client.post("/api/chat/sessions", json={"title": "RAG 文档对话"})

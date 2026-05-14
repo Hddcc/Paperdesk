@@ -86,6 +86,14 @@ class ChatRepository(BaseRepository):
             )
         return self.get_session(session_id)
 
+    def delete_session(self, session_id: str) -> ChatSession | None:
+        session = self.get_session(session_id)
+        if session is None:
+            return None
+        with self.database.connection() as conn:
+            conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+        return session
+
     def touch_session(self, session_id: str) -> None:
         with self.database.connection() as conn:
             conn.execute(

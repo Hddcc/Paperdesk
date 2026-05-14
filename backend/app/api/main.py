@@ -114,7 +114,12 @@ def get_repository() -> SQLiteRepository:
 @lru_cache(maxsize=1)
 def get_embedding_service() -> EmbeddingService:
     settings = get_settings()
-    return EmbeddingService(settings.embedding_model)
+    return EmbeddingService(
+        settings.embedding_model,
+        cache_dir=settings.embedding_cache_path,
+        hf_endpoint=settings.embedding_hf_endpoint,
+        local_files_only=settings.embedding_local_files_only,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -145,6 +150,10 @@ def get_milvus_bootstrap_service() -> MilvusBootstrapService:
 
 def get_library_repository():
     return get_repository().library
+
+
+def get_category_repository():
+    return get_repository().category
 
 
 def get_chunk_repository():
@@ -231,6 +240,7 @@ def get_document_library_service() -> DocumentLibraryService:
     settings = get_settings()
     return DocumentLibraryService(
         repository=get_library_repository(),
+        category_repository=get_category_repository(),
         vectorstore=get_vectorstore(),
         upload_dir=settings.upload_path,
         ingestion_service=get_knowledge_ingestion_service(),
@@ -397,6 +407,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(chat.router, prefix="/api")
     app.include_router(documents.router, prefix="/api")
+    app.include_router(documents.category_router, prefix="/api")
     app.include_router(export.router, prefix="/api")
     app.include_router(papers.router, prefix="/api")
     app.include_router(rag.router, prefix="/api")

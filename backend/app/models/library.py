@@ -8,6 +8,36 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 
+class DocumentCategory(BaseModel):
+    """User-managed category for grouping local library documents."""
+
+    id: str
+    name: str
+    color: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentCategoryCreateRequest(BaseModel):
+    """Create a document category."""
+
+    name: str
+    color: str | None = None
+
+
+class DocumentCategoryUpdateRequest(BaseModel):
+    """Update a document category."""
+
+    name: str | None = None
+    color: str | None = None
+
+
+class DocumentCategoryAssignmentRequest(BaseModel):
+    """Replace the category set for one document."""
+
+    category_ids: list[str] = Field(default_factory=list)
+
+
 class LibraryDocument(BaseModel):
     """Uploaded local PDF document metadata."""
 
@@ -25,6 +55,7 @@ class LibraryDocument(BaseModel):
     version: int = 1
     created_at: datetime
     uploaded_at: datetime | None = None
+    categories: list[DocumentCategory] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def sync_compatibility_fields(self) -> "LibraryDocument":
