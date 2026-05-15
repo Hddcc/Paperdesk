@@ -1,6 +1,9 @@
 """Document library routes."""
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 
 from app.api.main import get_category_repository, get_document_library_service, get_library_repository
 from app.models import (
@@ -29,6 +32,27 @@ async def upload_document(
 ) -> dict:
     document = await service.upload_document(file)
     return document.model_dump(mode="json")
+
+
+@router.get("/{document_id}/file")
+def get_document_file(
+    document_id: str,
+    library_repository: LibraryRepository = Depends(get_library_repository),
+) -> FileResponse:
+    document = library_repository.get_document(document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_path = Path(document.file_path)
+    if not file_path.exists() or file_path.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=404, detail="Document file not found")
+
+    return FileResponse(
+        file_path,
+        media_type="application/pdf",
+        filename=document.display_name,
+        content_disposition_type="inline",
+    )
 
 
 @router.delete("/{document_id}")

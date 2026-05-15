@@ -93,6 +93,12 @@ def test_document_upload_list_delete_flow(client, monkeypatch):
     assert documents[0]["sha256"] == payload["sha256"]
     assert documents[0]["status"] == "ready"
 
+    file_response = client.get(f"/api/documents/{payload['id']}/file")
+    assert file_response.status_code == 200
+    assert file_response.headers["content-type"] == "application/pdf"
+    assert "inline" in file_response.headers["content-disposition"]
+    assert file_response.content.startswith(b"%PDF")
+
     conn = sqlite3.connect(os.environ["SQLITE_PATH"])
     try:
         library_count = conn.execute("SELECT COUNT(*) FROM library_documents").fetchone()[0]
@@ -105,6 +111,9 @@ def test_document_upload_list_delete_flow(client, monkeypatch):
 
     delete_response = client.delete(f"/api/documents/{payload['id']}")
     assert delete_response.status_code == 200
+
+    file_after_delete_response = client.get(f"/api/documents/{payload['id']}/file")
+    assert file_after_delete_response.status_code == 404
 
     list_again_response = client.get("/api/documents")
     assert list_again_response.status_code == 200
