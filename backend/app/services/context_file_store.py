@@ -1,4 +1,4 @@
-"""File-backed Claude-style context storage for chat sessions."""
+"""File-backed runtime context storage for chat sessions."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ from app.config import Settings
 
 
 class ContextFileStore:
-    """Manage the visible `.claude` files used by the chat context layer."""
+    """Manage visible runtime context files used by the chat context layer."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.root = settings.claude_path
+        self.root = settings.runtime_context_path
         self.runtime_dir = self.root / "runtime"
         self.sessions_dir = self.root / "sessions"
         self.project_rules_path = self.root / "CLAUDE.md"

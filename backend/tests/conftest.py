@@ -136,15 +136,13 @@ def client(sandbox_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     workspace_dir = sandbox_dir / "workspace"
     upload_dir = workspace_dir / "uploads"
     report_dir = workspace_dir / "reports"
-    vector_dir = workspace_dir / "vectorstore"
-    claude_dir = sandbox_dir / ".claude"
+    runtime_context_dir = sandbox_dir / "runtime" / "context"
 
     monkeypatch.setenv("SQLITE_PATH", str(data_dir / "paperdesk.db"))
     monkeypatch.setenv("WORKSPACE_DIR", str(workspace_dir))
     monkeypatch.setenv("UPLOAD_DIR", str(upload_dir))
     monkeypatch.setenv("REPORT_DIR", str(report_dir))
-    monkeypatch.setenv("VECTORSTORE_DIR", str(vector_dir))
-    monkeypatch.setenv("CLAUDE_DIR", str(claude_dir))
+    monkeypatch.setenv("RUNTIME_CONTEXT_DIR", str(runtime_context_dir))
     monkeypatch.setenv("LLM_API_KEY", "")
     monkeypatch.setenv("LLM_BASE_URL", "")
     monkeypatch.setenv("OPENALEX_API_KEY", "")

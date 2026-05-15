@@ -43,7 +43,6 @@ class Settings(BaseSettings):
     embedding_hf_endpoint: str | None = None
     embedding_local_files_only: bool = False
     sqlite_path: str = "./data/paperdesk.db"
-    chroma_path: str = "./data/chroma"
     milvus_uri: str | None = None
     milvus_token: str | None = None
     milvus_database: str = "default"
@@ -58,8 +57,8 @@ class Settings(BaseSettings):
     workspace_dir: str = "./workspace"
     upload_dir: str = "./workspace/uploads"
     report_dir: str = "./workspace/reports"
-    vectorstore_dir: str = "./workspace/vectorstore"
-    claude_dir: str = "../.claude"
+    runtime_context_dir: str | None = "./runtime/context"
+    claude_dir: str | None = None
     openalex_base_url: str = "https://api.openalex.org"
     arxiv_base_url: str = "http://export.arxiv.org/api/query"
     cors_origins: str = Field(default="*")
@@ -72,6 +71,8 @@ class Settings(BaseSettings):
         "embedding_hf_endpoint",
         "milvus_uri",
         "milvus_token",
+        "runtime_context_dir",
+        "claude_dir",
         mode="before",
     )
     @classmethod
@@ -93,10 +94,6 @@ class Settings(BaseSettings):
         return self.resolve_path(self.sqlite_path)
 
     @property
-    def chroma_storage_path(self) -> Path:
-        return self.resolve_path(self.chroma_path)
-
-    @property
     def workspace_path(self) -> Path:
         return self.resolve_path(self.workspace_dir)
 
@@ -109,12 +106,13 @@ class Settings(BaseSettings):
         return self.resolve_path(self.report_dir)
 
     @property
-    def vectorstore_path(self) -> Path:
-        return self.resolve_path(self.vectorstore_dir)
+    def claude_path(self) -> Path:
+        """Backward-compatible alias for the runtime context directory."""
+        return self.runtime_context_path
 
     @property
-    def claude_path(self) -> Path:
-        return self.resolve_path(self.claude_dir)
+    def runtime_context_path(self) -> Path:
+        return self.resolve_path(self.claude_dir or self.runtime_context_dir or "./runtime/context")
 
     @property
     def project_root(self) -> Path:
@@ -171,16 +169,14 @@ class Settings(BaseSettings):
         """Create required runtime directories."""
         directories = [
             self.sqlite_file.parent,
-            self.chroma_storage_path,
             self.milvus_lite_file.parent,
             self.milvus_runtime_path,
             self.workspace_path,
             self.upload_path,
             self.report_path,
-            self.vectorstore_path,
-            self.claude_path,
-            self.claude_path / "runtime",
-            self.claude_path / "sessions",
+            self.runtime_context_path,
+            self.runtime_context_path / "runtime",
+            self.runtime_context_path / "sessions",
         ]
         if self.embedding_cache_path is not None:
             directories.append(self.embedding_cache_path)

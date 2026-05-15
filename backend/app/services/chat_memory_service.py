@@ -1,4 +1,4 @@
-"""File-first memory indexing for the chat-style knowledge agent."""
+"""File-backed memory indexing for the chat-style knowledge agent."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .context_file_store import ContextFileStore
 
 
 class ChatMemoryService:
-    """Expose lightweight memory hits while moving chat context to `.claude` files."""
+    """Expose lightweight memory hits while using runtime context files for summaries."""
 
     def __init__(
         self,
@@ -40,8 +40,8 @@ class ChatMemoryService:
                 id=f"user-pref-{index}",
                 memory_type="user",
                 summary=preference,
-                detail="来自 .claude/runtime/user.md",
-                source_kind="claude_user_file",
+                detail="来自运行时用户偏好文件",
+                source_kind="runtime_user_file",
                 source_id="user.md",
                 status="active",
                 last_verified_at=datetime.now(timezone.utc),
@@ -63,8 +63,8 @@ class ChatMemoryService:
                     id=f"session-summary-{index}",
                     memory_type="project" if index == 1 else "feedback",
                     summary=line,
-                    detail="来自 .claude/sessions/<session>/session.md",
-                    source_kind="claude_session_file",
+                    detail="来自运行时会话摘要文件",
+                    source_kind="runtime_session_file",
                     source_id=f"{session_id}/session.md",
                     status="active",
                     last_verified_at=datetime.now(timezone.utc),

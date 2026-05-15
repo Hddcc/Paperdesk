@@ -34,7 +34,7 @@ def test_settings_read_env_file_and_prepare_runtime_paths(sandbox_dir) -> None:
                 "WORKSPACE_DIR=./runtime/workspace",
                 "UPLOAD_DIR=./runtime/workspace/uploads",
                 "REPORT_DIR=./runtime/workspace/reports",
-                "VECTORSTORE_DIR=./runtime/workspace/vectorstore",
+                "RUNTIME_CONTEXT_DIR=./runtime/context",
                 "OPENALEX_BASE_URL=https://openalex.example/api",
                 "ARXIV_BASE_URL=https://arxiv.example/api",
                 "CORS_ORIGINS=http://localhost:5173, http://127.0.0.1:5173",
@@ -76,22 +76,22 @@ def test_settings_read_env_file_and_prepare_runtime_paths(sandbox_dir) -> None:
     assert settings.workspace_path == settings.resolve_path("./runtime/workspace")
     assert settings.upload_path == settings.resolve_path("./runtime/workspace/uploads")
     assert settings.report_path == settings.resolve_path("./runtime/workspace/reports")
-    assert settings.vectorstore_path == settings.resolve_path("./runtime/workspace/vectorstore")
+    assert settings.runtime_context_path == settings.resolve_path("./runtime/context")
 
     assert settings.sqlite_file.parent.exists()
     assert settings.workspace_path.exists()
     assert settings.upload_path.exists()
     assert settings.report_path.exists()
-    assert settings.vectorstore_path.exists()
+    assert settings.runtime_context_path.exists()
 
 
-def test_create_app_with_blank_api_key_and_reserved_chroma_path(
+def test_create_app_with_blank_api_key_and_milvus_vectorstore(
     sandbox_dir,
     monkeypatch,
 ) -> None:
     data_dir = sandbox_dir / "data"
     workspace_dir = sandbox_dir / "workspace"
-    vector_dir = workspace_dir / "vectorstore"
+    runtime_context_dir = sandbox_dir / "runtime" / "context"
 
     monkeypatch.setenv("LLM_API_KEY", "")
     monkeypatch.setenv("OPENALEX_API_KEY", "")
@@ -100,7 +100,7 @@ def test_create_app_with_blank_api_key_and_reserved_chroma_path(
     monkeypatch.setenv("WORKSPACE_DIR", str(workspace_dir))
     monkeypatch.setenv("UPLOAD_DIR", str(workspace_dir / "uploads"))
     monkeypatch.setenv("REPORT_DIR", str(workspace_dir / "reports"))
-    monkeypatch.setenv("VECTORSTORE_DIR", str(vector_dir))
+    monkeypatch.setenv("RUNTIME_CONTEXT_DIR", str(runtime_context_dir))
     monkeypatch.setenv("MILVUS_URI", "http://fake-milvus:19530")
     monkeypatch.setenv("MILVUS_DATABASE", "paperdesk_test")
     monkeypatch.setenv("MILVUS_COLLECTION", "paperdesk_collection")
@@ -113,7 +113,7 @@ def test_create_app_with_blank_api_key_and_reserved_chroma_path(
     settings = get_settings()
     assert settings.llm_api_key is None
     assert settings.openalex_api_key is None
-    assert settings.vectorstore_path == vector_dir
+    assert settings.runtime_context_path == runtime_context_dir
     assert settings.milvus_uri == "http://fake-milvus:19530"
     assert settings.effective_milvus_uri == "http://fake-milvus:19530"
 

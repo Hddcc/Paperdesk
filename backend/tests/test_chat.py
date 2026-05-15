@@ -199,7 +199,7 @@ def test_chat_local_pdf_attachment_does_not_trigger_library_ingestion(client):
     assert any("draft-paper.pdf" in item["summary"] for item in payload["memory_snapshot"]["items"])
 
 
-def test_chat_context_compacts_long_history_into_claude_session_files(client):
+def test_chat_context_compacts_long_history_into_runtime_context_files(client):
     from app.api.main import get_context_file_store
     from app.config import get_settings
 
