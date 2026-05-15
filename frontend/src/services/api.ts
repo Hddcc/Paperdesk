@@ -82,6 +82,10 @@ export async function deleteDocument(documentId: string): Promise<LibraryDocumen
   }
 }
 
+export function getDocumentFileUrl(documentId: string): string {
+  return `${baseUrl}/api/documents/${encodeURIComponent(documentId)}/file`;
+}
+
 export async function listDocumentCategories(): Promise<DocumentCategory[]> {
   try {
     const response = await fetch(`${baseUrl}/api/document-categories`, {

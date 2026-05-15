@@ -107,7 +107,9 @@
             <div class="library-file-cell" role="cell">
               <span class="library-file-icon" :data-status="document.status" aria-hidden="true">PDF</span>
               <div class="library-file-copy">
-                <strong>{{ documentTitle(document) }}</strong>
+                <button class="library-file-title" type="button" @click="openDocument(document)">
+                  {{ documentTitle(document) }}
+                </button>
                 <small v-if="document.failure_reason">{{ document.failure_reason }}</small>
                 <small v-else>{{ document.filename }}</small>
               </div>
@@ -253,15 +255,19 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { Plus, RefreshCcw, Tags, Trash2, UploadCloud } from "lucide-vue-next";
 
 import { useDocumentStore } from "../stores/documents";
+import { usePdfWorkspaceStore } from "../stores/pdfWorkspace";
 import type { DocumentCategory, LibraryDocument } from "../types/models";
 
 type SortKey = "title" | "uploaded_at" | "page_count" | "status" | "categories";
 type SortDirection = "asc" | "desc";
 
 const store = useDocumentStore();
+const pdfWorkspaceStore = usePdfWorkspaceStore();
+const router = useRouter();
 const newCategoryName = ref("");
 const categoryDialogDocument = ref<LibraryDocument | null>(null);
 const categoryToDelete = ref<DocumentCategory | null>(null);
@@ -441,6 +447,11 @@ async function handleUpload(event: Event) {
   }
   await store.addDocument(file);
   input.value = "";
+}
+
+async function openDocument(document: LibraryDocument) {
+  pdfWorkspaceStore.openDocument(document.id);
+  await router.push("/research");
 }
 
 function handleShellClick() {
