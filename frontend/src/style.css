@@ -81,10 +81,9 @@ button {
 .app-shell {
   position: relative;
   display: grid;
-  grid-template-rows: 56px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
-  transition: grid-template-rows 0.22s ease;
 }
 
 .app-shell::before {
@@ -99,25 +98,15 @@ button {
   mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.8), transparent 78%);
 }
 
-.app-topbar {
-  position: relative;
-  z-index: 10;
+.brand-lockup {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 0 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.62);
-  background: rgba(247, 251, 253, 0.78);
-  backdrop-filter: blur(22px);
-  box-shadow: 0 12px 36px rgba(25, 42, 70, 0.06);
-}
-
-.brand-lockup {
-  display: inline-flex;
-  align-items: center;
   gap: 10px;
+  width: 100%;
+  min-height: 46px;
   min-width: 0;
+  margin-bottom: 16px;
+  padding: 6px 8px;
 }
 
 .brand-copy,
@@ -141,6 +130,7 @@ button {
   margin-top: 3px;
   color: var(--text-secondary);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .brand-mark {
@@ -255,20 +245,23 @@ button {
 }
 
 .app-shell-collapsed .brand-lockup {
+  width: 42px;
+  min-height: 42px;
+  margin-left: auto;
+  margin-right: auto;
   gap: 0;
+  justify-content: center;
+  padding: 6px 0;
 }
 
 .app-shell-collapsed .brand-copy,
 .app-shell-collapsed .nav-label {
-  max-width: 0;
-  opacity: 0;
+  display: none;
+  max-width: none;
+  opacity: 1;
   overflow: hidden;
-  transform: translateX(-6px);
+  transform: none;
   white-space: nowrap;
-}
-
-.app-shell-collapsed .app-topbar {
-  justify-content: flex-start;
 }
 
 .app-shell-collapsed .brand-mark {
@@ -278,7 +271,14 @@ button {
 
 .app-shell-collapsed .sidebar {
   align-items: center;
-  padding: 14px 8px;
+  padding: 14px 0;
+}
+
+.app-shell-collapsed .nav-list {
+  width: 42px;
+  margin-left: auto;
+  margin-right: auto;
+  justify-items: center;
 }
 
 .app-shell-collapsed .nav-item {
@@ -286,15 +286,30 @@ button {
   min-height: 42px;
   justify-content: center;
   padding: 7px;
+  background: transparent;
+  box-shadow: none;
 }
 
 .app-shell-collapsed .nav-icon {
-  width: 28px;
-  height: 28px;
+  width: 34px;
+  height: 34px;
+}
+
+.app-shell-collapsed .nav-item.router-link-active {
+  background: transparent;
+  color: white;
+  box-shadow: none;
+}
+
+.app-shell-collapsed .nav-item.router-link-active .nav-icon {
+  background: linear-gradient(160deg, rgba(15, 95, 184, 0.98), rgba(4, 124, 113, 0.92));
+  color: white;
+  box-shadow: 0 12px 28px rgba(15, 95, 184, 0.2);
 }
 
 .app-shell-collapsed .sidebar-toggle {
   width: 42px;
+  min-height: 42px;
   justify-self: center;
   margin-left: auto;
   margin-right: auto;
@@ -316,6 +331,7 @@ button {
 .home-workbench,
 .knowledge-workbench,
 .research-workbench,
+.pdf-workbench,
 .knowledge-chat-page,
 .library-layout,
 .reports-layout {
@@ -337,6 +353,10 @@ button {
   grid-template-columns: minmax(310px, 0.72fr) minmax(380px, 1fr) minmax(340px, 0.92fr);
 }
 
+.pdf-workbench {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .library-layout {
   grid-template-rows: auto auto minmax(0, 1fr);
 }
@@ -349,6 +369,91 @@ button {
 
 .research-column-left {
   grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.pdf-viewer-panel {
+  height: 100%;
+}
+
+.pdf-viewer-head {
+  flex: 0 0 auto;
+}
+
+.pdf-tab-bar {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.pdf-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  min-height: 34px;
+  padding: 7px 8px 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.pdf-tab span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pdf-tab-active {
+  border-color: rgba(15, 95, 184, 0.24);
+  background: linear-gradient(160deg, rgba(15, 95, 184, 0.98), rgba(4, 124, 113, 0.92));
+  color: white;
+  box-shadow: 0 12px 28px rgba(15, 95, 184, 0.18);
+}
+
+.pdf-tab-close {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.pdf-tab-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.pdf-viewer-body {
+  min-height: 0;
+  flex: 1;
+  padding: 0;
+}
+
+.pdf-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 640px;
+  border: none;
+  border-radius: var(--radius-lg);
+  background: var(--surface-soft);
+}
+
+.pdf-empty {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  margin: 0;
 }
 
 .panel,
@@ -1057,6 +1162,8 @@ select {
 }
 
 .chat-stage {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   padding-bottom: 14px;
 }
 
@@ -1064,6 +1171,7 @@ select {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-height: 0;
 }
 
 .chat-empty-state {
@@ -1196,6 +1304,7 @@ select {
 .chat-composer {
   display: grid;
   gap: 12px;
+  align-self: end;
 }
 
 .composer-shell {
@@ -1541,16 +1650,28 @@ select {
   min-width: 0;
 }
 
-.library-file-copy strong,
+.library-file-title,
 .library-file-copy small {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.library-file-copy strong {
+.library-file-title {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
   color: var(--text-primary);
+  cursor: pointer;
   font-size: 15px;
+  font-weight: 800;
+  text-align: left;
+}
+
+.library-file-title:hover {
+  color: var(--primary);
 }
 
 .library-file-copy small {
@@ -1728,12 +1849,8 @@ select {
   .app-shell {
     height: auto;
     min-height: 100vh;
-    grid-template-rows: auto auto;
+    grid-template-rows: minmax(0, 1fr);
     overflow: visible;
-  }
-
-  .app-topbar {
-    min-height: 68px;
   }
 
   .app-body {
@@ -1762,6 +1879,10 @@ select {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 8px;
+  }
+
+  .brand-lockup {
+    margin-bottom: 8px;
   }
 
   .nav-item {
@@ -1802,6 +1923,7 @@ select {
   .reports-layout,
   .knowledge-chat-page,
   .research-workbench,
+  .pdf-workbench,
   .library-layout {
     grid-template-columns: 1fr;
     grid-template-rows: auto;
@@ -1811,11 +1933,21 @@ select {
   .page-shell,
   .task-list,
   .research-report-panel,
+  .pdf-viewer-panel,
   .chat-session-panel,
   .chat-stage,
   .library-documents-panel,
   .report-preview-panel {
     height: auto;
+  }
+
+  .chat-stage {
+    display: flex;
+  }
+
+  .pdf-frame {
+    height: 72vh;
+    min-height: 520px;
   }
 
   .panel-scroll {
@@ -1851,12 +1983,6 @@ select {
 }
 
 @media (max-width: 640px) {
-  .app-topbar {
-    align-items: flex-start;
-    flex-direction: column;
-    padding: 12px 14px;
-  }
-
   .brand-mark {
     width: 34px;
     height: 34px;
