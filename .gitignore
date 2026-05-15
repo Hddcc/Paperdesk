@@ -22,5 +22,6 @@ __pycache__/
 .DS_Store
 .env
 
+.claude/CLAUDE.md
 .claude/runtime/
 .claude/sessions/
