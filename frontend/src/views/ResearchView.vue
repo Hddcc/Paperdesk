@@ -3,7 +3,7 @@
     <article class="panel pdf-viewer-panel">
       <header class="section-head pdf-viewer-head">
         <div>
-          <h2>{{ activeDocument ? documentTitle(activeDocument) : "工作台" }}</h2>
+          <h2>{{ activeDocument ? documentTitle(activeDocument) : "PDF 阅读" }}</h2>
           <p>{{ activeDocument ? activeDocument.display_name : "从本地论文点击论文名称后，会在这里查看 PDF。" }}</p>
         </div>
       </header>

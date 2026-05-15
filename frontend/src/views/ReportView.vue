@@ -30,7 +30,7 @@
             </div>
           </li>
           <li v-if="!store.reports.length && !store.loading" class="empty-state">
-            暂无报告，请先在研究工作台运行一次研究。
+            暂无报告，请先在知识页发起一次研究生成。
           </li>
         </ul>
         <p v-if="store.error" class="error-text">{{ store.error }}</p>
