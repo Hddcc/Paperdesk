@@ -76,10 +76,12 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
   const uploadedTaskDocumentIds = ref<string[]>(persistedState.uploadedTaskDocumentIds ?? []);
   const loading = ref(false);
   const sending = ref(false);
+  const stopping = ref(false);
   const savingReportMessageId = ref("");
   const error = ref("");
   const retrievalNotice = ref("");
   const bootstrapped = ref(false);
+  const activeChatAbortController = ref<AbortController | null>(null);
 
   const currentSession = computed(
     () => sessions.value.find((item) => item.id === currentSessionId.value) ?? null
@@ -280,8 +282,11 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     messages.value = [...messages.value, optimisticUserMessage, optimisticAssistantMessage];
     clearComposer();
     sending.value = true;
+    stopping.value = false;
     error.value = "";
     retrievalNotice.value = "";
+    const abortController = new AbortController();
+    activeChatAbortController.value = abortController;
     const streamState: { finalResponse: ChatSendResponse | null } = { finalResponse: null };
     let streamedContent = "";
     const typewriterQueue: string[] = [];
@@ -363,7 +368,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
         if (event.type === "done") {
           streamState.finalResponse = event.response;
         }
-      });
+      }, abortController.signal);
 
       const completedResponse = streamState.finalResponse;
       if (!completedResponse) {
@@ -383,6 +388,16 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       await refreshSessions();
       return completedResponse;
     } catch (err) {
+      if (isAbortError(err)) {
+        stopTypewriter();
+        updateMessage(tempAssistantId, {
+          content: streamedContent || "已停止生成。",
+          status: "completed",
+          action_status: "user_stopped"
+        });
+        retrievalNotice.value = "已停止生成。";
+        return null;
+      }
       error.value = err instanceof Error ? err.message : "发送消息失败";
       updateMessage(tempAssistantId, {
         content: error.value,
@@ -392,8 +407,20 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       throw err;
     } finally {
       stopTypewriter();
+      if (activeChatAbortController.value === abortController) {
+        activeChatAbortController.value = null;
+      }
+      stopping.value = false;
       sending.value = false;
     }
+  }
+
+  function stopGeneration() {
+    if (!sending.value || !activeChatAbortController.value) {
+      return;
+    }
+    stopping.value = true;
+    activeChatAbortController.value.abort();
   }
 
   async function saveAssistantMessageAsReport(message: ChatMessage) {
@@ -513,6 +540,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     savingReportMessageId,
     error,
     retrievalNotice,
+    stopping,
     bootstrap,
     refreshSessions,
     createNewSession,
@@ -524,7 +552,12 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     markUploadedTaskDocument,
     removeDraftAttachment,
     sendCurrentMessage,
+    stopGeneration,
     saveAssistantMessageAsReport,
     clearComposer
   };
 });
+
+function isAbortError(err: unknown) {
+  return err instanceof DOMException && err.name === "AbortError";
+}

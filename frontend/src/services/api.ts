@@ -249,7 +249,8 @@ export async function sendChatMessage(
 export async function streamChatMessage(
   sessionId: string,
   payload: ChatMessageRequest,
-  onEvent: (event: ChatStreamEvent) => void
+  onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   try {
     const response = await fetch(`${baseUrl}/api/chat/sessions/${sessionId}/messages/stream`, {
@@ -258,7 +259,8 @@ export async function streamChatMessage(
         "Content-Type": "application/json",
         Accept: "text/event-stream"
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal
     });
 
     if (!response.ok) {
@@ -300,6 +302,9 @@ export async function streamChatMessage(
       }
     }
   } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw err;
+    }
     throw normalizeFetchError(err, "发送消息失败");
   }
 }

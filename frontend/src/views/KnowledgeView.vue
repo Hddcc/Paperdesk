@@ -232,11 +232,12 @@
           />
           <button
             class="button-primary composer-send"
-            :disabled="store.sending || !store.composerText.trim()"
-            @click="sendChatMessage"
+            :disabled="!store.sending && !store.composerText.trim()"
+            @click="handleComposerAction"
           >
-            <SendHorizontal :size="16" />
-            {{ store.sending ? "发送中..." : "发送" }}
+            <StopCircle v-if="store.sending" :size="16" />
+            <SendHorizontal v-else :size="16" />
+            {{ store.sending ? (store.stopping ? "停止中..." : "停止") : "发送" }}
           </button>
         </div>
       </div>
@@ -261,7 +262,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Copy, FileText, Paperclip, Plus, Save, SendHorizontal, Trash2, X } from "lucide-vue-next";
+import { Copy, FileText, Paperclip, Plus, Save, SendHorizontal, StopCircle, Trash2, X } from "lucide-vue-next";
 
 import MarkdownPreview from "../components/MarkdownPreview.vue";
 import { useDocumentStore } from "../stores/documents";
@@ -427,8 +428,17 @@ function stopComposerResize() {
 }
 
 onBeforeUnmount(() => {
+  store.stopGeneration();
   stopComposerResize();
 });
+
+function handleComposerAction() {
+  if (store.sending) {
+    store.stopGeneration();
+    return;
+  }
+  void sendChatMessage();
+}
 
 async function sendChatMessage() {
   const response = await store.sendCurrentMessage();
