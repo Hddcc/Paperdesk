@@ -111,6 +111,33 @@ def _add_abstract_chunk(document: LibraryDocument, abstract: str) -> None:
     )
 
 
+def _add_metadata_chunk(document: LibraryDocument, *, venue: str | None = None, published: str | None = None, year: str | None = None) -> None:
+    metadata = {}
+    if venue is not None:
+        metadata["journal"] = venue
+    if published is not None:
+        metadata["publication_date"] = published
+    if year is not None:
+        metadata["year"] = year
+    get_repository().chunk.replace_document_chunks(
+        document.id,
+        [
+            ChunkRecord(
+                id=f"{document.id}-metadata-1",
+                document_id=document.id,
+                page_number=1,
+                chunk_index=0,
+                section="Metadata",
+                title=document.title,
+                text=f"Journal: {venue or ''}\nPublication Date: {published or ''}\nYear: {year or ''}",
+                content=f"Journal: {venue or ''}\nPublication Date: {published or ''}\nYear: {year or ''}",
+                token_estimate=24,
+                metadata=metadata,
+            )
+        ],
+    )
+
+
 def test_chat_session_round_trip_and_memory_snapshot(client):
     create_response = client.post("/api/chat/sessions", json={"title": "新对话"})
     assert create_response.status_code == 200
@@ -272,6 +299,202 @@ def test_selected_document_multi_question_drafts_answer_after_retrieval(client, 
     ]
     assert "evidence.retriever.search" in observed_tools
     assert "report.drafter.write" in observed_tools
+
+
+def test_selected_documents_innovation_question_drafts_answer_after_retrieval(client, monkeypatch):
+    doc_a = _create_ready_document("doc-innovation-a", "BlindDiff.pdf", title="BlindDiff")
+    doc_b = _create_ready_document("doc-innovation-b", "PAMI_LUT.pdf", title="PAMI LUT")
+    doc_c = _create_ready_document("doc-innovation-c", "Deform-Mamba.pdf", title="Deform-Mamba")
+    session = client.post("/api/chat/sessions", json={"title": "论文创新点"}).json()
+
+    def fake_retrieve_evidence(self, **kwargs):
+        _ = self
+        return [
+            EvidenceItem(
+                id=f"innovation-{document.id}",
+                source_type="local_document",
+                source_id=document.id,
+                title=document.title,
+                snippet=f"{document.title} proposes a distinct technical contribution for image restoration.",
+                citation_label=f"{document.filename} p.1",
+                document_id=document.id,
+                page_number=1,
+                score=0.9,
+            )
+            for document in kwargs["documents"]
+        ]
+
+    monkeypatch.setattr(RagService, "retrieve_evidence", fake_retrieve_evidence)
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "三篇论文各自的创新点分别是什么",
+            "attachments": [],
+            "selected_document_ids": [doc_a.id, doc_b.id, doc_c.id],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "completed"
+    assert assistant["content"] != "已检索到 3 条证据。"
+    assert set(assistant["used_document_ids"]) == {doc_a.id, doc_b.id, doc_c.id}
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    observed_tools = [
+        trace.payload.get("tool")
+        for trace in traces
+        if trace.status == "react_observation"
+    ]
+    assert "evidence.retriever.search" in observed_tools
+    assert "report.drafter.write" in observed_tools
+
+
+def test_selected_documents_metadata_question_uses_metadata_not_report_template(client):
+    documents = [
+        _create_ready_document(f"doc-meta-{index}", f"Meta{index}.pdf", title=f"Meta Paper {index}")
+        for index in range(1, 6)
+    ]
+    _add_metadata_chunk(documents[0], venue="Journal of Vision", published="2024-05-01", year="2024")
+    _add_metadata_chunk(documents[1], venue="CVPR", published="2023", year="2023")
+    _add_metadata_chunk(documents[2], venue="Pattern Recognition", published="2022-11", year="2022")
+    _add_metadata_chunk(documents[3], venue="TNNLS", published=None, year="2021")
+    session = client.post("/api/chat/sessions", json={"title": "元数据字段"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "这五篇文章分别出自什么期刊？什么时间？",
+            "attachments": [],
+            "selected_document_ids": [document.id for document in documents],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    content = assistant["content"]
+    assert assistant["action_status"] == "completed"
+    assert "Journal of Vision" in content
+    assert "CVPR" in content
+    assert "Pattern Recognition" in content
+    assert "TNNLS" in content
+    assert "缺失" in content
+    assert "摘要" not in content
+    assert "初步总结" not in content
+    assert "结论边界" not in content
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    observed_tools = [
+        trace.payload.get("tool")
+        for trace in traces
+        if trace.status == "react_observation"
+    ]
+    assert "library.explorer.document_metadata" in observed_tools
+    assert "report.drafter.write" not in observed_tools
+
+
+def test_react_final_answer_synthesis_repairs_retrieval_status_only_answer(client, monkeypatch):
+    doc_a = _create_ready_document("doc-status-only-a", "StatusOnlyA.pdf", title="Status Only A")
+    doc_b = _create_ready_document("doc-status-only-b", "StatusOnlyB.pdf", title="Status Only B")
+    session = client.post("/api/chat/sessions", json={"title": "检索后合成"}).json()
+
+    def fake_next_action(self, **kwargs):
+        observations = kwargs["observations"]
+        if not observations:
+            return _ReactAction(
+                "evidence.retriever.search",
+                {"question": kwargs["content"], "document_ids": kwargs["selected_document_ids"]},
+                "retrieve evidence",
+            )
+        return _ReactAction("final.answer", {"content": "已检索到 2 条证据。"}, "premature status")
+
+    def fake_retrieve_evidence(self, **kwargs):
+        _ = self
+        return [
+            EvidenceItem(
+                id=f"status-only-{document.id}",
+                source_type="local_document",
+                source_id=document.id,
+                title=document.title,
+                snippet=f"{document.title} introduces an evidence-grounded contribution for restoration.",
+                citation_label=f"{document.filename} p.2",
+                document_id=document.id,
+                page_number=2,
+                score=0.88,
+            )
+            for document in kwargs["documents"]
+        ]
+
+    monkeypatch.setattr(KnowledgeAgentRuntime, "_next_react_action", fake_next_action)
+    monkeypatch.setattr(RagService, "retrieve_evidence", fake_retrieve_evidence)
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "这两篇论文各自说明了什么贡献",
+            "attachments": [],
+            "selected_document_ids": [doc_a.id, doc_b.id],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["content"] != "已检索到 2 条证据。"
+    assert "Status Only A" in assistant["content"]
+    assert "Status Only B" in assistant["content"]
+    assert "evidence-grounded contribution" in assistant["content"]
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert any(trace.status == "final_answer_synthesis_started" for trace in traces)
+    finished = [trace for trace in traces if trace.status == "final_answer_synthesis_finished"]
+    assert finished
+    assert finished[-1].payload["synthesis_used_evidence_count"] == 2
+
+
+def test_chat_service_boundary_repairs_status_only_agent_result(client, monkeypatch):
+    document = _create_ready_document("doc-service-synthesis", "ServiceSynthesis.pdf", title="Service Synthesis")
+    session = client.post("/api/chat/sessions", json={"title": "服务边界合成"}).json()
+    runtime = get_knowledge_agent_runtime()
+
+    def fake_execute_agent_mode(self, **kwargs):
+        _ = self, kwargs
+        if not get_repository().research.get_run("chat-service-synthesis-trace"):
+            get_repository().research.create_run("chat-service-synthesis-trace", "Chat service synthesis test")
+        evidence = EvidenceItem(
+            id="service-synthesis-evidence",
+            source_type="local_document",
+            source_id=document.id,
+            title=document.title,
+            snippet="Service-layer fallback evidence describes a concrete contribution.",
+            citation_label="ServiceSynthesis.pdf p.3",
+            document_id=document.id,
+            page_number=3,
+            score=0.9,
+        )
+        return KnowledgeAgentResult(
+            content="retrieval ready",
+            retrieval_status="ready",
+            citations=[evidence.citation_label],
+            used_document_ids=[document.id],
+            evidence_items=[evidence],
+            action_status="completed",
+            agent_trace_id="chat-service-synthesis-trace",
+        )
+
+    monkeypatch.setattr(type(get_chat_service()), "_execute_agent_mode", fake_execute_agent_mode)
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "这篇论文的贡献是什么",
+            "attachments": [],
+            "selected_document_ids": [document.id],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["content"] != "retrieval ready"
+    assert "Service-layer fallback evidence" in assistant["content"]
+    assert runtime.is_status_only_answer("已检索到 9 条证据。")
 
 
 def test_selected_library_documents_do_not_route_direct_when_llm_suggests_direct(client, monkeypatch):
@@ -473,6 +696,187 @@ def test_chat_agent_reads_all_document_category_links_instead_of_runtime_summary
         and len(trace.payload.get("payload", {}).get("documents", [])) == 8
         for trace in traces
     )
+
+
+def test_chat_agent_resolves_existing_tag_entity_before_paper_candidates_for_report(client, monkeypatch):
+    hx23 = get_repository().category.create_category("hx23", "#6957d8")
+    docs = [
+        _create_ready_document("doc-hx23-report-a", "HX23A.pdf", title="HX23 Method A"),
+        _create_ready_document("doc-hx23-report-b", "HX23B.pdf", title="HX23 Method B"),
+        _create_ready_document("doc-hx23-report-c", "HX23C.pdf", title="HX23 Method C"),
+    ]
+    other = _create_ready_document("doc-hx23-other", "Other.pdf", title="Other Paper")
+    for document in docs:
+        get_repository().category.replace_document_categories(document.id, [hx23.id])
+        _add_abstract_chunk(document, f"{document.title} proposes a distinct contribution for tagged paper analysis.")
+    _add_abstract_chunk(other, "This unrelated paper must not be selected by the hx23 tag request.")
+    session = client.post("/api/chat/sessions", json={"title": "标签报告"}).json()
+    monkeypatch.setattr(
+        RagService,
+        "retrieve_evidence_with_quality",
+        lambda self, **kwargs: RetrievalResult(
+            evidence_items=[],
+            evidence_quality=EvidenceQuality(
+                coverage_score=0.0,
+                diversity_score=0.0,
+                citation_score=0.0,
+                relevance_score=0.0,
+                warnings=["insufficient_evidence"],
+            ),
+            cache_hit=False,
+        ),
+    )
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "分析我的 hx23 标签的所有论文，写一份分析报告",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    content = assistant["content"]
+    assert assistant["action_status"] == "completed"
+    assert "没有在论文库中唯一定位" not in content
+    assert "已识别到「hx23」是标签/分类" in content
+    assert "3 篇" in content
+    assert "HX23A.pdf" in content
+    assert "HX23B.pdf" in content
+    assert "HX23C.pdf" in content
+    assert "Other.pdf" not in content
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    find_trace = next(
+        trace
+        for trace in traces
+        if trace.status == "react_observation"
+        and trace.payload.get("tool") == "library.explorer.find_documents"
+    )
+    assert find_trace.payload["payload"]["category_lookup"]["matched_names"] == ["hx23"]
+    assert set(find_trace.payload["payload"]["document_ids"]) == {document.id for document in docs}
+
+
+def test_chat_agent_lists_existing_tag_documents_without_fuzzy_pdf_candidates(client):
+    hx23 = get_repository().category.create_category("hx23", "#6957d8")
+    docs = [
+        _create_ready_document("doc-hx23-list-a", "ListA.pdf", title="List Paper A"),
+        _create_ready_document("doc-hx23-list-b", "ListB.pdf", title="List Paper B"),
+    ]
+    other = _create_ready_document("doc-hx23-list-other", "ListOther.pdf", title="Other Paper")
+    for document in docs:
+        get_repository().category.replace_document_categories(document.id, [hx23.id])
+    session = client.post("/api/chat/sessions", json={"title": "标签论文列表"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "hx23 标签下有哪些论文？",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    content = assistant["content"]
+    assert "已识别到「hx23」是标签/分类，下面共有 2 篇" in content
+    assert "ListA.pdf" in content
+    assert "ListB.pdf" in content
+    assert "ListOther.pdf" not in content
+    assert "候选论文" not in content
+    assert set(assistant["used_document_ids"]) == {document.id for document in docs}
+
+
+def test_chat_agent_counts_existing_tag_documents(client):
+    hx23 = get_repository().category.create_category("hx23", "#6957d8")
+    docs = [
+        _create_ready_document("doc-hx23-count-a", "CountA.pdf"),
+        _create_ready_document("doc-hx23-count-b", "CountB.pdf"),
+        _create_ready_document("doc-hx23-count-c", "CountC.pdf"),
+    ]
+    for document in docs:
+        get_repository().category.replace_document_categories(document.id, [hx23.id])
+    session = client.post("/api/chat/sessions", json={"title": "标签论文数量"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "统计 hx23 标签下有几篇论文",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    content = response.json()["assistant_message"]["content"]
+    assert "已识别到「hx23」是标签/分类，下面共有 3 篇" in content
+    assert "关联论文如下" not in content
+
+
+def test_chat_agent_reports_missing_tag_entity_instead_of_pdf_candidates(client):
+    get_repository().category.create_category("hx23", "#6957d8")
+    _create_ready_document("doc-missing-tag-candidate", "abc999-method.pdf", title="abc999 Similar Paper")
+    session = client.post("/api/chat/sessions", json={"title": "不存在标签"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "分析不存在的标签 abc999 下的论文",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "needs_clarification"
+    assert "没有找到标签/分类「abc999」" in assistant["content"]
+    assert "没有在论文库中唯一定位" not in assistant["content"]
+    assert "abc999-method.pdf" not in assistant["content"]
+
+
+def test_chat_agent_compares_two_existing_tag_collections(client, monkeypatch):
+    tag_a = get_repository().category.create_category("A组", "#0f5fb8")
+    tag_b = get_repository().category.create_category("B组", "#047c71")
+    doc_a = _create_ready_document("doc-tag-a-compare", "TagA.pdf", title="Tag A Paper")
+    doc_b = _create_ready_document("doc-tag-b-compare", "TagB.pdf", title="Tag B Paper")
+    get_repository().category.replace_document_categories(doc_a.id, [tag_a.id])
+    get_repository().category.replace_document_categories(doc_b.id, [tag_b.id])
+    session = client.post("/api/chat/sessions", json={"title": "双标签对比"}).json()
+    monkeypatch.setattr(
+        RagService,
+        "retrieve_evidence_with_quality",
+        lambda self, **kwargs: RetrievalResult(
+            evidence_items=[],
+            evidence_quality=EvidenceQuality(
+                coverage_score=0.0,
+                diversity_score=0.0,
+                citation_score=0.0,
+                relevance_score=0.0,
+                warnings=["insufficient_evidence"],
+            ),
+            cache_hit=False,
+        ),
+    )
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "对 A组 标签和 B组 标签下的论文做对比",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    content = response.json()["assistant_message"]["content"]
+    assert "已识别到「A组、B组」是标签/分类" in content
+    assert "A组：TagA.pdf" in content
+    assert "B组：TagB.pdf" in content
+    assert "TagA.pdf" in content
+    assert "TagB.pdf" in content
 
 
 def test_chat_agent_answers_tagged_count_and_lists_each_tagged_document(client):
@@ -1099,7 +1503,7 @@ def test_chat_agent_replaces_named_tag_with_alternate_wording(client, monkeypatc
     assert [category.name for category in get_repository().get_document(untouched_doc.id).categories] == ["其它"]
 
 
-def test_chat_agent_clears_all_categories_and_reports_zero_without_process_wording(client):
+def test_chat_agent_clears_all_categories_requires_strong_confirmation(client):
     doc_a = _create_ready_document("doc-clear-a", "ClearA.pdf")
     doc_b = _create_ready_document("doc-clear-b", "ClearB.pdf")
     category = get_repository().category.create_category("中文", "#0f5fb8")
@@ -1119,9 +1523,40 @@ def test_chat_agent_clears_all_categories_and_reports_zero_without_process_wordi
     assert clear_response.status_code == 200
     clear_payload = clear_response.json()
     clear_assistant = clear_payload["assistant_message"]
+    assert clear_assistant["action_status"] == "confirmation_required"
+    assert clear_payload["library_mutated"] is False
+    assert "确认清空所有标签" in clear_assistant["content"]
+    assert [category.name for category in get_repository().get_document(doc_a.id).categories] == ["中文"]
+    assert [category.name for category in get_repository().get_document(doc_b.id).categories] == ["中文"]
+
+    weak_confirm = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "确认",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+    assert weak_confirm.status_code == 200
+    weak_assistant = weak_confirm.json()["assistant_message"]
+    assert weak_assistant["action_status"] == "confirmation_required"
+    assert [category.name for category in get_repository().get_document(doc_a.id).categories] == ["中文"]
+    assert [category.name for category in get_repository().get_document(doc_b.id).categories] == ["中文"]
+
+    confirm_response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "确认清空所有标签",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+    assert confirm_response.status_code == 200
+    clear_payload = confirm_response.json()
+    clear_assistant = clear_payload["assistant_message"]
     assert clear_assistant["action_status"] == "completed"
     assert clear_payload["library_mutated"] is True
-    assert "已清空 2 篇论文的分类/标签关系" in clear_assistant["content"]
+    assert "已按确认范围清空 2 篇论文的分类/标签关系" in clear_assistant["content"]
     assert get_repository().get_document(doc_a.id).categories == []
     assert get_repository().get_document(doc_b.id).categories == []
 
@@ -1180,12 +1615,289 @@ def test_chat_agent_clears_categories_for_documents_with_named_tag(client, monke
     assert response.status_code == 200
     payload = response.json()
     assistant = payload["assistant_message"]
+    assert assistant["action_status"] == "confirmation_required"
+    assert payload["library_mutated"] is False
+    assert "确认移除法语标签" in assistant["content"]
+    assert [category.name for category in get_repository().get_document(french_a.id).categories] == ["法语"]
+    assert [category.name for category in get_repository().get_document(french_b.id).categories] == ["法语", "英语"]
+    assert [category.name for category in get_repository().get_document(other.id).categories] == ["英语"]
+
+    confirm_response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "确认移除法语标签",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+    assert confirm_response.status_code == 200
+    payload = confirm_response.json()
+    assistant = payload["assistant_message"]
     assert assistant["action_status"] == "completed"
     assert payload["library_mutated"] is True
-    assert "已清空 2 篇论文的分类/标签关系" in assistant["content"]
+    assert "已从 2 篇论文中移除标签/分类「法语」" in assistant["content"]
     assert get_repository().get_document(french_a.id).categories == []
-    assert get_repository().get_document(french_b.id).categories == []
+    assert [category.name for category in get_repository().get_document(french_b.id).categories] == ["英语"]
     assert [category.name for category in get_repository().get_document(other.id).categories] == ["英语"]
+
+
+def test_chat_agent_rejects_empty_clear_category_tool_args(client, monkeypatch):
+    category = get_repository().category.create_category("空参数保护", "#0f5fb8")
+    document = _create_ready_document("doc-empty-clear-guard", "EmptyClearGuard.pdf")
+    get_repository().category.replace_document_categories(document.id, [category.id])
+    session = client.post("/api/chat/sessions", json={"title": "空参数保护"}).json()
+
+    def fake_next_action_with_llm(self, **kwargs):
+        _ = self, kwargs
+        return _ReactAction(
+            "library.operator.clear_categories",
+            {},
+            "Bad LLM action with empty destructive args.",
+        )
+
+    runtime = get_knowledge_agent_runtime()
+    monkeypatch.setattr(runtime, "api_key", "test-key")
+    monkeypatch.setattr(KnowledgeAgentRuntime, "_next_react_action_with_llm", fake_next_action_with_llm)
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "清空标签",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] == "validation_failed"
+    assert payload["library_mutated"] is False
+    assert [item.name for item in get_repository().get_document(document.id).categories] == ["空参数保护"]
+
+
+def test_chat_agent_blocks_all_scope_when_user_named_single_tag(client, monkeypatch):
+    target = get_repository().category.create_category("范围保护", "#0f5fb8")
+    other_tag = get_repository().category.create_category("其它标签", "#047c71")
+    target_doc = _create_ready_document("doc-scope-guard-target", "ScopeTarget.pdf")
+    other_doc = _create_ready_document("doc-scope-guard-other", "ScopeOther.pdf")
+    get_repository().category.replace_document_categories(target_doc.id, [target.id, other_tag.id])
+    get_repository().category.replace_document_categories(other_doc.id, [other_tag.id])
+    session = client.post("/api/chat/sessions", json={"title": "范围保护"}).json()
+
+    def fake_next_action_with_llm(self, **kwargs):
+        _ = self, kwargs
+        return _ReactAction(
+            "library.operator.clear_categories",
+            {"operation": "clear_all_categories", "scope": "all"},
+            "Bad LLM action widened a single-tag request to all tags.",
+        )
+
+    runtime = get_knowledge_agent_runtime()
+    monkeypatch.setattr(runtime, "api_key", "test-key")
+    monkeypatch.setattr(KnowledgeAgentRuntime, "_next_react_action_with_llm", fake_next_action_with_llm)
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "清空范围保护标签下论文的标签",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] == "validation_failed"
+    assert payload["library_mutated"] is False
+    assert [item.name for item in get_repository().get_document(target_doc.id).categories] == ["范围保护", "其它标签"]
+    assert [item.name for item in get_repository().get_document(other_doc.id).categories] == ["其它标签"]
+
+
+def test_chat_agent_compound_rename_then_preview_clear_other_tagged_documents(client):
+    source = get_repository().category.create_category("A复合", "#0f5fb8")
+    target_existing = get_repository().category.create_category("保留标签", "#047c71")
+    other = get_repository().category.create_category("其它标签", "#6957d8")
+    source_doc_a = _create_ready_document("doc-compound-source-a", "CompoundSourceA.pdf")
+    source_doc_b = _create_ready_document("doc-compound-source-b", "CompoundSourceB.pdf")
+    other_doc = _create_ready_document("doc-compound-other", "CompoundOther.pdf")
+    untagged_doc = _create_ready_document("doc-compound-untagged", "CompoundUntagged.pdf")
+    get_repository().category.replace_document_categories(source_doc_a.id, [source.id])
+    get_repository().category.replace_document_categories(source_doc_b.id, [source.id, target_existing.id])
+    get_repository().category.replace_document_categories(other_doc.id, [other.id])
+    session = client.post("/api/chat/sessions", json={"title": "复合写操作"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "把所有 A复合 标签换成 0516，然后把其他带有标签的论文的标签都清空",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] == "confirmation_required"
+    assert payload["library_mutated"] is True
+    assert "已完成第 1 步" in assistant["content"]
+    assert "A复合" in assistant["content"]
+    assert "0516" in assistant["content"]
+    assert "确认清空其他有标签论文的标签" in assistant["content"]
+    assert [item.name for item in get_repository().get_document(source_doc_a.id).categories] == ["0516"]
+    assert [item.name for item in get_repository().get_document(source_doc_b.id).categories] == ["保留标签", "0516"]
+    assert [item.name for item in get_repository().get_document(other_doc.id).categories] == ["其它标签"]
+    assert get_repository().get_document(untagged_doc.id).categories == []
+
+    confirm = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "确认清空其他有标签论文的标签",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert confirm.status_code == 200
+    confirm_payload = confirm.json()
+    confirm_assistant = confirm_payload["assistant_message"]
+    assert confirm_assistant["action_status"] == "completed"
+    assert confirm_payload["library_mutated"] is True
+    assert [item.name for item in get_repository().get_document(source_doc_a.id).categories] == ["0516"]
+    assert [item.name for item in get_repository().get_document(source_doc_b.id).categories] == ["保留标签", "0516"]
+    assert get_repository().get_document(other_doc.id).categories == []
+    assert get_repository().get_document(untagged_doc.id).categories == []
+
+
+def test_chat_agent_compound_rename_then_counts_target_tag(client):
+    source = get_repository().category.create_category("A统计", "#0f5fb8")
+    existing_target = get_repository().category.create_category("B统计", "#047c71")
+    source_doc_a = _create_ready_document("doc-compound-count-source-a", "CompoundCountSourceA.pdf")
+    source_doc_b = _create_ready_document("doc-compound-count-source-b", "CompoundCountSourceB.pdf")
+    existing_target_doc = _create_ready_document("doc-compound-count-target", "CompoundCountTarget.pdf")
+    get_repository().category.replace_document_categories(source_doc_a.id, [source.id])
+    get_repository().category.replace_document_categories(source_doc_b.id, [source.id])
+    get_repository().category.replace_document_categories(existing_target_doc.id, [existing_target.id])
+    session = client.post("/api/chat/sessions", json={"title": "复合重命名统计"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "把 A统计 标签换成 B统计，然后统计 B统计 标签下有几篇",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] == "completed"
+    assert payload["library_mutated"] is True
+    assert "已将标签/分类「A统计」合并到已有标签「B统计」" in assistant["content"]
+    assert "当前「B统计」标签下有 3 篇论文" in assistant["content"]
+    assert [item.name for item in get_repository().get_document(source_doc_a.id).categories] == ["B统计"]
+    assert [item.name for item in get_repository().get_document(source_doc_b.id).categories] == ["B统计"]
+    assert [item.name for item in get_repository().get_document(existing_target_doc.id).categories] == ["B统计"]
+
+
+def test_chat_agent_compound_rename_then_assigns_untagged_without_target_pollution(client):
+    source = get_repository().category.create_category("A隔离", "#0f5fb8")
+    source_doc = _create_ready_document("doc-isolation-source", "IsolationSource.pdf")
+    untagged_doc = _create_ready_document("doc-isolation-untagged", "IsolationUntagged.pdf")
+    get_repository().category.replace_document_categories(source_doc.id, [source.id])
+    session = client.post("/api/chat/sessions", json={"title": "复合步骤参数隔离"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "把 A隔离 标签换成 B隔离，然后把没有标签的论文加上 C隔离 标签",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] == "completed", assistant["content"]
+    assert payload["library_mutated"] is True
+    assert [item.name for item in get_repository().get_document(source_doc.id).categories] == ["B隔离"]
+    assert [item.name for item in get_repository().get_document(untagged_doc.id).categories] == ["C隔离"]
+    assert not any(category.name == "A隔离" for category in get_repository().category.list_categories())
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    completion = next(trace for trace in traces if trace.status == "plan_completion_checked")
+    steps = completion.payload["hard_gate"]["plan"]["steps"]
+    assert len(steps) >= 2
+    assert any(step["resolved_tool_name"] == "library.operator.rename_category" for step in steps)
+    assert any(
+        step["resolved_tool_name"] == "library.operator.assign_category"
+        and step["resolved_tool_args"].get("category_names") == ["C隔离"]
+        for step in steps
+    )
+
+
+def test_chat_agent_blocks_undercovered_llm_single_step_plan_for_compound_write(client, monkeypatch):
+    untagged_a = _create_ready_document("doc-undercovered-a", "UndercoveredA.pdf")
+    untagged_b = _create_ready_document("doc-undercovered-b", "UndercoveredB.pdf")
+    session = client.post("/api/chat/sessions", json={"title": "计划覆盖检查"}).json()
+    runtime = get_knowledge_agent_runtime()
+    monkeypatch.setattr(runtime, "api_key", "test-key")
+    actions = iter(
+        [
+            _ReactAction(
+                "library.operator.assign_category",
+                {"category_name": "Alpha", "scope": "untagged"},
+                "LLM only planned the first write step.",
+                action_plan=[
+                    {
+                        "tool": "library.operator.assign_category",
+                        "arguments": {"category_name": "Alpha", "scope": "untagged"},
+                    }
+                ],
+                confidence=0.95,
+            ),
+            _ReactAction("final.answer", {"content": "全部完成。"}, "premature final", confidence=0.95),
+        ]
+    )
+
+    monkeypatch.setattr(KnowledgeAgentRuntime, "_next_react_action", lambda self, **kwargs: next(actions))
+    monkeypatch.setattr(
+        AgentOrchestrator,
+        "_llm_candidate",
+        lambda self, payload: _ModeCandidate(
+            mode=AgentRunMode.REACT,
+            reason="LLM recognized a compound write.",
+            confidence=0.95,
+            target_runtime="KnowledgeAgentRuntime",
+            source="llm",
+            needs_tool=True,
+            risk_level="write",
+        ),
+    )
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "把没有标签的论文加上 Alpha 标签，然后把没有标签的论文加上 Beta 标签",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] == "validation_failed"
+    assert "没有整体完成" in assistant["content"]
+    assert [item.name for item in get_repository().get_document(untagged_a.id).categories] == ["Alpha"]
+    assert [item.name for item in get_repository().get_document(untagged_b.id).categories] == ["Alpha"]
+    assert not any(category.name == "Beta" for category in get_repository().category.list_categories())
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    completion = next(trace for trace in traces if trace.status == "plan_completion_checked")
+    assert completion.payload["hard_gate"]["uncovered_subgoals"] is True
 
 
 def test_chat_agent_rejects_clear_tags_but_keep_categories_conflict(client):
@@ -1447,6 +2159,51 @@ def test_chat_agent_hides_llm_process_text_after_verified_library_write(client, 
     assert "2 篇" in assistant["content"]
     assert [category.name for category in get_repository().get_document(untagged_a.id).categories] == ["happy"]
     assert [category.name for category in get_repository().get_document(untagged_b.id).categories] == ["happy"]
+
+
+def test_chat_agent_assigns_multiple_tags_to_all_untagged_documents(client):
+    existing = get_repository().category.create_category("已有标签", "#6957d8")
+    tagged = _create_ready_document("doc-multitag-tagged", "AlreadyTagged.pdf")
+    untagged_a = _create_ready_document("doc-multitag-a", "UntaggedA.pdf")
+    untagged_b = _create_ready_document("doc-multitag-b", "UntaggedB.pdf")
+    get_repository().category.replace_document_categories(tagged.id, [existing.id])
+    session = client.post("/api/chat/sessions", json={"title": "多标签批量补全"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "把没有标签的都加上一个 cscd 标签和一个 hddcc 标签",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] == "completed", assistant["content"]
+    assert payload["library_mutated"] is True
+    assert "cscd" in assistant["content"]
+    assert "hddcc" in assistant["content"]
+    assert "2 篇" in assistant["content"]
+    assert "当前仍无标签论文 0 篇" in assistant["content"]
+    assert [category.name for category in get_repository().get_document(tagged.id).categories] == ["已有标签"]
+    assert [category.name for category in get_repository().get_document(untagged_a.id).categories] == ["cscd", "hddcc"]
+    assert [category.name for category in get_repository().get_document(untagged_b.id).categories] == ["cscd", "hddcc"]
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assign_observation = next(
+        trace
+        for trace in traces
+        if trace.status == "react_observation"
+        and trace.payload.get("tool") == "library.operator.assign_category"
+    )
+    assert assign_observation.payload["payload"]["category_names"] == ["cscd", "hddcc"]
+    assert assign_observation.payload["payload"]["verified_state"]["untagged_document_count"] == 0
+    assert any(
+        trace.status == "library_write_verified"
+        and trace.payload.get("verified_state", {}).get("untagged_document_count") == 0
+        for trace in traces
+    )
 
 
 def test_chat_agent_uses_context_for_remaining_untagged_assignment(client, monkeypatch):
@@ -1783,6 +2540,121 @@ def test_chat_agent_requires_confirmation_before_destructive_actions(client):
     assert confirm_payload["library_mutated"] is True
     assert get_repository().category.get_category(category.id) is None
     assert get_repository().get_document(document.id).categories == []
+
+
+def test_chat_agent_previews_unused_category_entity_cleanup_without_clearing_documents(client):
+    empty_a = get_repository().category.create_category("空标签A", "#b42318")
+    empty_b = get_repository().category.create_category("空标签B", "#b76a00")
+    non_empty_c = get_repository().category.create_category("非空C", "#047c71")
+    non_empty_d = get_repository().category.create_category("非空D", "#0f5fb8")
+    doc_c = _create_ready_document("doc-unused-cleanup-c", "UnusedCleanupC.pdf")
+    doc_d = _create_ready_document("doc-unused-cleanup-d", "UnusedCleanupD.pdf")
+    get_repository().category.replace_document_categories(doc_c.id, [non_empty_c.id])
+    get_repository().category.replace_document_categories(doc_d.id, [non_empty_d.id])
+    session = client.post("/api/chat/sessions", json={"title": "清理空标签"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "帮我把空的标签分类都删掉",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "confirmation_required"
+    assert "空标签A" in assistant["content"]
+    assert "空标签B" in assistant["content"]
+    assert "论文的标签关系" in assistant["content"]
+    assert get_repository().category.get_category(empty_a.id) is not None
+    assert get_repository().category.get_category(empty_b.id) is not None
+    assert [category.name for category in get_repository().get_document(doc_c.id).categories] == ["非空C"]
+    assert [category.name for category in get_repository().get_document(doc_d.id).categories] == ["非空D"]
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    preview = next(trace for trace in traces if trace.status == "write_preview_created")
+    assert preview.payload["tool"] == "library.operator.delete_unused_categories"
+    assert preview.payload["operation_level"] == "entity"
+    assert all(
+        not (
+            trace.status == "react_observation"
+            and trace.payload.get("tool") == "library.operator.clear_categories"
+        )
+        for trace in traces
+    )
+
+
+def test_chat_agent_confirms_unused_category_entity_cleanup_only_deletes_empty_entities(client):
+    empty_a = get_repository().category.create_category("空标签确认A", "#b42318")
+    empty_b = get_repository().category.create_category("空标签确认B", "#b76a00")
+    non_empty_c = get_repository().category.create_category("非空确认C", "#047c71")
+    non_empty_d = get_repository().category.create_category("非空确认D", "#0f5fb8")
+    doc_c = _create_ready_document("doc-unused-confirm-c", "UnusedConfirmC.pdf")
+    doc_d = _create_ready_document("doc-unused-confirm-d", "UnusedConfirmD.pdf")
+    get_repository().category.replace_document_categories(doc_c.id, [non_empty_c.id])
+    get_repository().category.replace_document_categories(doc_d.id, [non_empty_d.id])
+    before_doc_c = [category.name for category in get_repository().get_document(doc_c.id).categories]
+    before_doc_d = [category.name for category in get_repository().get_document(doc_d.id).categories]
+    session = client.post("/api/chat/sessions", json={"title": "确认清理空标签"}).json()
+
+    preview_response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "帮我把空的标签分类都删掉，就是那些没有任何一篇论文带的标签",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+    assert preview_response.status_code == 200
+    assert preview_response.json()["assistant_message"]["action_status"] == "confirmation_required"
+
+    confirm_response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "确认删除空标签分类",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert confirm_response.status_code == 200
+    payload = confirm_response.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] == "completed"
+    assert payload["library_mutated"] is True
+    assert get_repository().category.get_category(empty_a.id) is None
+    assert get_repository().category.get_category(empty_b.id) is None
+    assert get_repository().category.get_category(non_empty_c.id) is not None
+    assert get_repository().category.get_category(non_empty_d.id) is not None
+    assert [category.name for category in get_repository().get_document(doc_c.id).categories] == before_doc_c
+    assert [category.name for category in get_repository().get_document(doc_d.id).categories] == before_doc_d
+
+
+def test_chat_agent_unused_category_cleanup_noops_when_none_empty(client):
+    non_empty = get_repository().category.create_category("非空无清理", "#047c71")
+    doc = _create_ready_document("doc-unused-noop", "UnusedNoop.pdf")
+    get_repository().category.replace_document_categories(doc.id, [non_empty.id])
+    session = client.post("/api/chat/sessions", json={"title": "没有空标签"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "帮我把空的标签分类都删掉",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] == "completed"
+    assert payload["library_mutated"] is False
+    assert "没有 count=0" in assistant["content"]
+    assert "要清空分类/标签的论文" not in assistant["content"]
+    assert get_repository().category.get_category(non_empty.id) is not None
+    assert [category.name for category in get_repository().get_document(doc.id).categories] == ["非空无清理"]
 
 
 def test_chat_agent_does_not_report_category_delete_success_without_verification(client, monkeypatch):

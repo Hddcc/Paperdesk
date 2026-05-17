@@ -127,6 +127,14 @@ class CategoryRepository(BaseRepository):
         document_id: str,
         category_ids: list[str],
     ) -> list[DocumentCategory] | None:
+        """Replace categories for one explicit document only.
+
+        Passing an empty list clears that single document's category links. It
+        must never be used as a shorthand for all documents or all categories.
+        Agent bulk/clear flows should call explicit helper methods or runtime
+        guardrails before reaching this repository method.
+        """
+
         unique_category_ids = list(dict.fromkeys(category_ids))
         with self.database.connection() as conn:
             document_exists = conn.execute(
@@ -161,6 +169,24 @@ class CategoryRepository(BaseRepository):
                     (category_id, document_id, now),
                 )
         return self.list_document_categories(document_id)
+
+    def remove_category_from_document(
+        self,
+        document_id: str,
+        category_id: str,
+    ) -> list[DocumentCategory] | None:
+        if not document_id or not category_id:
+            raise ValueError("document_id and category_id are required")
+        current = self.list_document_categories(document_id)
+        return self.replace_document_categories(
+            document_id,
+            [category.id for category in current if category.id != category_id],
+        )
+
+    def clear_document_categories_explicit(self, document_id: str) -> list[DocumentCategory] | None:
+        if not document_id:
+            raise ValueError("document_id is required")
+        return self.replace_document_categories(document_id, [])
 
     @staticmethod
     def _row_to_category(row: sqlite3.Row) -> DocumentCategory:

@@ -82,6 +82,13 @@ def test_orchestrator_routes_user_correction_to_reflection(sandbox_dir):
     assert decision.target_runtime == "ReflectionRuntime"
 
 
+def test_orchestrator_does_not_route_general_go_explanation_to_reflection(sandbox_dir):
+    decision = _orchestrator(sandbox_dir).select_mode(_payload("不对这个 Go 代码继续解释一下"))
+
+    assert decision.mode == AgentRunMode.DIRECT
+    assert decision.target_runtime == "DirectChatRuntime"
+
+
 def test_orchestrator_keeps_destructive_actions_on_confirmation_path(sandbox_dir):
     decision = _orchestrator(sandbox_dir).select_mode(_payload("帮我删除分类法律"))
 
@@ -166,3 +173,97 @@ def test_orchestrator_uses_high_confidence_llm_intention_over_rule_candidate(san
     assert decision.mode == AgentRunMode.PLANNER
     assert decision.target_runtime == "KnowledgePlannerRuntime"
     assert decision.reason.startswith("LLM intention decision")
+
+
+def test_orchestrator_uses_low_confidence_llm_fallback(sandbox_dir, monkeypatch):
+    orchestrator = _orchestrator(sandbox_dir)
+    orchestrator.api_key = "provider-secret"
+
+    from app.runtime.agent_orchestrator import _ModeCandidate
+
+    monkeypatch.setattr(
+        AgentOrchestrator,
+        "_llm_candidate",
+        lambda self, payload: _ModeCandidate(
+            mode=AgentRunMode.PLANNER,
+            reason="Low confidence semantic guess.",
+            confidence=0.2,
+            target_runtime="KnowledgePlannerRuntime",
+            source="llm",
+        ),
+    )
+
+    decision = orchestrator.select_mode(_payload("你好，帮我解释一下 RAG 是什么"))
+
+    assert decision.mode == AgentRunMode.DIRECT
+    assert decision.fallback_used is True
+
+
+def test_orchestrator_keeps_selected_documents_grounded_when_llm_routes_direct(sandbox_dir, monkeypatch):
+    orchestrator = _orchestrator(sandbox_dir)
+    orchestrator.api_key = "provider-secret"
+
+    from app.runtime.agent_orchestrator import _ModeCandidate
+
+    monkeypatch.setattr(
+        AgentOrchestrator,
+        "_llm_candidate",
+        lambda self, payload: _ModeCandidate(
+            mode=AgentRunMode.DIRECT,
+            reason="LLM guessed this was plain chat.",
+            confidence=0.95,
+            target_runtime="DirectChatRuntime",
+            source="llm",
+        ),
+    )
+
+    decision = orchestrator.select_mode(_payload("总结这篇论文", selected_document_ids=["doc-1"]))
+
+    assert decision.mode == AgentRunMode.REACT
+    assert decision.target_runtime == "KnowledgeAgentRuntime"
+    assert "document observations" in decision.reason
+
+
+def test_orchestrator_preserves_llm_task_plan_in_initial_context(sandbox_dir, monkeypatch):
+    orchestrator = _orchestrator(sandbox_dir)
+    orchestrator.api_key = "provider-secret"
+
+    monkeypatch.setattr(
+        AgentOrchestrator,
+        "_llm_candidate",
+        lambda self, payload: self._llm_candidate_from_payload(
+            {
+                "mode": "PLANNER",
+                "reason": "User wants a multi-step tag operation.",
+                "confidence": 0.93,
+                "risk_level": "write",
+                "task_type": "tag_rename",
+                "user_intent": "Rename a tag and keep document links visible under the new name.",
+                "entities": [
+                    {"text": "A", "type": "tag", "role": "source", "confidence": 0.9},
+                    {"text": "B", "type": "tag", "role": "target", "confidence": 0.9},
+                ],
+                "needs_tool": True,
+                "needs_plan": True,
+                "needs_verification": True,
+                "requested_output": "operation_result",
+                "required_capabilities": ["label_lookup", "label_update", "write_verification"],
+                "action_plan": [
+                    {
+                        "tool": "library.operator.rename_category",
+                        "purpose": "Rename or merge the source tag into the target tag.",
+                        "arguments": {"source_category_name": "A", "target_category_name": "B"},
+                        "requires_verification_after": True,
+                    }
+                ],
+            }
+        ),
+    )
+
+    decision = orchestrator.select_mode(_payload("rename tag A to B"))
+
+    assert decision.mode == AgentRunMode.PLANNER
+    assert decision.initial_context["user_intent"].startswith("Rename a tag")
+    assert decision.initial_context["needs_verification"] is True
+    assert decision.initial_context["entities"][0]["text"] == "A"
+    assert decision.initial_context["action_plan"][0]["tool"] == "library.operator.rename_category"

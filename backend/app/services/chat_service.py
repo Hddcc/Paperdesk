@@ -209,6 +209,31 @@ class ChatService:
             agent_trace_id = agent_result.agent_trace_id
             action_status = agent_result.action_status
             library_mutated = bool(getattr(agent_result, "library_mutated", False))
+            if (
+                self.knowledge_agent_runtime is not None
+                and evidence_items
+                and self.knowledge_agent_runtime.is_status_only_answer(assistant_text)
+                and not library_mutated
+                and action_status not in {"needs_clarification", "confirmation_required", "validation_failed", "failed"}
+            ):
+                assistant_text = self.knowledge_agent_runtime.ensure_final_answer(
+                    user_prompt=request.content,
+                    original_request=request,
+                    runtime_mode=mode_decision.mode.value if mode_decision is not None else "knowledge_agent",
+                    evidence_items=evidence_items,
+                    citations=citations,
+                    used_document_ids=document_ids,
+                    tool_observations=[],
+                    previous_content=assistant_text,
+                    trace_digest={
+                        "boundary": "chat_service",
+                        "action_status": action_status,
+                        "retrieval_status": retrieval_status,
+                    },
+                    trace_id=agent_trace_id,
+                    action_status=action_status,
+                )
+                agent_result.content = assistant_text
             memory_snapshot = self.memory_service.build_snapshot(
                 session_id=session.id,
                 selected_document_ids=document_ids,
@@ -349,6 +374,8 @@ class ChatService:
     ):
         if decision is None or self.reflection_runtime is None:
             return result
+        if result.action_status in {"confirmation_required", "needs_clarification", "validation_failed", "failed"}:
+            return result
         if decision.mode not in {AgentRunMode.REACT, AgentRunMode.PLANNER}:
             return result
         try:
@@ -469,6 +496,14 @@ class ChatService:
         selected_document_ids: list[str],
         history: list[ChatMessage],
     ):
+        if self._has_pending_action(session.id):
+            return self._run_knowledge_agent(
+                session=session,
+                request=request,
+                attachments=attachments,
+                selected_document_ids=selected_document_ids,
+                trace_id=decision.trace_id if decision is not None else None,
+            )
         if decision is None:
             return self._run_knowledge_agent(
                 session=session,
@@ -567,6 +602,14 @@ class ChatService:
             )
         except Exception:
             return None
+
+    def _has_pending_action(self, session_id: str) -> bool:
+        if self.knowledge_agent_runtime is None:
+            return False
+        try:
+            return bool(self.knowledge_agent_runtime.has_pending_action(session_id))
+        except Exception:
+            return False
 
     def _knowledge_context_lines(self) -> list[str]:
         if self.knowledge_agent_runtime is None:

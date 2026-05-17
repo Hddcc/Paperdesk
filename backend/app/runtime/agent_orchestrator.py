@@ -35,6 +35,21 @@ class _ModeCandidate:
     fallback_used: bool = False
     source: str = "rule"
     error: str | None = None
+    risk_level: str = "safe"
+    needs_tool: bool = False
+    needs_document_grounding: bool = False
+    needs_plan: bool = False
+    needs_reflection: bool = False
+    allowed_modes: set[AgentRunMode] | None = None
+    task_type: str = "other"
+    operation_level: str = "none"
+    requested_fields: list[str] = field(default_factory=list)
+    entity_mentions: list[dict[str, Any]] = field(default_factory=list)
+    requested_output: str = "other"
+    user_intent: str = ""
+    entities: list[dict[str, Any]] = field(default_factory=list)
+    needs_verification: bool = False
+    action_plan: list[dict[str, Any]] = field(default_factory=list)
 
 
 class AgentOrchestrator:
@@ -146,9 +161,10 @@ class AgentOrchestrator:
         """Create a trace and return the final mode decision."""
 
         trace_id = self._begin_trace(payload)
-        rule_candidate = self._rule_candidate(payload)
+        guardrail_candidate = self._hard_guardrail_candidate(payload)
+        fallback_candidate = self._fallback_rule_candidate(payload)
         llm_candidate = self._llm_candidate(payload)
-        final_candidate = self._adjudicate(payload, rule_candidate, llm_candidate)
+        final_candidate = self._adjudicate(payload, guardrail_candidate, fallback_candidate, llm_candidate)
         decision = AgentModeDecision(
             mode=final_candidate.mode,
             reason=final_candidate.reason,
@@ -159,7 +175,7 @@ class AgentOrchestrator:
             trace_id=trace_id,
             fallback_used=final_candidate.fallback_used,
         )
-        self._append_decision_trace(payload, decision, rule_candidate, llm_candidate)
+        self._append_decision_trace(payload, decision, guardrail_candidate, fallback_candidate, llm_candidate)
         return decision
 
     def append_trace(self, trace_id: str, *, status: str, message: str, payload: dict[str, Any] | None = None) -> None:
@@ -212,9 +228,13 @@ class AgentOrchestrator:
         self,
         payload: AgentOrchestratorInput,
         decision: AgentModeDecision,
-        rule_candidate: _ModeCandidate,
+        guardrail_candidate: _ModeCandidate | None,
+        fallback_candidate: _ModeCandidate,
         llm_candidate: _ModeCandidate | None,
     ) -> None:
+        guardrail_payload = self._candidate_trace_payload(guardrail_candidate) if guardrail_candidate else None
+        fallback_payload = self._candidate_trace_payload(fallback_candidate)
+        llm_payload = self._candidate_trace_payload(llm_candidate) if llm_candidate else None
         self.message_bus.append_trace(
             run_id=decision.trace_id,
             task_id=None,
@@ -228,20 +248,11 @@ class AgentOrchestrator:
                 "target_runtime": decision.target_runtime,
                 "required_capabilities": decision.required_capabilities,
                 "fallback_used": decision.fallback_used,
-                "rule_candidate": {
-                    "mode": rule_candidate.mode.value,
-                    "reason": rule_candidate.reason,
-                    "confidence": rule_candidate.confidence,
-                },
-                "llm_candidate": (
-                    {
-                        "mode": llm_candidate.mode.value,
-                        "reason": llm_candidate.reason,
-                        "confidence": llm_candidate.confidence,
-                    }
-                    if llm_candidate is not None
-                    else None
-                ),
+                "decision_source": self._decision_source(decision, guardrail_candidate, fallback_candidate, llm_candidate),
+                "guardrail_candidate": guardrail_payload,
+                "rule_candidate": fallback_payload,
+                "fallback_candidate": fallback_payload,
+                "llm_candidate": llm_payload,
                 "available_tool_ids": [tool.tool_id for tool in payload.available_tools[:30]],
                 "available_skill_ids": [skill.skill_id for skill in payload.available_skills[:20]],
                 "has_conversation_referents": bool(payload.conversation_referents),
@@ -249,12 +260,55 @@ class AgentOrchestrator:
             },
         )
 
-    def _rule_candidate(self, payload: AgentOrchestratorInput) -> _ModeCandidate:
-        content = payload.user_prompt.strip()
-        lowered = content.casefold()
-        has_pending_action = bool(payload.runtime_context.get("has_pending_action"))
+    @staticmethod
+    def _candidate_trace_payload(candidate: _ModeCandidate | None) -> dict[str, Any] | None:
+        if candidate is None:
+            return None
+        return {
+            "mode": candidate.mode.value,
+            "reason": candidate.reason,
+            "confidence": candidate.confidence,
+            "source": candidate.source,
+            "risk_level": candidate.risk_level,
+            "needs_tool": candidate.needs_tool,
+            "needs_document_grounding": candidate.needs_document_grounding,
+            "needs_plan": candidate.needs_plan,
+            "needs_reflection": candidate.needs_reflection,
+            "task_type": candidate.task_type,
+            "operation_level": candidate.operation_level,
+            "requested_fields": candidate.requested_fields,
+            "entity_mentions": candidate.entity_mentions,
+            "requested_output": candidate.requested_output,
+            "user_intent": candidate.user_intent,
+            "entities": candidate.entities,
+            "needs_verification": candidate.needs_verification,
+            "action_plan": candidate.action_plan,
+            "required_capabilities": candidate.required_capabilities,
+            "allowed_modes": [mode.value for mode in candidate.allowed_modes] if candidate.allowed_modes else None,
+            "error": candidate.error,
+        }
 
-        if has_pending_action and any(marker in lowered for marker in self._CONFIRM_MARKERS):
+    @staticmethod
+    def _decision_source(
+        decision: AgentModeDecision,
+        guardrail_candidate: _ModeCandidate | None,
+        fallback_candidate: _ModeCandidate,
+        llm_candidate: _ModeCandidate | None,
+    ) -> str:
+        if guardrail_candidate is not None and decision.reason == guardrail_candidate.reason:
+            return guardrail_candidate.source
+        if llm_candidate is not None and decision.mode == llm_candidate.mode and decision.confidence == llm_candidate.confidence:
+            return llm_candidate.source
+        if decision.mode == fallback_candidate.mode and decision.reason == fallback_candidate.reason:
+            return fallback_candidate.source
+        if decision.fallback_used:
+            return "fallback_rule"
+        return "adjudicator"
+
+    def _hard_guardrail_candidate(self, payload: AgentOrchestratorInput) -> _ModeCandidate | None:
+        content = payload.user_prompt.strip()
+
+        if self._has_pending_confirmation(payload):
             return _ModeCandidate(
                 mode=AgentRunMode.REACT,
                 reason="用户正在确认上一轮待执行操作，需要交给知识库工具链执行确认后的动作。",
@@ -262,6 +316,9 @@ class AgentOrchestrator:
                 target_runtime="KnowledgeAgentRuntime",
                 required_capabilities=["pending_action", "library_operator"],
                 initial_context={"pending_action": True},
+                source="guardrail",
+                risk_level="write",
+                needs_tool=True,
             )
 
         if self._is_destructive_intent(content):
@@ -272,16 +329,80 @@ class AgentOrchestrator:
                 target_runtime="KnowledgeAgentRuntime",
                 required_capabilities=["confirmation_required"],
                 initial_context={"permission_policy": "confirmation_required"},
+                source="guardrail",
+                risk_level="destructive",
+                needs_tool=True,
             )
 
-        if any(marker in content for marker in self._REFLECTION_MARKERS):
+        if self._is_reflection_feedback(content):
             return _ModeCandidate(
                 mode=AgentRunMode.REFLECTION,
                 reason="用户在纠错或要求重新检查上一轮回答，需要进入反思修正流程。",
                 confidence=0.94,
                 target_runtime="ReflectionRuntime",
                 required_capabilities=["trace_review", "answer_revision"],
+                source="guardrail",
+                risk_level="read_only",
+                needs_reflection=True,
             )
+
+        if self._has_selected_document_context(payload):
+            return _ModeCandidate(
+                mode=AgentRunMode.REACT,
+                reason=(
+                    "Selected library documents require the knowledge runtime so answers are grounded in "
+                    "document observations instead of a direct model guess."
+                ),
+                confidence=0.93,
+                target_runtime="KnowledgeAgentRuntime",
+                required_capabilities=["document_grounding", "knowledge_tools"],
+                source="guardrail",
+                risk_level="read_only",
+                needs_tool=True,
+                needs_document_grounding=True,
+                allowed_modes={AgentRunMode.REACT, AgentRunMode.PLANNER},
+            )
+
+        if self._is_library_write_intent(content):
+            return _ModeCandidate(
+                mode=AgentRunMode.REACT,
+                reason=(
+                    "LLM intention decision was checked, but library write requests must enter "
+                    "the tool runtime so the database mutation can be verified."
+                ),
+                confidence=0.91,
+                target_runtime="KnowledgeAgentRuntime",
+                required_capabilities=["library_operator", "write_verification"],
+                source="guardrail",
+                risk_level="write",
+                needs_tool=True,
+                allowed_modes={AgentRunMode.REACT, AgentRunMode.PLANNER},
+            )
+
+        if self._is_library_read_intent(content):
+            return _ModeCandidate(
+                mode=AgentRunMode.REACT,
+                reason=(
+                    "LLM intention decision was checked, but library state questions must enter "
+                    "the tool runtime so tags, counts, and document links come from database observations."
+                ),
+                confidence=0.89,
+                target_runtime="KnowledgeAgentRuntime",
+                required_capabilities=["knowledge_tools"],
+                source="guardrail",
+                risk_level="read_only",
+                needs_tool=True,
+                task_type="labeled_document_query"
+                if self._is_labeled_document_collection_intent(content)
+                else "library_stats",
+                needs_document_grounding=self._is_labeled_document_collection_intent(content),
+                allowed_modes={AgentRunMode.REACT, AgentRunMode.PLANNER},
+            )
+
+        return None
+
+    def _fallback_rule_candidate(self, payload: AgentOrchestratorInput) -> _ModeCandidate:
+        content = payload.user_prompt.strip()
 
         if self._is_planner_intent(content):
             return _ModeCandidate(
@@ -290,15 +411,25 @@ class AgentOrchestrator:
                 confidence=0.9,
                 target_runtime="KnowledgePlannerRuntime",
                 required_capabilities=["structured_plan", "knowledge_tools"],
+                source="fallback_rule",
+                risk_level="read_only",
+                needs_tool=True,
+                needs_plan=True,
             )
 
         if self._is_react_intent(content, payload):
+            task_type = "labeled_document_query" if self._is_labeled_document_collection_intent(content) else "other"
             return _ModeCandidate(
                 mode=AgentRunMode.REACT,
                 reason="用户请求需要访问论文库、标签、库内论文或本地证据，适合 ReAct 工具链。",
                 confidence=0.86,
                 target_runtime="KnowledgeAgentRuntime",
                 required_capabilities=["knowledge_tools"],
+                source="fallback_rule",
+                risk_level="read_only",
+                needs_tool=True,
+                task_type=task_type,
+                needs_document_grounding=task_type == "labeled_document_query" or self._has_selected_document_context(payload),
             )
 
         return _ModeCandidate(
@@ -307,7 +438,13 @@ class AgentOrchestrator:
             confidence=0.82,
             target_runtime="DirectChatRuntime",
             required_capabilities=[],
+            source="fallback_rule",
         )
+
+    def _rule_candidate(self, payload: AgentOrchestratorInput) -> _ModeCandidate:
+        """Backward-compatible conservative candidate used by existing tests and callers."""
+
+        return self._hard_guardrail_candidate(payload) or self._fallback_rule_candidate(payload)
 
     def _llm_candidate(self, payload: AgentOrchestratorInput) -> _ModeCandidate | None:
         if not self.api_key:
@@ -331,15 +468,62 @@ class AgentOrchestrator:
                         "content": json.dumps(
                             {
                                 "user_prompt": payload.user_prompt,
+                                "history_hint": payload.conversation_referents,
+                                "runtime_context": payload.runtime_context,
                                 "selected_document_count": len(payload.selected_document_ids),
+                                "selected_document_ids": payload.selected_document_ids[:20],
                                 "attachment_kinds": [item.kind for item in payload.attachments],
+                                "attachment_document_ids": [
+                                    item.document_id for item in payload.attachments if item.document_id
+                                ],
                                 "has_conversation_referents": bool(payload.conversation_referents),
                                 "available_tool_ids": [tool.tool_id for tool in payload.available_tools[:30]],
+                                "available_tools": [
+                                    {
+                                        "tool_id": tool.tool_id,
+                                        "name": tool.name,
+                                        "description": tool.description,
+                                        "read_only": tool.read_only,
+                                        "input_schema": tool.input_schema,
+                                    }
+                                    for tool in payload.available_tools[:40]
+                                ],
                                 "available_skill_ids": [skill.skill_id for skill in payload.available_skills[:20]],
                                 "output_schema": {
                                     "mode": "DIRECT|REACT|PLANNER|REFLECTION",
                                     "reason": "brief visible reason",
                                     "confidence": 0.0,
+                                    "risk_level": "safe|read_only|safe_write|scoped_write|destructive|critical",
+                                    "task_type": "general_chat|metadata_query|document_qa|rag_summary|tag_query|tag_write|tag_rename|delete_unused_categories|category_entity_cleanup|library_stats|labeled_document_query|labeled_document_analysis|category_query|collection_report|reflection|report_generation|other",
+                                    "operation_level": "none|entity|relation|document|global",
+                                    "user_intent": "one sentence summary of the user's real goal",
+                                    "needs_tool": True,
+                                    "needs_document_grounding": False,
+                                    "needs_plan": False,
+                                    "needs_reflection": False,
+                                    "needs_verification": False,
+                                    "requested_fields": ["journal", "publish_time"],
+                                    "entity_mentions": [
+                                        {"text": "标签名", "entity_type": "tag|category|collection|unknown", "confidence": 0.0}
+                                    ],
+                                    "entities": [
+                                        {
+                                            "text": "entity text",
+                                            "type": "tag|category|document|collection|metadata|report|unknown",
+                                            "role": "source|target|filter|object",
+                                            "confidence": 0.0,
+                                        }
+                                    ],
+                                    "requested_output": "list|count|summary|comparison|analysis_report|other",
+                                    "action_plan": [
+                                        {
+                                            "tool": "available tool id if a tool is needed",
+                                            "purpose": "short visible purpose",
+                                            "arguments": {},
+                                            "operation_level": "none|entity|relation|document|global",
+                                            "requires_verification_after": False,
+                                        }
+                                    ],
                                     "required_capabilities": ["capability"],
                                 },
                             },
@@ -356,43 +540,92 @@ class AgentOrchestrator:
         payload_json = self._extract_json_payload(text)
         if not isinstance(payload_json, dict):
             return None
+        return self._llm_candidate_from_payload(payload_json)
+
+    def _llm_candidate_from_payload(self, payload_json: dict[str, Any]) -> _ModeCandidate | None:
         try:
             mode = AgentRunMode(str(payload_json.get("mode") or "").upper())
         except ValueError:
             return None
         capabilities = payload_json.get("required_capabilities")
+        risk_level = self._normalize_risk_level(payload_json.get("risk_level"))
+        needs_tool = self._coerce_bool(payload_json.get("needs_tool"))
+        needs_document_grounding = self._coerce_bool(payload_json.get("needs_document_grounding"))
+        needs_plan = self._coerce_bool(payload_json.get("needs_plan"))
+        needs_reflection = self._coerce_bool(payload_json.get("needs_reflection"))
+        task_type = self._normalize_task_type(payload_json.get("task_type"))
+        operation_level = self._normalize_operation_level(payload_json.get("operation_level"))
+        requested_fields = payload_json.get("requested_fields")
+        normalized_fields = [
+            str(item).strip()
+            for item in requested_fields
+            if str(item).strip()
+        ] if isinstance(requested_fields, list) else []
+        entity_mentions = payload_json.get("entity_mentions")
+        normalized_mentions = [
+            item
+            for item in entity_mentions
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ] if isinstance(entity_mentions, list) else []
+        entities = payload_json.get("entities")
+        normalized_entities = [
+            item
+            for item in entities
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ] if isinstance(entities, list) else []
+        requested_output = self._normalize_requested_output(payload_json.get("requested_output"))
+        action_plan = payload_json.get("action_plan")
+        normalized_plan = [
+            item
+            for item in action_plan
+            if isinstance(item, dict) and str(item.get("tool") or "").strip()
+        ] if isinstance(action_plan, list) else []
+        user_intent = str(payload_json.get("user_intent") or "").strip()
+        needs_verification = self._coerce_bool(payload_json.get("needs_verification"))
         return _ModeCandidate(
             mode=mode,
             reason=str(payload_json.get("reason") or "LLM mode candidate."),
             confidence=self._clamp_confidence(payload_json.get("confidence")),
             target_runtime=self._target_runtime_for(mode),
             required_capabilities=[str(item) for item in capabilities] if isinstance(capabilities, list) else [],
+            initial_context={
+                "task_type": task_type,
+                "operation_level": operation_level,
+                "requested_fields": normalized_fields,
+                "entity_mentions": normalized_mentions,
+                "entities": normalized_entities,
+                "requested_output": requested_output,
+                "user_intent": user_intent,
+                "needs_verification": needs_verification,
+                "action_plan": normalized_plan,
+            },
+            source="llm",
+            risk_level=risk_level,
+            needs_tool=needs_tool,
+            needs_document_grounding=needs_document_grounding,
+            needs_plan=needs_plan,
+            needs_reflection=needs_reflection,
+            task_type=task_type,
+            operation_level=operation_level,
+            requested_fields=normalized_fields,
+            entity_mentions=normalized_mentions,
+            requested_output=requested_output,
+            user_intent=user_intent,
+            entities=normalized_entities,
+            needs_verification=needs_verification,
+            action_plan=normalized_plan,
         )
 
     def _adjudicate(
         self,
         payload: AgentOrchestratorInput,
-        rule_candidate: _ModeCandidate,
+        guardrail_candidate: _ModeCandidate | None,
+        fallback_candidate: _ModeCandidate,
         llm_candidate: _ModeCandidate | None,
     ) -> _ModeCandidate:
         content = payload.user_prompt.strip()
-        if self._is_destructive_intent(content):
-            return rule_candidate
-        if payload.runtime_context.get("has_pending_action") and any(
-            marker in content.casefold() for marker in self._CONFIRM_MARKERS
-        ):
-            return rule_candidate
-        if any(marker in content for marker in self._REFLECTION_MARKERS):
-            return rule_candidate
-        if self._has_selected_document_context(payload) and (
-            llm_candidate is None or llm_candidate.mode == AgentRunMode.DIRECT
-        ):
-            rule_candidate.fallback_used = bool(llm_candidate is None and self.api_key)
-            rule_candidate.reason = (
-                "Selected library documents require the knowledge runtime so answers are grounded in "
-                "document observations instead of a direct model guess."
-            )
-            return rule_candidate
+        if guardrail_candidate is not None and guardrail_candidate.allowed_modes is None:
+            return guardrail_candidate
         if self._is_general_question_bundle(content, payload):
             direct_candidate = _ModeCandidate(
                 mode=AgentRunMode.DIRECT,
@@ -404,35 +637,89 @@ class AgentOrchestrator:
                 target_runtime="DirectChatRuntime",
                 required_capabilities=[],
                 fallback_used=bool(llm_candidate is not None and llm_candidate.mode != AgentRunMode.DIRECT),
+                source="guardrail",
+                risk_level="safe",
             )
             return direct_candidate
-        if self._is_library_write_intent(content) and (
-            llm_candidate is None or llm_candidate.mode not in {AgentRunMode.REACT, AgentRunMode.PLANNER}
-        ):
-            rule_candidate.fallback_used = bool(llm_candidate is None and self.api_key)
-            rule_candidate.reason = (
-                "LLM intention decision was checked, but library write requests must enter "
-                "the tool runtime so the database mutation can be verified."
-            )
-            return rule_candidate
-        if self._is_library_read_intent(content) and (
-            llm_candidate is None or llm_candidate.mode not in {AgentRunMode.REACT, AgentRunMode.PLANNER}
-        ):
-            rule_candidate.fallback_used = bool(llm_candidate is None and self.api_key)
-            rule_candidate.reason = (
-                "LLM intention decision was checked, but library state questions must enter "
-                "the tool runtime so tags, counts, and document links come from database observations."
-            )
-            return rule_candidate
+
+        if guardrail_candidate is not None:
+            if (
+                llm_candidate is not None
+                and llm_candidate.confidence >= 0.65
+                and guardrail_candidate.allowed_modes is not None
+                and llm_candidate.mode in guardrail_candidate.allowed_modes
+            ):
+                llm_candidate.reason = f"LLM intention decision within guardrail boundary: {llm_candidate.reason}"
+                return self._merge_guardrail_context(llm_candidate, guardrail_candidate)
+            if (
+                guardrail_candidate.allowed_modes is not None
+                and fallback_candidate.mode in guardrail_candidate.allowed_modes
+            ):
+                merged = self._merge_guardrail_context(fallback_candidate, guardrail_candidate)
+                merged.reason = (
+                    guardrail_candidate.reason
+                    if fallback_candidate.reason == guardrail_candidate.reason
+                    else f"{guardrail_candidate.reason} {fallback_candidate.reason}"
+                )
+                merged.fallback_used = bool(self.api_key)
+                if self.api_key:
+                    merged.error = "llm_unavailable_invalid_or_low_confidence"
+                return merged
+            guardrail_candidate.fallback_used = bool(llm_candidate is None and self.api_key)
+            return guardrail_candidate
 
         if llm_candidate is None:
-            rule_candidate.fallback_used = bool(self.api_key)
-            return rule_candidate
+            fallback_candidate.fallback_used = bool(self.api_key)
+            if self.api_key:
+                fallback_candidate.error = "llm_unavailable_or_invalid"
+            return fallback_candidate
         if llm_candidate.confidence < 0.65:
-            rule_candidate.fallback_used = True
-            return rule_candidate
+            fallback_candidate.fallback_used = True
+            fallback_candidate.error = "llm_low_confidence"
+            return fallback_candidate
         llm_candidate.reason = f"LLM intention decision: {llm_candidate.reason}"
         return llm_candidate
+
+    @staticmethod
+    def _merge_guardrail_context(llm_candidate: _ModeCandidate, guardrail_candidate: _ModeCandidate) -> _ModeCandidate:
+        required_capabilities = list(dict.fromkeys([
+            *guardrail_candidate.required_capabilities,
+            *llm_candidate.required_capabilities,
+        ]))
+        initial_context = {
+            **guardrail_candidate.initial_context,
+            **llm_candidate.initial_context,
+        }
+        return llm_candidate.__class__(
+            mode=llm_candidate.mode,
+            reason=llm_candidate.reason,
+            confidence=llm_candidate.confidence,
+            target_runtime=llm_candidate.target_runtime,
+            required_capabilities=required_capabilities,
+            initial_context=initial_context,
+            fallback_used=False,
+            source=llm_candidate.source,
+            error=llm_candidate.error,
+            risk_level=guardrail_candidate.risk_level
+            if guardrail_candidate.risk_level in {"write", "destructive"}
+            else llm_candidate.risk_level,
+            needs_tool=guardrail_candidate.needs_tool or llm_candidate.needs_tool,
+            needs_document_grounding=(
+                guardrail_candidate.needs_document_grounding or llm_candidate.needs_document_grounding
+            ),
+            needs_plan=guardrail_candidate.needs_plan or llm_candidate.needs_plan,
+            needs_reflection=guardrail_candidate.needs_reflection or llm_candidate.needs_reflection,
+            allowed_modes=guardrail_candidate.allowed_modes,
+            task_type=llm_candidate.task_type,
+            operation_level=llm_candidate.operation_level if llm_candidate.operation_level != "none" else guardrail_candidate.operation_level,
+            requested_fields=llm_candidate.requested_fields,
+            entity_mentions=llm_candidate.entity_mentions,
+            requested_output=llm_candidate.requested_output,
+            user_intent=llm_candidate.user_intent,
+            entities=llm_candidate.entities,
+            needs_verification=guardrail_candidate.needs_tool or llm_candidate.needs_verification,
+            action_plan=llm_candidate.action_plan,
+        )
 
     def _is_planner_intent(self, content: str) -> bool:
         stage_count = sum(1 for marker in self._PLANNER_MARKERS if marker in content)
@@ -464,6 +751,38 @@ class AgentOrchestrator:
         if payload.selected_document_ids:
             return True
         return any(attachment.document_id for attachment in payload.attachments)
+
+    def _has_pending_confirmation(self, payload: AgentOrchestratorInput) -> bool:
+        """Guardrail: confirmations for protected pending actions must re-enter the tool runtime."""
+
+        if not payload.runtime_context.get("has_pending_action"):
+            return False
+        content = payload.user_prompt.casefold()
+        return any(marker in content for marker in self._CONFIRM_MARKERS) or (
+            "确认" in content and any(marker in content for marker in self._DESTRUCTIVE_MARKERS)
+        )
+
+    def _is_reflection_feedback(self, content: str) -> bool:
+        """Guardrail: explicit correction of the previous answer must go through reflection."""
+
+        strong_markers = (
+            "刚才错",
+            "刚才答错",
+            "回答不对",
+            "重新检查",
+            "再检查",
+            "反思",
+            "为什么没查",
+            "为什么没有查",
+        )
+        if any(marker in content for marker in strong_markers):
+            return True
+        broad_correction = any(marker in content for marker in ("不对", "答错"))
+        previous_answer_reference = any(
+            marker in content
+            for marker in ("刚才", "刚刚", "上一轮", "上次", "前面", "你说", "你的回答", "回答")
+        )
+        return broad_correction and previous_answer_reference
 
     @staticmethod
     def _question_count(content: str) -> int:
@@ -504,6 +823,21 @@ class AgentOrchestrator:
 
     def _has_library_marker(self, content: str) -> bool:
         return any(marker in content for marker in self._LIBRARY_MARKERS)
+
+    @staticmethod
+    def _is_labeled_document_collection_intent(content: str) -> bool:
+        lowered = content.casefold()
+        if any(marker in lowered for marker in ("有标签", "带标签", "已打标签", "已分类", "tagged")) and not re.search(
+            r"[A-Za-z0-9_\-\u4e00-\u9fff]{1,40}\s*(?:标签|分类|分组|集合)\s*(?:下|下面|里的|中的|内|对应|关联)",
+            content,
+        ):
+            return False
+        has_entity_marker = any(marker in lowered for marker in ("标签", "分类", "分组", "集合", "tag", "category", "group"))
+        has_document_scope = any(
+            marker in lowered
+            for marker in ("论文", "文章", "文档", "paper", "papers", "document", "documents", "下", "下面", "里的", "中的")
+        )
+        return has_entity_marker and has_document_scope
 
     def _is_library_write_intent(self, content: str) -> bool:
         has_write = any(marker in content for marker in self._WRITE_MARKERS)
@@ -614,6 +948,62 @@ class AgentOrchestrator:
         except (TypeError, ValueError):
             return 0.0
         return max(0.0, min(1.0, number))
+
+    @staticmethod
+    def _normalize_risk_level(value: Any) -> str:
+        risk = str(value or "").casefold().strip()
+        if risk in {"safe", "read_only", "safe_write", "scoped_write", "write", "destructive", "critical"}:
+            return risk
+        return "safe"
+
+    @staticmethod
+    def _normalize_operation_level(value: Any) -> str:
+        operation_level = str(value or "").casefold().strip()
+        if operation_level in {"none", "entity", "relation", "document", "global"}:
+            return operation_level
+        return "none"
+
+    @staticmethod
+    def _normalize_task_type(value: Any) -> str:
+        task_type = str(value or "").casefold().strip()
+        allowed = {
+            "general_chat",
+            "metadata_query",
+            "document_qa",
+            "rag_summary",
+            "tag_query",
+            "tag_write",
+            "tag_rename",
+            "delete_unused_categories",
+            "category_entity_cleanup",
+            "category_write",
+            "library_stats",
+            "collection_analysis",
+            "labeled_document_query",
+            "labeled_document_analysis",
+            "category_query",
+            "collection_report",
+            "reflection",
+            "report_generation",
+            "other",
+        }
+        return task_type if task_type in allowed else "other"
+
+    @staticmethod
+    def _normalize_requested_output(value: Any) -> str:
+        requested_output = str(value or "").casefold().strip()
+        allowed = {"answer", "list", "count", "summary", "comparison", "analysis_report", "operation_result", "other"}
+        return requested_output if requested_output in allowed else "other"
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.casefold().strip() in {"true", "1", "yes", "y"}
+        return False
 
     @staticmethod
     def _extract_message_text(response: Any) -> str | None:

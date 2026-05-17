@@ -7,6 +7,7 @@ from queue import Queue
 from threading import Thread
 import time
 from datetime import datetime, timezone
+from contextlib import suppress
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -120,9 +121,10 @@ def send_message_stream(
     def event_generator():
         events: Queue[tuple[str, dict]] = Queue()
         streamed_any_delta = False
+        cancelled = False
 
         def push_delta(delta: str) -> None:
-            if delta:
+            if delta and not cancelled:
                 events.put(("assistant_delta", {"type": "assistant_delta", "delta": delta}))
 
         def worker() -> None:
@@ -135,26 +137,35 @@ def send_message_stream(
             payload = ChatSendResponse.model_validate(response).model_dump(mode="json")
             events.put(("done", {"type": "done", "response": payload}))
 
-        yield _sse_event("status", {"type": "status", "status": "processing"})
-        Thread(target=worker, daemon=True).start()
+        try:
+            yield _sse_event("status", {"type": "status", "status": "processing"})
+            Thread(target=worker, daemon=True).start()
 
-        while True:
-            event, payload = events.get()
-            if event == "assistant_delta":
-                streamed_any_delta = True
-                yield _sse_event(event, payload)
-                continue
-            if event == "error":
-                yield _sse_event(event, payload)
-                return
-            if event == "done":
-                response_payload = payload["response"]
-                if not streamed_any_delta:
-                    for chunk in _chunk_text(response_payload["assistant_message"]["content"], size=1):
-                        yield _sse_event("assistant_delta", {"type": "assistant_delta", "delta": chunk})
-                        time.sleep(0.004)
-                yield _sse_event(event, payload)
-                return
+            while True:
+                event, payload = events.get()
+                if event == "assistant_delta":
+                    streamed_any_delta = True
+                    yield _sse_event(event, payload)
+                    continue
+                if event == "error":
+                    yield _sse_event(event, payload)
+                    return
+                if event == "done":
+                    response_payload = payload["response"]
+                    if not streamed_any_delta:
+                        for chunk in _chunk_text(response_payload["assistant_message"]["content"], size=1):
+                            yield _sse_event("assistant_delta", {"type": "assistant_delta", "delta": chunk})
+                            time.sleep(0.004)
+                    yield _sse_event(event, payload)
+                    return
+        except GeneratorExit:
+            cancelled = True
+            _record_stream_cancelled(service, session_id)
+            raise
+        except Exception:
+            cancelled = True
+            _record_stream_cancelled(service, session_id)
+            raise
 
     return StreamingResponse(
         event_generator(),
@@ -240,6 +251,25 @@ def _chunk_text(text: str, size: int = 18):
             next_index = newline_index + 1
         yield text[index:next_index]
         index = next_index
+
+
+def _record_stream_cancelled(service: ChatService, session_id: str) -> None:
+    orchestrator = getattr(service, "agent_orchestrator", None)
+    if orchestrator is None:
+        return
+    trace_id = f"chat-stream-cancel-{uuid4().hex}"
+    repository = getattr(orchestrator, "research_repository", None)
+    if repository is None:
+        return
+    with suppress(Exception):
+        repository.create_run(trace_id, f"Chat Stream Cancelled: {session_id}")
+        orchestrator.append_trace(
+            trace_id,
+            status="generation_cancelled",
+            message="User stopped the streaming chat response.",
+            payload={"session_id": session_id, "user_stopped": True},
+        )
+        repository.update_run_status(trace_id, ResearchRunStatus.COMPLETED)
 
 
 def _report_topic(session_title: str, content: str) -> str:

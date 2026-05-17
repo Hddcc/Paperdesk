@@ -58,7 +58,7 @@ def builtin_tool_declarations() -> list[ToolDeclaration]:
             "payload": {"type": "object"},
         },
     }
-    return [
+    tools = [
         _tool(
             "plan/rule_based_initial",
             "规则初始规划",
@@ -172,6 +172,198 @@ def builtin_tool_declarations() -> list[ToolDeclaration]:
             ResearchActionType.FAIL,
             {"reason": "string"},
             common_output,
+        ),
+    ]
+    tools.extend(paperdesk_chat_tool_declarations(common_output))
+    return tools
+
+
+def paperdesk_chat_tool_declarations(output_schema: dict) -> list[ToolDeclaration]:
+    """Expose chat-side PaperDesk tools to the LLM router without changing execution."""
+
+    def chat_tool(
+        tool_id: str,
+        name: str,
+        description: str,
+        input_properties: dict[str, str],
+        *,
+        read_only: bool = True,
+        risk_level: str = "read_only",
+        required_args: list[str] | None = None,
+        scope_type: str = "none",
+        operation_level: str = "none",
+        requires_confirmation: bool = False,
+        requires_verification: bool = False,
+        operation_type: str = "none",
+    ) -> ToolDeclaration:
+        return ToolDeclaration(
+            tool_id=tool_id,
+            source=ToolSource.BUILTIN,
+            name=name,
+            description=description,
+            input_schema={
+                "type": "object",
+                "action_type": "paperdesk_chat_tool",
+                "risk_level": risk_level,
+                "required_args": required_args or [],
+                "scope_type": scope_type,
+                "operation_level": operation_level,
+                "requires_confirmation": requires_confirmation,
+                "requires_verification": requires_verification,
+                "operation_type": operation_type,
+                "properties": {
+                    key: {"type": value}
+                    for key, value in input_properties.items()
+                },
+            },
+            output_schema=output_schema,
+            read_only=read_only,
+            enabled=True,
+        )
+
+    return [
+        chat_tool(
+            "tool.registry.list",
+            "List PaperDesk chat tools",
+            "Read the available chat runtime tools, permissions, and argument expectations.",
+            {},
+        ),
+        chat_tool(
+            "library.explorer.stats",
+            "Read library statistics",
+            "Read paper counts and processing status from the local PaperDesk library.",
+            {},
+        ),
+        chat_tool(
+            "library.explorer.category_stats",
+            "Read tag/category statistics",
+            "Read tag/category list, per-tag document counts, tagged paper count, and untagged paper count.",
+            {},
+        ),
+        chat_tool(
+            "library.explorer.find_documents",
+            "Resolve documents or tag collections",
+            "Resolve papers by selected IDs, title/filename, or exact tag/category names. Prefer category_names when the user mentions a tag/category/group/collection entity.",
+            {"query": "string", "expected": "string", "allow_all": "boolean", "category_name": "string", "category_names": "array"},
+        ),
+        chat_tool(
+            "library.explorer.document_metadata",
+            "Read document metadata",
+            "Read title, authors, venue/journal/conference, publication time/year, and tags for resolved documents.",
+            {"document_ids": "array", "requested_fields": "array"},
+        ),
+        chat_tool(
+            "library.explorer.document_categories",
+            "Read document tags/categories",
+            "Read the current tag/category links for resolved documents.",
+            {"document_ids": "array"},
+        ),
+        chat_tool(
+            "library.operator.create_category",
+            "Create tag/category",
+            "Create one or more non-destructive tags/categories if missing.",
+            {"category_name": "string", "category_names": "array"},
+            read_only=False,
+            risk_level="safe_write",
+            required_args=["category_name"],
+            scope_type="single_entity",
+            operation_level="entity",
+            requires_verification=True,
+            operation_type="create_entity",
+        ),
+        chat_tool(
+            "library.operator.assign_category",
+            "Assign tag/category",
+            "Append one or more tags/categories to resolved documents, last referenced documents, or scope=untagged. Does not overwrite existing tags.",
+            {"category_name": "string", "category_names": "array", "scope": "string", "document_ids": "array"},
+            read_only=False,
+            risk_level="scoped_write",
+            required_args=["category_name"],
+            scope_type="documents|untagged|last_referenced",
+            operation_level="relation",
+            requires_verification=True,
+            operation_type="append_relation",
+        ),
+        chat_tool(
+            "library.operator.rename_category",
+            "Rename or merge tag/category",
+            "Rename or merge a tag/category while preserving all document links. Use this for replace/rename semantics, not destructive delete.",
+            {"source_category_name": "string", "target_category_name": "string"},
+            read_only=False,
+            risk_level="scoped_write",
+            required_args=["source_category_name", "target_category_name"],
+            scope_type="single_entity",
+            operation_level="entity",
+            requires_verification=True,
+            operation_type="rename_or_merge_entity",
+        ),
+        chat_tool(
+            "library.operator.delete_unused_categories",
+            "Delete unused tag/category entities",
+            "Delete only tag/category entities whose document_count is 0. Entity-level cleanup: does not clear document tags or modify document-category links. Requires selector=unused, preview, confirmation, and verification.",
+            {"selector": "unused"},
+            read_only=False,
+            risk_level="destructive",
+            required_args=["selector"],
+            scope_type="category_entities_with_zero_documents",
+            operation_level="entity",
+            requires_confirmation=True,
+            requires_verification=True,
+            operation_type="delete_unused_category_entities",
+        ),
+        chat_tool(
+            "library.operator.clear_categories",
+            "Clear document tag/category links",
+            "Destructive tag/category relation tool. Requires explicit operation and runtime preview before execution; scope=all/tagged is critical.",
+            {"operation": "string", "scope": "string", "category_name": "string", "document_ids": "array"},
+            read_only=False,
+            risk_level="destructive|critical",
+            required_args=["operation"],
+            scope_type="explicit",
+            operation_level="relation|document|global",
+            requires_confirmation=True,
+            requires_verification=True,
+            operation_type="remove_or_clear_relations",
+        ),
+        chat_tool(
+            "evidence.retriever.search",
+            "Retrieve document evidence",
+            "Retrieve local RAG evidence from ready papers for grounded document QA, summaries, comparisons, and reports.",
+            {"question": "string", "document_ids": "array"},
+        ),
+        chat_tool(
+            "evidence.retriever.search_by_category",
+            "Retrieve evidence by tag/category",
+            "Retrieve grouped RAG evidence for papers under one or more tag/category entities.",
+            {"question": "string", "category_names": "array"},
+        ),
+        chat_tool(
+            "report.drafter.write",
+            "Synthesize grounded answer",
+            "Generate the final user-facing answer from resolved documents and retrieved evidence. Use only when the user actually asks for analysis, summary, comparison, or report output.",
+            {"question": "string", "document_ids": "array"},
+        ),
+        chat_tool(
+            "report.drafter.write_by_category",
+            "Synthesize grouped tag/category answer",
+            "Generate final grouped summaries or comparisons from tag/category evidence groups.",
+            {"question": "string", "target_chars": "integer"},
+        ),
+        chat_tool(
+            "memory.read",
+            "Read chat memory",
+            "Read user preferences and prior reflection notes relevant to the current task.",
+            {},
+        ),
+        chat_tool(
+            "memory.write",
+            "Write chat memory",
+            "Persist a short reusable reflection lesson after completing a task.",
+            {"summary": "string"},
+            read_only=False,
+            risk_level="safe_write",
+            scope_type="session_memory",
+            operation_type="memory_note",
         ),
     ]
 

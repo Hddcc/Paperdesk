@@ -38,7 +38,8 @@ class KnowledgePlannerRuntime:
         selected_document_ids: list[str],
         decision: AgentModeDecision,
     ) -> KnowledgeAgentResult:
-        plan = self._build_plan(request.content)
+        llm_plan = self._build_plan_from_decision(decision)
+        plan = llm_plan or self._build_plan(request.content)
         self.message_bus.append_trace(
             run_id=decision.trace_id,
             task_id=None,
@@ -49,6 +50,7 @@ class KnowledgePlannerRuntime:
                 "mode": decision.mode.value,
                 "plan": plan,
                 "reason": decision.reason,
+                "planner_source": "llm_action_plan" if llm_plan else "conservative_fallback_template",
             },
         )
         result = self.knowledge_agent_runtime.run_react(
@@ -70,13 +72,45 @@ class KnowledgePlannerRuntime:
                 "retrieval_status": result.retrieval_status,
                 "used_document_count": len(result.used_document_ids),
                 "evidence_count": len(result.evidence_items),
+                "final_content_length": len(result.content or ""),
             },
         )
         result.agent_trace_id = decision.trace_id
         return result
 
     @staticmethod
+    def _build_plan_from_decision(decision: AgentModeDecision) -> list[dict[str, Any]]:
+        action_plan = decision.initial_context.get("action_plan")
+        if not isinstance(action_plan, list):
+            return []
+        plan: list[dict[str, Any]] = []
+        for index, item in enumerate(action_plan, start=1):
+            if not isinstance(item, dict):
+                continue
+            tool = str(item.get("tool") or "").strip()
+            if not tool:
+                continue
+            plan.append(
+                {
+                    "step": index,
+                    "goal": str(item.get("purpose") or item.get("rationale") or tool),
+                    "tool": tool,
+                    "arguments": item.get("arguments") if isinstance(item.get("arguments"), dict) else {},
+                    "depends_on": list(range(1, index)),
+                    "done_criteria": (
+                        "write verified by a second read"
+                        if item.get("requires_verification_after")
+                        else "observation is available for final answer synthesis"
+                    ),
+                    "source": "llm_action_plan",
+                }
+            )
+        return plan
+
+    @staticmethod
     def _build_plan(content: str) -> list[dict[str, Any]]:
+        """Build a conservative visible plan; LLM/router decides whether PLANNER is needed upstream."""
+
         plan: list[dict[str, Any]] = [
             {
                 "step": 1,
@@ -117,4 +151,3 @@ class KnowledgePlannerRuntime:
                 }
             )
         return plan
-

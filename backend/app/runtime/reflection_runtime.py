@@ -27,6 +27,9 @@ from .knowledge_agent_runtime import KnowledgeAgentResult, KnowledgeAgentRuntime
 from .message_bus import MessageBus
 
 
+_REFLECTION_META: dict[int, dict[str, Any]] = {}
+
+
 class ReflectionRuntime:
     """Review answers, score quality, and coordinate a bounded improvement turn."""
 
@@ -63,6 +66,16 @@ class ReflectionRuntime:
     _LIBRARY_MARKERS = ("论文库", "文献库", "本地论文", "库里", "库内", "论文", "这几篇", "这些论文")
     _FAILED_STATUSES = {"failed", "degraded", "validation_failed", "retryable_error", "non_retryable_error"}
     _NON_RETRY_STATUSES = {"confirmation_required", "needs_clarification"}
+    _REFLECTION_TOOL_TYPES = {
+        "none",
+        "library_stats",
+        "metadata",
+        "category",
+        "tag_operator",
+        "rag",
+        "document_search",
+        "operator_verify",
+    }
 
     def __init__(
         self,
@@ -276,6 +289,8 @@ class ReflectionRuntime:
         selected_document_ids: list[str],
         previous: ChatMessage | None,
     ) -> bool:
+        """Guardrail/fallback: explicit document grounding must re-enter tools."""
+
         if selected_document_ids:
             return True
         if previous is not None and previous.used_document_ids:
@@ -353,6 +368,12 @@ class ReflectionRuntime:
                                     "evidence_count": len(result.evidence_items),
                                 },
                                 "trace_digest": self._trace_digest(traces),
+                                "available_tool_types": sorted(self._REFLECTION_TOOL_TYPES),
+                                "evaluation_contract": {
+                                    "llm_role": "judge whether the current answer satisfied the user's actual intent and whether another tool observation is needed",
+                                    "database_truth_source": "trace observations and result fields only",
+                                    "fallback_note": "keyword fallback is used only when this JSON evaluation is unavailable or invalid",
+                                },
                                 "output_schema": {
                                     "overall_score": 8,
                                     "intent_score": 8,
@@ -360,6 +381,10 @@ class ReflectionRuntime:
                                     "evidence_score": 8,
                                     "answer_score": 8,
                                     "completion_score": 8,
+                                    "risk_level": "safe|read_only|write|destructive|critical",
+                                    "detected_issue_type": "wrong_answer|missing_evidence|wrong_tool|incomplete_write|format_pollution|status_only_answer|step_missing|parameter_pollution|operation_level_mismatch|none",
+                                    "needs_tool_recheck": False,
+                                    "needed_tool_type": "none|library_stats|metadata|category|tag_operator|rag|document_search|operator_verify",
                                     "issues": ["visible issue"],
                                     "improvement_actions": [
                                         {
@@ -387,7 +412,7 @@ class ReflectionRuntime:
         if not isinstance(payload, dict):
             return None
         try:
-            return self._normalize_reflection_result(ReflectionResult.model_validate(payload))
+            return self._reflection_result_from_payload(payload, source="llm")
         except Exception:
             return None
 
@@ -401,6 +426,8 @@ class ReflectionRuntime:
         mode: str,
         user_feedback: str | None,
     ) -> ReflectionResult:
+        """Conservative fallback only; normal semantic retry decisions come from the LLM evaluator."""
+
         scores = {
             "intent": 8,
             "tool": 8,
@@ -414,6 +441,7 @@ class ReflectionRuntime:
         tools = self._tool_sequence(traces)
         statuses = [str(getattr(trace, "status", "") or "") for trace in traces]
         has_observation = any(status == "react_observation" for status in statuses)
+        has_report_observation = any(tool in {"report.drafter.write", "report.drafter.write_by_category"} for tool in tools)
         has_failure = (
             result.retrieval_status == "degraded"
             or (result.action_status or "") in self._FAILED_STATUSES
@@ -422,7 +450,12 @@ class ReflectionRuntime:
         waiting_for_user = result.action_status in self._NON_RETRY_STATUSES
         needs_observation = self._requires_tool_observation(user_goal, result, mode)
         needs_rag = self._requires_rag_evidence(user_goal)
-        needs_category = any(marker in user_goal for marker in self._CATEGORY_MARKERS)
+        has_category_entity_observation = self._has_category_entity_observation(traces)
+        needs_category = (
+            any(marker in user_goal for marker in self._CATEGORY_MARKERS)
+            and not self._has_report_observation_with_answer(traces)
+            and not has_category_entity_observation
+        )
         has_write = any(tool.startswith("library.operator.") for tool in tools) or any(
             marker in user_goal for marker in self._WRITE_MARKERS
         )
@@ -484,7 +517,7 @@ class ReflectionRuntime:
             )
             lessons.append("用户询问标签或分类时，必须读取真实分类关联表，不能只依赖论文总数或文件名。")
 
-        if needs_rag and not result.evidence_items and not waiting_for_user:
+        if needs_rag and not result.evidence_items and not waiting_for_user and not has_report_observation:
             scores["evidence"] = min(scores["evidence"], 5 if has_observation else 4)
             scores["answer"] = min(scores["answer"], 6)
             issues.append("总结、综述或引用类任务缺少 RAG 证据覆盖。")
@@ -535,7 +568,47 @@ class ReflectionRuntime:
             should_retry=False,
             memory_lessons=self._dedupe_strings(lessons),
         )
-        return self._normalize_reflection_result(reflection)
+        return self._with_reflection_meta(
+            self._normalize_reflection_result(reflection),
+            {
+                "source": "fallback_rule",
+                "risk_level": self._fallback_risk_level(user_goal, result),
+                "needs_tool_recheck": any(action.type == "call_tool" for action in actions),
+                "needed_tool_type": self._fallback_needed_tool_type(actions, user_goal),
+                "schema_valid": True,
+            },
+        )
+
+    def _reflection_result_from_payload(self, payload: dict[str, Any], *, source: str) -> ReflectionResult:
+        normalized_payload = dict(payload)
+        if "overall_score" not in normalized_payload:
+            raise ValueError("reflection overall_score is required")
+        overall_score = self._clamp_score(normalized_payload.get("overall_score"))
+        for field_name in (
+            "overall_score",
+            "intent_score",
+            "tool_score",
+            "evidence_score",
+            "answer_score",
+            "completion_score",
+        ):
+            normalized_payload[field_name] = self._clamp_score(normalized_payload.get(field_name, overall_score))
+        needed_tool_type = self._normalize_needed_tool_type(normalized_payload.get("needed_tool_type"))
+        risk_level = self._normalize_risk_level(normalized_payload.get("risk_level"))
+        detected_issue_type = self._normalize_issue_type(normalized_payload.get("detected_issue_type"))
+        needs_tool_recheck = self._coerce_bool(normalized_payload.get("needs_tool_recheck"))
+        reflection = self._normalize_reflection_result(ReflectionResult.model_validate(normalized_payload))
+        return self._with_reflection_meta(
+            reflection,
+            {
+                "source": source,
+                "risk_level": risk_level,
+                "detected_issue_type": detected_issue_type,
+                "needs_tool_recheck": needs_tool_recheck,
+                "needed_tool_type": needed_tool_type,
+                "schema_valid": True,
+            },
+        )
 
     def _should_run_improvement(
         self,
@@ -544,9 +617,13 @@ class ReflectionRuntime:
         result: KnowledgeAgentResult,
         reflection: ReflectionResult,
     ) -> bool:
-        if not reflection.should_retry:
+        meta = self._reflection_meta(reflection)
+        semantic_retry = bool(reflection.should_retry or meta.get("needs_tool_recheck"))
+        if not semantic_retry:
             return False
         if self._is_destructive_intent(user_goal):
+            return False
+        if meta.get("risk_level") == "destructive":
             return False
         if result.library_mutated:
             return False
@@ -652,6 +729,12 @@ class ReflectionRuntime:
         original: KnowledgeAgentResult,
         improved: KnowledgeAgentResult,
     ) -> bool:
+        if (
+            improved.evidence_items
+            and self.knowledge_agent_runtime is not None
+            and self.knowledge_agent_runtime.is_status_only_answer(improved.content)
+        ):
+            return False
         if improved.retrieval_status == "ready" and original.retrieval_status != "ready":
             return True
         if len(improved.evidence_items) > len(original.evidence_items):
@@ -710,6 +793,7 @@ class ReflectionRuntime:
             "source_trace_id": source_trace_id,
             "reviewed_action_status": reviewed_action_status,
             "reflection_result": reflection.model_dump(mode="json"),
+            "evaluator": self._reflection_meta(reflection),
         }
         self.message_bus.append_trace(
             run_id=trace_id,
@@ -756,6 +840,7 @@ class ReflectionRuntime:
                 "should_retry": reflection.should_retry,
                 "memory_lessons": reflection.memory_lessons,
                 "reflection_result": reflection.model_dump(mode="json"),
+                "evaluator": self._reflection_meta(reflection),
             }
             with path.open("a", encoding="utf-8") as file:
                 file.write(json.dumps(payload, ensure_ascii=False) + "\n")
@@ -857,6 +942,41 @@ class ReflectionRuntime:
         return tools
 
     @staticmethod
+    def _has_report_observation_with_answer(traces: list[Any]) -> bool:
+        for trace in traces:
+            payload = getattr(trace, "payload", {}) or {}
+            if not isinstance(payload, dict):
+                continue
+            tool = payload.get("tool")
+            if tool not in {"report.drafter.write", "report.drafter.write_by_category"}:
+                continue
+            observation_payload = payload.get("payload")
+            if isinstance(observation_payload, dict) and observation_payload.get("answer"):
+                return True
+        return False
+
+    @staticmethod
+    def _has_category_entity_observation(traces: list[Any]) -> bool:
+        """Return true when a tool already resolved a tag/category entity from the real library."""
+
+        for trace in traces:
+            payload = getattr(trace, "payload", {}) or {}
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("tool") != "library.explorer.find_documents":
+                continue
+            observation_payload = payload.get("payload")
+            if not isinstance(observation_payload, dict):
+                continue
+            if (
+                observation_payload.get("category_lookup")
+                or observation_payload.get("category_names")
+                or observation_payload.get("category_name")
+            ):
+                return True
+        return False
+
+    @staticmethod
     def _trace_digest(traces: list[Any]) -> list[dict[str, Any]]:
         digest: list[dict[str, Any]] = []
         for trace in traces[-20:]:
@@ -874,19 +994,107 @@ class ReflectionRuntime:
         return digest
 
     def _normalize_reflection_result(self, reflection: ReflectionResult) -> ReflectionResult:
+        overall_score = self._clamp_score(reflection.overall_score)
         updates = {
-            "overall_score": self._clamp_score(reflection.overall_score),
+            "overall_score": overall_score,
             "intent_score": self._clamp_score(reflection.intent_score),
             "tool_score": self._clamp_score(reflection.tool_score),
             "evidence_score": self._clamp_score(reflection.evidence_score),
             "answer_score": self._clamp_score(reflection.answer_score),
             "completion_score": self._clamp_score(reflection.completion_score),
-            "should_retry": reflection.overall_score < 6,
+            "should_retry": bool(reflection.should_retry or overall_score < 6),
             "issues": self._dedupe_strings(reflection.issues)[:8],
             "memory_lessons": self._dedupe_strings(reflection.memory_lessons)[:5],
             "improvement_actions": self._dedupe_actions(reflection.improvement_actions)[:5],
         }
         return reflection.model_copy(update=updates)
+
+    @staticmethod
+    def _with_reflection_meta(reflection: ReflectionResult, meta: dict[str, Any]) -> ReflectionResult:
+        _REFLECTION_META[id(reflection)] = meta
+        return reflection
+
+    @staticmethod
+    def _reflection_meta(reflection: ReflectionResult) -> dict[str, Any]:
+        return _REFLECTION_META.get(
+            id(reflection),
+            {
+                "source": "unknown",
+                "risk_level": "safe",
+                "detected_issue_type": "none",
+                "needs_tool_recheck": False,
+                "needed_tool_type": "none",
+                "schema_valid": True,
+            },
+        )
+
+    @staticmethod
+    def _normalize_risk_level(value: Any) -> str:
+        risk = str(value or "").casefold().strip()
+        if risk in {"safe", "read_only", "write", "destructive"}:
+            return risk
+        return "safe"
+
+    def _normalize_needed_tool_type(self, value: Any) -> str:
+        tool_type = str(value or "").casefold().strip()
+        if tool_type in self._REFLECTION_TOOL_TYPES:
+            return tool_type
+        return "none"
+
+    @staticmethod
+    def _normalize_issue_type(value: Any) -> str:
+        issue_type = str(value or "").casefold().strip()
+        allowed = {
+            "wrong_answer",
+            "missing_evidence",
+            "wrong_tool",
+            "incomplete_write",
+            "format_pollution",
+            "status_only_answer",
+            "none",
+        }
+        return issue_type if issue_type in allowed else "none"
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.casefold().strip() in {"true", "1", "yes", "y"}
+        return False
+
+    def _fallback_risk_level(self, user_goal: str, result: KnowledgeAgentResult) -> str:
+        if self._is_destructive_intent(user_goal):
+            return "destructive"
+        if result.library_mutated or any(marker in user_goal for marker in self._WRITE_MARKERS):
+            return "write"
+        if (
+            result.used_document_ids
+            or result.evidence_items
+            or any(marker in user_goal for marker in self._LIBRARY_MARKERS + self._CATEGORY_MARKERS)
+        ):
+            return "read_only"
+        return "safe"
+
+    def _fallback_needed_tool_type(self, actions: list[ReflectionImprovementAction], user_goal: str) -> str:
+        tool_names = " ".join(str(action.tool or "") for action in actions)
+        if "document_metadata" in tool_names:
+            return "metadata"
+        if any("library.operator" in str(action.tool or "") for action in actions):
+            return "tag_operator"
+        if "category" in tool_names or any(marker in user_goal for marker in self._CATEGORY_MARKERS):
+            return "category"
+        if "evidence.retriever" in tool_names or self._requires_rag_evidence(user_goal):
+            return "rag"
+        if "library.explorer.stats" in tool_names:
+            return "library_stats"
+        if any("operator" in str(action.tool or "") for action in actions):
+            return "operator_verify"
+        if any("find_documents" in str(action.tool or "") for action in actions):
+            return "document_search"
+        return "none"
 
     @staticmethod
     def _clamp_score(value: Any) -> int:

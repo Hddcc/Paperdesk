@@ -220,6 +220,49 @@ def test_document_categories_are_persistent_and_do_not_delete_documents(client, 
     assert [item["id"] for item in remaining_document["categories"]] == [second_category["id"]]
 
 
+def test_direct_category_replace_empty_list_only_clears_one_document(client, monkeypatch):
+    monkeypatch.setattr(
+        EmbeddingService,
+        "embed_texts",
+        lambda self, texts: [[float(index + 1), 1.0, 0.5] for index, _ in enumerate(texts)],
+    )
+
+    first_upload = client.post(
+        "/api/documents/upload",
+        files={"file": ("first.pdf", BytesIO(_build_pdf_bytes("first text " * 20)), "application/pdf")},
+    )
+    second_upload = client.post(
+        "/api/documents/upload",
+        files={"file": ("second.pdf", BytesIO(_build_pdf_bytes("second text " * 20)), "application/pdf")},
+    )
+    assert first_upload.status_code == 200
+    assert second_upload.status_code == 200
+    first_document = _wait_for_document_status(client, first_upload.json()["id"], "ready")
+    second_document = _wait_for_document_status(client, second_upload.json()["id"], "ready")
+
+    category = client.post("/api/document-categories", json={"name": "Scoped", "color": "#0f5fb8"}).json()
+    assert client.put(
+        f"/api/documents/{first_document['id']}/categories",
+        json={"category_ids": [category["id"]]},
+    ).status_code == 200
+    assert client.put(
+        f"/api/documents/{second_document['id']}/categories",
+        json={"category_ids": [category["id"]]},
+    ).status_code == 200
+
+    clear_one = client.put(
+        f"/api/documents/{first_document['id']}/categories",
+        json={"category_ids": []},
+    )
+    assert clear_one.status_code == 200
+
+    documents = client.get("/api/documents").json()
+    refreshed_first = next(item for item in documents if item["id"] == first_document["id"])
+    refreshed_second = next(item for item in documents if item["id"] == second_document["id"])
+    assert refreshed_first["categories"] == []
+    assert [item["name"] for item in refreshed_second["categories"]] == ["Scoped"]
+
+
 def test_document_upload_marks_failed_when_embedding_generation_breaks(client, monkeypatch):
     def fake_embed_failure(self, texts):
         _ = texts
