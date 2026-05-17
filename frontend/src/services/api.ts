@@ -5,6 +5,7 @@ import type {
   ChatSession,
   ChatSessionCreateRequest,
   ChatSessionDetail,
+  ChatStreamEvent,
   DocumentCategory,
   DocumentCategoryAssignmentRequest,
   DocumentCategoryCreateRequest,
@@ -245,6 +246,78 @@ export async function sendChatMessage(
   }
 }
 
+export async function streamChatMessage(
+  sessionId: string,
+  payload: ChatMessageRequest,
+  onEvent: (event: ChatStreamEvent) => void
+): Promise<void> {
+  try {
+    const response = await fetch(`${baseUrl}/api/chat/sessions/${sessionId}/messages/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(detail || `Chat stream failed: ${response.status}`);
+    }
+
+    if (!response.body) {
+      throw new Error("The browser does not support stream reading.");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary !== -1) {
+        const rawEvent = buffer.slice(0, boundary).trim();
+        buffer = buffer.slice(boundary + 2);
+        const event = parseSseEvent<ChatStreamEvent>(rawEvent);
+        if (event) {
+          onEvent(event);
+          if (event.type === "error") {
+            throw new Error(event.message);
+          }
+          if (event.type === "done") {
+            return;
+          }
+        }
+        boundary = buffer.indexOf("\n\n");
+      }
+
+      if (done) {
+        break;
+      }
+    }
+  } catch (err) {
+    throw normalizeFetchError(err, "发送消息失败");
+  }
+}
+
+export async function saveChatMessageAsReport(
+  sessionId: string,
+  messageId: string
+): Promise<ResearchReport> {
+  try {
+    const response = await fetch(`${baseUrl}/api/chat/sessions/${sessionId}/messages/${messageId}/report`, {
+      method: "POST"
+    });
+    return parseJson<ResearchReport>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "保存报告失败");
+  }
+}
+
 export async function analyzePapers(payload: PaperAnalysisRequest): Promise<PaperAnalysisResponse> {
   try {
     const response = await fetch(`${baseUrl}/api/papers/analyze`, {
@@ -300,6 +373,20 @@ export async function exportReportMarkdown(reportId: string): Promise<string> {
     throw new Error(detail || `Export failed: ${response.status}`);
   }
   return response.text();
+}
+
+function parseSseEvent<T>(rawEvent: string): T | null {
+  if (!rawEvent) {
+    return null;
+  }
+  const dataLines: string[] = [];
+  for (const line of rawEvent.split(/\r?\n/)) {
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  const data = dataLines.join("\n").trim();
+  return data ? (JSON.parse(data) as T) : null;
 }
 
 export async function runResearchStream(

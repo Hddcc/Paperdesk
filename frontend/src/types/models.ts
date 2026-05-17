@@ -482,6 +482,9 @@ export interface ChatMessage {
   used_document_ids: string[];
   memory_hits: MemoryHit[];
   attachments: ChatAttachment[];
+  saved_report_id?: string | null;
+  agent_trace_id?: string | null;
+  action_status?: string | null;
   created_at: string;
 }
 
@@ -516,7 +519,14 @@ export interface ChatSendResponse {
   assistant_message: ChatMessage;
   memory_snapshot: MemorySnapshot;
   context_state: ChatContextState;
+  library_mutated?: boolean;
 }
+
+export type ChatStreamEvent =
+  | { type: "status"; status: string; message?: string }
+  | { type: "assistant_delta"; delta: string }
+  | { type: "done"; response: ChatSendResponse }
+  | { type: "error"; message: string };
 
 export interface PaperAnalysisRequest {
   document_ids: string[];

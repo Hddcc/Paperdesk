@@ -47,7 +47,7 @@
         </div>
       </header>
 
-      <div class="panel-body panel-scroll chat-message-panel">
+      <div ref="messagePanelRef" class="panel-body panel-scroll chat-message-panel">
         <div v-if="store.loading" class="empty-state">正在加载会话…</div>
 
         <div v-else-if="!store.messages.length" class="chat-empty-state">
@@ -93,21 +93,45 @@
               </div>
 
               <MarkdownPreview
-                v-if="message.role === 'assistant'"
+                v-if="message.role === 'assistant' && message.content"
                 :markdown="message.content"
               />
-              <p v-else class="chat-message-text">{{ message.content }}</p>
+              <div v-if="message.role === 'assistant' && isMessageProcessing(message)" class="chat-processing-indicator">
+                <span>正在处理</span>
+                <i></i>
+                <i></i>
+                <i></i>
+              </div>
+              <p v-if="message.role !== 'assistant'" class="chat-message-text">{{ message.content }}</p>
 
               <p v-if="message.warning" class="hint-text">{{ message.warning }}</p>
 
-              <div v-if="message.citations.length" class="citation-strip">
-                <span class="request-label">引用</span>
-                <div class="memory-chip-list">
-                  <span v-for="citation in message.citations" :key="citation" class="citation-chip">
-                    {{ citation }}
-                  </span>
-                </div>
+              <div class="chat-message-actions">
+                <button
+                  class="button-secondary message-action-button"
+                  :disabled="!message.content.trim()"
+                  @click="copyMessage(message)"
+                >
+                  <Copy :size="15" />
+                  {{ copiedMessageId === message.id ? "已复制" : "复制" }}
+                </button>
+                <button
+                  v-if="message.role === 'assistant'"
+                  class="button-secondary message-action-button"
+                  :disabled="isMessageProcessing(message) || !message.content.trim() || Boolean(message.saved_report_id) || store.savingReportMessageId === message.id"
+                  @click="saveMessageReport(message)"
+                >
+                  <Save :size="15" />
+                  {{
+                    message.saved_report_id
+                      ? "已保存"
+                      : store.savingReportMessageId === message.id
+                        ? "保存中..."
+                        : "保存为报告"
+                  }}
+                </button>
               </div>
+
             </div>
           </li>
         </ul>
@@ -118,10 +142,10 @@
         <p v-if="store.error" class="error-text">{{ store.error }}</p>
         <p v-if="documentStore.error" class="error-text">{{ documentStore.error }}</p>
 
-        <div v-if="store.draftAttachments.length" class="draft-strip">
+        <div v-if="visibleDraftAttachments.length" class="draft-strip">
           <div class="memory-chip-list">
             <button
-              v-for="attachment in store.draftAttachments"
+              v-for="attachment in visibleDraftAttachments"
               :key="attachment.id"
               class="draft-chip"
               @click="store.removeDraftAttachment(attachment.id)"
@@ -131,14 +155,6 @@
             </button>
           </div>
         </div>
-
-        <TaskQuickLaunchPanel
-          :document-count="store.selectedDocumentIds.length"
-          :has-uploaded-context="hasUploadedSelection"
-          :disabled="store.sending || researchStore.isRunning"
-          @fill="fillQuickAction"
-          @submit="submitQuickAction"
-        />
 
         <div v-if="showDocumentPicker" class="document-picker-sheet">
           <div class="sheet-head">
@@ -170,30 +186,57 @@
         </div>
 
         <div class="composer-shell">
+          <div
+            class="composer-resize-handle"
+            role="separator"
+            aria-label="调整输入框高度"
+            aria-orientation="horizontal"
+            @pointerdown="startComposerResize"
+          ></div>
+          <div v-if="selectedLibraryDraftAttachments.length" class="selected-document-strip" aria-label="已选论文">
+            <article
+              v-for="attachment in selectedLibraryDraftAttachments"
+              :key="attachment.id"
+              class="selected-document-chip"
+              :title="attachment.display_name"
+            >
+              <span class="selected-document-icon" aria-hidden="true">
+                <FileText :size="18" />
+              </span>
+              <span class="selected-document-copy">
+                <strong>{{ attachment.display_name }}</strong>
+                <small>
+                  {{ formatAttachmentKind(attachment.kind) }}
+                  <span v-if="attachment.status"> · {{ formatDocumentStatus(attachment.status) }}</span>
+                </small>
+              </span>
+              <button
+                class="selected-document-remove"
+                type="button"
+                :aria-label="`移除 ${attachment.display_name}`"
+                @click="store.removeDraftAttachment(attachment.id)"
+              >
+                <X :size="14" />
+              </button>
+            </article>
+          </div>
           <button class="composer-plus" aria-label="添加附件" @click="showAttachMenu = !showAttachMenu">
             <Paperclip :size="19" />
           </button>
           <textarea
             v-model="store.composerText"
             class="chat-textarea"
-            placeholder="输入问题，或附加 PDF / 库内论文后发送或生成结果。"
+            :style="{ height: `${composerHeight}px` }"
+            placeholder="输入问题，或附加 PDF / 库内论文后发送。"
             @keydown="handleKeydown"
           />
           <button
             class="button-primary composer-send"
-            :disabled="store.sending || researchStore.isRunning || !store.composerText.trim()"
-            @click="store.sendCurrentMessage"
+            :disabled="store.sending || !store.composerText.trim()"
+            @click="sendChatMessage"
           >
             <SendHorizontal :size="16" />
             {{ store.sending ? "发送中..." : "发送" }}
-          </button>
-          <button
-            class="button-secondary composer-research"
-            :disabled="store.sending || researchStore.isRunning || !store.composerText.trim()"
-            @click="startResearchTask"
-          >
-            <Sparkles :size="16" />
-            {{ researchStore.isRunning ? "研究中..." : "生成结果" }}
           </button>
         </div>
       </div>
@@ -217,37 +260,73 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { Paperclip, Plus, SendHorizontal, Sparkles, Trash2 } from "lucide-vue-next";
-import { useRouter } from "vue-router";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { Copy, FileText, Paperclip, Plus, Save, SendHorizontal, Trash2, X } from "lucide-vue-next";
 
 import MarkdownPreview from "../components/MarkdownPreview.vue";
-import TaskQuickLaunchPanel, { type QuickLaunchAction } from "../components/TaskQuickLaunchPanel.vue";
 import { useDocumentStore } from "../stores/documents";
 import { useKnowledgeStore } from "../stores/knowledge";
-import { useResearchStore } from "../stores/research";
-import type { ChatAttachment, ChatMessageRole, ChatSession, LibraryDocument, ResearchInputMode } from "../types/models";
+import type { ChatAttachment, ChatMessage, ChatMessageRole, ChatSession } from "../types/models";
 
 const store = useKnowledgeStore();
 const documentStore = useDocumentStore();
-const researchStore = useResearchStore();
-const router = useRouter();
 
+const messagePanelRef = ref<HTMLElement | null>(null);
 const imageInputRef = ref<HTMLInputElement | null>(null);
 const pdfInputRef = ref<HTMLInputElement | null>(null);
 const showAttachMenu = ref(false);
 const showDocumentPicker = ref(false);
+const copiedMessageId = ref("");
+const composerHeight = ref(112);
+const resizeStartY = ref(0);
+const resizeStartHeight = ref(0);
+const resizingComposer = ref(false);
 
 const readyDocuments = computed(() =>
   documentStore.documents.filter((document) => document.status === "ready")
 );
-const hasUploadedSelection = computed(() =>
-  store.uploadedTaskDocumentIds.some((documentId) => store.selectedDocumentIds.includes(documentId))
+const visibleDraftAttachments = computed(() =>
+  store.draftAttachments.filter((attachment) => attachment.kind !== "library_document")
 );
+const selectedLibraryDraftAttachments = computed(() =>
+  store.draftAttachments
+    .filter((attachment) => attachment.kind === "library_document")
+    .map((attachment) => {
+      const document = documentStore.documents.find((item) => item.id === attachment.document_id);
+      if (!document) {
+        return attachment;
+      }
+      return {
+        ...attachment,
+        display_name: document.display_name || attachment.display_name,
+        status: document.status,
+        metadata: {
+          ...attachment.metadata,
+          title: document.title,
+          filename: document.filename
+        }
+      };
+    })
+);
+const latestMessageSignature = computed(() => {
+  const latestMessage = store.messages[store.messages.length - 1];
+  return `${store.messages.length}:${latestMessage?.id || ""}:${latestMessage?.content.length || 0}:${store.sending}`;
+});
 
 onMounted(async () => {
   await Promise.all([documentStore.refreshDocuments(), store.bootstrap()]);
 });
+
+watch(latestMessageSignature, () => {
+  void scrollMessagesToBottom();
+}, { flush: "post" });
+
+async function scrollMessagesToBottom() {
+  await nextTick();
+  if (messagePanelRef.value) {
+    messagePanelRef.value.scrollTop = messagePanelRef.value.scrollHeight;
+  }
+}
 
 function triggerImageInput() {
   showAttachMenu.value = false;
@@ -304,44 +383,6 @@ async function handlePdfSelected(event: Event) {
   input.value = "";
 }
 
-async function startResearchTask() {
-  const content = store.composerText.trim();
-  if (!content) {
-    return;
-  }
-  await queueResearchFromKnowledge(content, "从知识库入口发起，优先使用已选择的库内论文。");
-}
-
-function fillQuickAction(action: QuickLaunchAction) {
-  store.composerText = action.prompt;
-}
-
-async function submitQuickAction(action: QuickLaunchAction) {
-  await queueResearchFromKnowledge(action.prompt, action.notes);
-}
-
-async function queueResearchFromKnowledge(content: string, notes: string) {
-  const selectedIds = [...store.selectedDocumentIds];
-  const inputModes: ResearchInputMode[] = ["prompt"];
-  if (selectedIds.length) {
-    inputModes.push("knowledge_base");
-  }
-  if (hasUploadedSelection.value) {
-    inputModes.push("uploaded_file");
-  }
-  researchStore.queueResearch({
-    topic: content,
-    top_k_local: Math.max(3, selectedIds.length || 3),
-    top_k_online: 3,
-    search_provider: null,
-    notes: selectedIds.length ? notes : "从知识库入口发起。",
-    input_modes: inputModes,
-    selected_document_ids: selectedIds
-  });
-  store.clearComposer();
-  await router.push("/research");
-}
-
 async function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -355,9 +396,63 @@ function handleKeydown(event: KeyboardEvent) {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     if (!store.sending && store.composerText.trim()) {
-      void store.sendCurrentMessage();
+      void sendChatMessage();
     }
   }
+}
+
+function startComposerResize(event: PointerEvent) {
+  resizingComposer.value = true;
+  resizeStartY.value = event.clientY;
+  resizeStartHeight.value = composerHeight.value;
+  window.addEventListener("pointermove", resizeComposer);
+  window.addEventListener("pointerup", stopComposerResize);
+  window.addEventListener("pointercancel", stopComposerResize);
+}
+
+function resizeComposer(event: PointerEvent) {
+  if (!resizingComposer.value) {
+    return;
+  }
+  const maxHeight = Math.min(Math.floor(window.innerHeight * 0.5), 420);
+  const nextHeight = resizeStartHeight.value + resizeStartY.value - event.clientY;
+  composerHeight.value = Math.max(92, Math.min(maxHeight, nextHeight));
+}
+
+function stopComposerResize() {
+  resizingComposer.value = false;
+  window.removeEventListener("pointermove", resizeComposer);
+  window.removeEventListener("pointerup", stopComposerResize);
+  window.removeEventListener("pointercancel", stopComposerResize);
+}
+
+onBeforeUnmount(() => {
+  stopComposerResize();
+});
+
+async function sendChatMessage() {
+  const response = await store.sendCurrentMessage();
+  if (response?.library_mutated) {
+    await Promise.all([documentStore.refreshDocuments(), documentStore.refreshCategories()]);
+  }
+}
+
+function isMessageProcessing(message: ChatMessage) {
+  return message.role === "assistant" && (message.status === "processing" || (message.status === "streaming" && !message.content.trim()));
+}
+
+async function copyMessage(message: ChatMessage) {
+  await navigator.clipboard.writeText(message.content);
+  copiedMessageId.value = message.id;
+  window.setTimeout(() => {
+    if (copiedMessageId.value === message.id) {
+      copiedMessageId.value = "";
+    }
+  }, 1600);
+}
+
+async function saveMessageReport(message: ChatMessage) {
+  await store.saveAssistantMessageAsReport(message);
 }
 
 function formatRole(role: ChatMessageRole) {

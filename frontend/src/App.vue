@@ -51,9 +51,10 @@
       </aside>
 
       <main class="main-content">
+        <KnowledgeView v-show="isKnowledgeRoute" />
         <ResearchView v-show="isResearchRoute" />
         <RouterView v-slot="{ Component, route }">
-          <component v-if="route.name !== 'research'" :is="Component" />
+          <component v-if="route.name !== 'knowledge' && route.name !== 'research'" :is="Component" />
         </RouterView>
       </main>
     </div>
@@ -73,10 +74,12 @@ import {
   Workflow
 } from "lucide-vue-next";
 
+import KnowledgeView from "./views/KnowledgeView.vue";
 import ResearchView from "./views/ResearchView.vue";
 
 const route = useRoute();
 const sidebarCollapsed = ref(window.localStorage.getItem("paperdesk-sidebar-collapsed") === "true");
+const isKnowledgeRoute = computed(() => route.name === "knowledge");
 const isResearchRoute = computed(() => route.name === "research");
 
 watch(sidebarCollapsed, (value) => {
