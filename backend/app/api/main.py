@@ -47,6 +47,7 @@ from app.services import (
     TextChunker,
 )
 from app.services.research_orchestrator import ResearchOrchestrator
+from app.runtime import AgentOrchestrator, KnowledgeAgentRuntime, KnowledgePlannerRuntime, ReflectionRuntime
 from app.vectorstores import MilvusVectorStore
 
 logger = logging.getLogger(__name__)
@@ -216,9 +217,9 @@ def get_research_context_assembler() -> ResearchContextAssembler:
 def get_query_translation_service() -> QueryTranslationService:
     settings = get_settings()
     return QueryTranslationService(
-        model=settings.llm_model,
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
+        model=settings.effective_llm_model,
+        api_key=settings.effective_llm_api_key,
+        base_url=settings.effective_llm_base_url,
     )
 
 
@@ -263,9 +264,9 @@ def get_research_workspace_service() -> ResearchWorkspaceService:
 def get_report_writer() -> ReportWriterAgent:
     settings = get_settings()
     return ReportWriterAgent(
-        model=settings.llm_model,
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
+        model=settings.effective_llm_model,
+        api_key=settings.effective_llm_api_key,
+        base_url=settings.effective_llm_base_url,
     )
 
 
@@ -285,11 +286,12 @@ def get_rag_service() -> RagService:
     settings = get_settings()
     return RagService(
         library_repository=get_library_repository(),
+        chunk_repository=get_chunk_repository(),
         vectorstore=get_vectorstore(),
         translation_service=get_query_translation_service(),
-        model=settings.llm_model,
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
+        model=settings.effective_llm_model,
+        api_key=settings.effective_llm_api_key,
+        base_url=settings.effective_llm_base_url,
     )
 
 
@@ -311,9 +313,63 @@ def get_chat_service() -> ChatService:
         rag_service=get_rag_service(),
         memory_service=get_chat_memory_service(),
         context_assembler=get_context_assembler(),
-        model=settings.llm_model,
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
+        agent_orchestrator=get_agent_orchestrator(),
+        knowledge_agent_runtime=get_knowledge_agent_runtime(),
+        knowledge_planner_runtime=get_knowledge_planner_runtime(),
+        reflection_runtime=get_reflection_runtime(),
+        model=settings.effective_llm_model,
+        api_key=settings.effective_llm_api_key,
+        base_url=settings.effective_llm_base_url,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_knowledge_agent_runtime() -> KnowledgeAgentRuntime:
+    settings = get_settings()
+    return KnowledgeAgentRuntime(
+        document_library_service=get_document_library_service(),
+        category_repository=get_category_repository(),
+        research_repository=get_research_repository(),
+        runtime_repository=get_runtime_repository(),
+        rag_service=get_rag_service(),
+        vectorstore=get_vectorstore(),
+        file_store=get_context_file_store(),
+        model=settings.effective_llm_model,
+        api_key=settings.effective_llm_api_key,
+        base_url=settings.effective_llm_base_url,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_agent_orchestrator() -> AgentOrchestrator:
+    settings = get_settings()
+    return AgentOrchestrator(
+        research_repository=get_research_repository(),
+        runtime_repository=get_runtime_repository(),
+        model=settings.effective_llm_model,
+        api_key=settings.effective_llm_api_key,
+        base_url=settings.effective_llm_base_url,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_knowledge_planner_runtime() -> KnowledgePlannerRuntime:
+    return KnowledgePlannerRuntime(
+        knowledge_agent_runtime=get_knowledge_agent_runtime(),
+        runtime_repository=get_runtime_repository(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_reflection_runtime() -> ReflectionRuntime:
+    settings = get_settings()
+    return ReflectionRuntime(
+        knowledge_agent_runtime=get_knowledge_agent_runtime(),
+        runtime_repository=get_runtime_repository(),
+        memory_service=get_chat_memory_service(),
+        model=settings.effective_llm_model,
+        api_key=settings.effective_llm_api_key,
+        base_url=settings.effective_llm_base_url,
     )
 
 

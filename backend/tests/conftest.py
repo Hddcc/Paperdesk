@@ -157,6 +157,7 @@ def client(sandbox_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         get_chat_memory_service,
         get_chat_service,
         create_app,
+        get_agent_orchestrator,
         get_document_library_service,
         get_embedding_service,
         get_export_service,
@@ -165,6 +166,8 @@ def client(sandbox_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         get_context_compaction_service,
         get_context_file_store,
         get_knowledge_ingestion_service,
+        get_knowledge_agent_runtime,
+        get_knowledge_planner_runtime,
         get_milvus_bootstrap_service,
         get_paper_analysis_agent,
         get_paper_search_service,
@@ -175,6 +178,7 @@ def client(sandbox_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         get_repository,
         get_research_orchestrator,
         get_research_workspace_service,
+        get_reflection_runtime,
         get_vectorstore,
     )
     from app.config import get_settings
@@ -194,13 +198,17 @@ def client(sandbox_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     get_context_assembler.cache_clear()
     get_chat_memory_service.cache_clear()
     get_chat_service.cache_clear()
+    get_agent_orchestrator.cache_clear()
     get_document_library_service.cache_clear()
     get_knowledge_ingestion_service.cache_clear()
+    get_knowledge_agent_runtime.cache_clear()
+    get_knowledge_planner_runtime.cache_clear()
     get_export_service.cache_clear()
     get_research_workspace_service.cache_clear()
     get_report_writer.cache_clear()
     get_rag_service.cache_clear()
     get_research_orchestrator.cache_clear()
+    get_reflection_runtime.cache_clear()
 
     app = create_app()
     return TestClient(app)

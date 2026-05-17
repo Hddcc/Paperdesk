@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import re
 from uuid import uuid4
 
@@ -218,6 +219,34 @@ class ChatMemoryService:
                 ],
             )
 
+    def record_reflection_lessons(
+        self,
+        *,
+        session_id: str,
+        trace_id: str,
+        lessons: list[str],
+    ) -> None:
+        """Persist reusable self-reflection lessons into long-term memory."""
+
+        for lesson in lessons:
+            normalized = self._truncate(lesson, 160)
+            if not self._is_high_value_reflection_lesson(normalized):
+                continue
+            summary = f"反思经验：{normalized}"
+            self.file_store.add_user_preference(summary)
+            self._upsert_memory(
+                memory_type="feedback",
+                session_id="global",
+                summary=summary,
+                detail=normalized,
+                source_kind="reflection_lesson",
+                source_id=self._reflection_lesson_source_id(normalized),
+                link_targets=[
+                    ("chat_session", session_id),
+                    ("agent_trace", trace_id),
+                ],
+            )
+
     def record_project_context(self, *, session_id: str, title: str) -> None:
         if not title.strip():
             return
@@ -286,3 +315,40 @@ class ChatMemoryService:
         if len(compact) <= limit:
             return compact
         return f"{compact[: limit - 1]}…"
+
+    @staticmethod
+    def _reflection_lesson_source_id(lesson: str) -> str:
+        digest = hashlib.sha1(lesson.encode("utf-8")).hexdigest()[:16]
+        return f"lesson-{digest}"
+
+    @staticmethod
+    def _is_high_value_reflection_lesson(lesson: str) -> bool:
+        if len(lesson.strip()) < 8:
+            return False
+        markers = (
+            "工具",
+            "数据库",
+            "SQLite",
+            "RAG",
+            "检索",
+            "Observation",
+            "标签",
+            "分类",
+            "引用",
+            "证据",
+            "权限",
+            "安全",
+            "删除",
+            "写操作",
+            "二次读取",
+            "用户说",
+            "这几篇",
+            "工作流",
+            "复合",
+            "复杂",
+            "失败",
+            "降级",
+            "必须",
+            "优先",
+        )
+        return any(marker in lesson for marker in markers)

@@ -92,6 +92,17 @@ class RagAskRequest(BaseModel):
     notes: str | None = None
 
 
+class EvidenceQuality(BaseModel):
+    """Quality signals for a retrieved local evidence set."""
+
+    coverage_score: float = 0.0
+    diversity_score: float = 0.0
+    citation_score: float = 0.0
+    relevance_score: float = 0.0
+    document_coverage: dict[str, int] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class RagAskResponse(BaseModel):
     """Answer payload for standalone knowledge-base Q&A."""
 
@@ -102,6 +113,7 @@ class RagAskResponse(BaseModel):
     retrieval_count: int = 0
     confidence: float | None = None
     evidence_items: list["EvidenceItem"] = Field(default_factory=list)
+    evidence_quality: EvidenceQuality | None = None
 
 
 class PaperAnalysisRequest(BaseModel):
@@ -172,6 +184,11 @@ class EvidenceItem(BaseModel):
     document_id: str | None = None
     page_number: int | None = None
     score: float | None = None
+    strategy: str | None = None
+    strategies: list[str] = Field(default_factory=list)
+    raw_scores: dict[str, float] = Field(default_factory=dict)
+    rerank_score: float | None = None
+    multi_route_hit: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -189,6 +206,12 @@ class EvidenceItem(BaseModel):
         if not self.title:
             candidate = self.metadata.get("filename") or self.citation_label
             self.title = str(candidate)
+        if self.strategy and self.strategy not in self.strategies:
+            self.strategies.append(self.strategy)
+        if not self.strategy and self.strategies:
+            self.strategy = self.strategies[0]
+        if len(self.strategies) > 1:
+            self.multi_route_hit = True
         return self
 
 

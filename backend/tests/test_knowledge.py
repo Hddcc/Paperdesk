@@ -5,11 +5,13 @@ import time
 import fitz
 
 from app.api.main import get_repository
-from app.models import LibraryDocument
+from app.models import ChunkRecord, EvidenceItem, LibraryDocument
+from app.models.enums import EvidenceSourceType
 from app.services.arxiv_client import ArxivClient
 from app.services.embedding_service import EmbeddingService
 from app.services.openalex_client import OpenAlexClient
 from app.services.query_translation_service import QueryTranslationService
+from app.vectorstores import AbstractVectorStore
 
 
 def _build_pdf_bytes(text: str, *, title: str) -> bytes:
@@ -50,6 +52,40 @@ def _upload_document(client, name: str, title: str, text: str) -> dict:
     )
     assert response.status_code == 200
     return _wait_for_document_status(client, response.json()["id"], "ready")
+
+
+class _StubVectorStore(AbstractVectorStore):
+    def __init__(self) -> None:
+        self.query_count = 0
+
+    def upsert_document(self, document) -> None:
+        return None
+
+    def add_chunks(self, chunks) -> None:
+        return None
+
+    def query_evidence(self, query, documents, top_k):
+        self.query_count += 1
+        document = documents[0]
+        return [
+            EvidenceItem(
+                id="chunk-vector",
+                evidence_id="chunk-vector",
+                source_type=EvidenceSourceType.LOCAL_DOCUMENT,
+                source_id=document.id,
+                title=document.title or document.filename,
+                snippet="Vector evidence about neural retrieval grounding and evaluation.",
+                quote="Vector evidence about neural retrieval grounding and evaluation.",
+                citation_label=f"{document.filename} p.1",
+                document_id=document.id,
+                page_number=1,
+                score=0.72,
+                metadata={"filename": document.filename, "document_id": document.id},
+            )
+        ]
+
+    def delete_document(self, document_id: str) -> None:
+        return None
 
 
 def test_rag_ask_returns_grounded_answer(client, monkeypatch):
@@ -93,6 +129,132 @@ def test_rag_ask_returns_grounded_answer(client, monkeypatch):
     assert payload["pages"] == [1]
     assert payload["retrieval_count"] >= 1
     assert payload["evidence_items"][0]["document_id"] == document["id"]
+    assert payload["evidence_quality"]["coverage_score"] > 0
+
+
+def test_rag_hybrid_retrieval_merges_keyword_vector_and_caches(client):
+    from app.services.rag_service import RagService
+
+    repository = get_repository()
+    now = datetime.now(timezone.utc)
+    document = LibraryDocument(
+        id="doc-hybrid",
+        filename="hybrid.pdf",
+        display_name="hybrid.pdf",
+        title="Hybrid Retrieval",
+        file_path="D:/virtual/hybrid.pdf",
+        sha256="h" * 64,
+        page_count=1,
+        status="ready",
+        parser_status="ready",
+        indexed_at=now,
+        version=1,
+        created_at=now,
+        uploaded_at=now,
+    )
+    repository.library.create_document(document)
+    repository.chunk.replace_document_chunks(
+        document.id,
+        [
+            ChunkRecord(
+                id="chunk-keyword",
+                document_id=document.id,
+                page_number=1,
+                chunk_index=1,
+                title=document.title,
+                text="Sparse keyword evidence mentions BM25 exact dataset metrics and attribution robustness.",
+                version=1,
+                metadata={"filename": document.filename},
+            ),
+            ChunkRecord(
+                id="chunk-noise",
+                document_id=document.id,
+                page_number=1,
+                chunk_index=2,
+                title=document.title,
+                text="Unrelated gardening notes without research retrieval terms.",
+                version=1,
+                metadata={"filename": document.filename},
+            ),
+        ],
+    )
+    vectorstore = _StubVectorStore()
+    service = RagService(
+        library_repository=repository.library,
+        chunk_repository=repository.chunk,
+        vectorstore=vectorstore,
+        cache_ttl_seconds=1800,
+    )
+
+    first = service.retrieve_evidence_with_quality(
+        question="BM25 exact dataset metrics attribution",
+        documents=[document],
+        top_k=4,
+    )
+    second = service.retrieve_evidence_with_quality(
+        question="BM25 exact dataset metrics attribution",
+        documents=[document],
+        top_k=4,
+    )
+
+    assert first.cache_hit is False
+    assert second.cache_hit is True
+    assert vectorstore.query_count == 1
+    strategies = {strategy for item in first.evidence_items for strategy in item.strategies}
+    assert {"vector", "keyword"}.issubset(strategies)
+    assert first.evidence_quality.relevance_score > 0
+    assert all(item.rerank_score is not None for item in first.evidence_items)
+
+
+def test_rag_cache_invalidates_when_document_version_changes(client):
+    from app.services.rag_service import RagService
+
+    repository = get_repository()
+    now = datetime.now(timezone.utc)
+    document = LibraryDocument(
+        id="doc-cache-version",
+        filename="cache.pdf",
+        display_name="cache.pdf",
+        title="Cache Version",
+        file_path="D:/virtual/cache.pdf",
+        sha256="c" * 64,
+        page_count=1,
+        status="ready",
+        parser_status="ready",
+        indexed_at=now,
+        version=1,
+        created_at=now,
+        uploaded_at=now,
+    )
+    repository.library.create_document(document)
+    repository.chunk.replace_document_chunks(
+        document.id,
+        [
+            ChunkRecord(
+                id="chunk-cache",
+                document_id=document.id,
+                page_number=1,
+                chunk_index=1,
+                title=document.title,
+                text="Cache invalidation retrieval evidence with attribution metrics.",
+                version=1,
+                metadata={"filename": document.filename},
+            )
+        ],
+    )
+    vectorstore = _StubVectorStore()
+    service = RagService(
+        library_repository=repository.library,
+        chunk_repository=repository.chunk,
+        vectorstore=vectorstore,
+    )
+
+    service.retrieve_evidence_with_quality(question="attribution metrics", documents=[document], top_k=2)
+    changed = document.model_copy(update={"version": 2})
+    second = service.retrieve_evidence_with_quality(question="attribution metrics", documents=[changed], top_k=2)
+
+    assert second.cache_hit is False
+    assert vectorstore.query_count == 2
 
 
 def test_rag_ask_returns_insufficient_evidence_when_library_is_empty(client):

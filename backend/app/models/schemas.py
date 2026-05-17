@@ -9,6 +9,7 @@ from .library import (
     LibraryDocument,
 )
 from .paper import (
+    EvidenceQuality,
     EvidenceItem,
     PaperAnalysisRequest,
     PaperAnalysisResponse,
@@ -33,6 +34,7 @@ __all__ = [
     "DocumentCategoryAssignmentRequest",
     "DocumentCategoryCreateRequest",
     "DocumentCategoryUpdateRequest",
+    "EvidenceQuality",
     "EvidenceItem",
     "LibraryDocument",
     "PaperAnalysisRequest",

@@ -165,6 +165,30 @@ class Settings(BaseSettings):
             return ["*"]
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
 
+    @property
+    def effective_llm_api_key(self) -> str | None:
+        return self.llm_api_key
+
+    @property
+    def effective_llm_base_url(self) -> str | None:
+        if self.llm_base_url:
+            return self.llm_base_url
+        return self._provider_default_base_url(self.llm_provider)
+
+    @property
+    def effective_llm_model(self) -> str:
+        return self.llm_model
+
+    @staticmethod
+    def _provider_default_base_url(provider: str) -> str | None:
+        return {
+            "deepseek": "https://api.deepseek.com",
+            "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "glm": "https://open.bigmodel.cn/api/paas/v4",
+            "zhipu": "https://open.bigmodel.cn/api/paas/v4",
+        }.get(provider.casefold())
+
     def ensure_directories(self) -> None:
         """Create required runtime directories."""
         directories = [

@@ -54,6 +54,9 @@ class ChatMessage(BaseModel):
     used_document_ids: list[str] = Field(default_factory=list)
     memory_hits: list[MemoryHit] = Field(default_factory=list)
     attachments: list[ChatAttachment] = Field(default_factory=list)
+    saved_report_id: str | None = None
+    agent_trace_id: str | None = None
+    action_status: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -120,3 +123,4 @@ class ChatSendResponse(BaseModel):
     assistant_message: ChatMessage
     memory_snapshot: MemorySnapshot = Field(default_factory=MemorySnapshot)
     context_state: ChatContextState = Field(default_factory=ChatContextState)
+    library_mutated: bool = False

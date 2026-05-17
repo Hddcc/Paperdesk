@@ -293,6 +293,7 @@ class SQLiteDatabase:
             )
             self._ensure_todo_task_columns(conn)
             self._ensure_library_document_columns(conn)
+            self._ensure_chat_message_columns(conn)
             self._ensure_research_run_columns(conn)
             self._migrate_legacy_documents(conn)
             self._migrate_legacy_reports(conn)
@@ -389,6 +390,14 @@ class SQLiteDatabase:
             WHERE version IS NULL OR version <= 0
             """
         )
+
+    def _ensure_chat_message_columns(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists(conn, "chat_messages"):
+            return
+
+        self._ensure_column(conn, "chat_messages", "saved_report_id", "TEXT")
+        self._ensure_column(conn, "chat_messages", "agent_trace_id", "TEXT")
+        self._ensure_column(conn, "chat_messages", "action_status", "TEXT")
 
     def _ensure_research_run_columns(self, conn: sqlite3.Connection) -> None:
         if not self._table_exists(conn, "research_runs"):

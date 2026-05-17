@@ -146,3 +146,47 @@ def test_settings_default_to_embedded_milvus_lite_file(sandbox_dir) -> None:
         assert settings.uses_embedded_milvus is True
         assert settings.effective_milvus_uri.endswith("data\\milvus\\paperdesk_milvus.db") or settings.effective_milvus_uri.endswith("data/milvus/paperdesk_milvus.db")
     assert settings.milvus_lite_file.parent.exists()
+
+
+def test_openai_compatible_llm_settings_use_generic_env_vars(sandbox_dir) -> None:
+    env_file = sandbox_dir / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LLM_PROVIDER=deepseek",
+                "LLM_API_KEY=provider-secret",
+                "LLM_BASE_URL=https://compatible.example/v1",
+                "LLM_MODEL=provider-chat",
+                "SQLITE_PATH=./runtime/paperdesk.db",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(_env_file=env_file)
+
+    assert settings.effective_llm_api_key == "provider-secret"
+    assert settings.effective_llm_base_url == "https://compatible.example/v1"
+    assert settings.effective_llm_model == "provider-chat"
+
+
+def test_provider_default_base_url_is_used_only_when_generic_base_url_absent(sandbox_dir) -> None:
+    env_file = sandbox_dir / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LLM_PROVIDER=deepseek",
+                "LLM_API_KEY=provider-secret",
+                "LLM_BASE_URL=",
+                "LLM_MODEL=deepseek-chat",
+                "SQLITE_PATH=./runtime/paperdesk.db",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(_env_file=env_file)
+
+    assert settings.effective_llm_api_key == "provider-secret"
+    assert settings.effective_llm_base_url == "https://api.deepseek.com"
+    assert settings.effective_llm_model == "deepseek-chat"

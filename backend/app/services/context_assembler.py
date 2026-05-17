@@ -34,6 +34,7 @@ class ContextAssembler:
         current_request: ChatMessageRequest,
         attachments: list[ChatAttachment],
         evidence_items: list[EvidenceItem],
+        knowledge_context_lines: list[str] | None = None,
     ) -> tuple[list[dict[str, Any]], ChatContextState]:
         self.file_store.initialize_session(session.id, session.title)
         state_payload = self.file_store.read_context_state(session.id)
@@ -56,6 +57,7 @@ class ContextAssembler:
             current_request=current_request,
             attachments=attachments,
             evidence_lines=evidence_lines,
+            knowledge_context_lines=knowledge_context_lines or [],
         )
         estimated = self.budget_service.estimate_messages(messages)
 
@@ -71,6 +73,7 @@ class ContextAssembler:
                 current_request=current_request,
                 attachments=attachments,
                 evidence_lines=evidence_lines,
+                knowledge_context_lines=knowledge_context_lines or [],
             )
             estimated = self.budget_service.estimate_messages(messages)
 
@@ -93,6 +96,7 @@ class ContextAssembler:
                 current_request=current_request,
                 attachments=attachments,
                 evidence_lines=evidence_lines,
+                knowledge_context_lines=knowledge_context_lines or [],
             )
             estimated = self.budget_service.estimate_messages(messages)
 
@@ -109,6 +113,7 @@ class ContextAssembler:
                     current_request=current_request,
                     attachments=attachments,
                     evidence_lines=evidence_lines,
+                    knowledge_context_lines=knowledge_context_lines or [],
                 )
                 estimated = self.budget_service.estimate_messages(messages)
             stage = "truncated"
@@ -176,12 +181,14 @@ class ContextAssembler:
         current_request: ChatMessageRequest,
         attachments: list[ChatAttachment],
         evidence_lines: list[str],
+        knowledge_context_lines: list[str],
     ) -> tuple[list[dict[str, Any]], list[str]]:
         sources = ["system_instruction", "project_rules"]
         system_parts = [
             "你是 PaperDesk 的知识库聊天助手。",
             "默认使用中文回答。",
             "优先直接回答用户问题；当存在可用证据时，把证据整合进答案。",
+            "如果用户在同一条消息里提出多个问题，无论数量多少，都必须按问题顺序逐项回答；不要只输出检索状态、证据数量或内部过程。",
             "记忆是索引，不是真相。如果记忆摘要与当前材料冲突，以当前材料为准。",
             project_rules,
         ]
@@ -202,6 +209,13 @@ class ContextAssembler:
         if evidence_lines:
             sources.append("rag_evidence")
             system_parts.append("本轮可引用证据：\n" + "\n\n".join(evidence_lines))
+
+        if knowledge_context_lines:
+            sources.append("knowledge_agent_context")
+            system_parts.append(
+                "PaperDesk 知识库运行态摘要：\n"
+                + "\n".join(f"- {item}" for item in knowledge_context_lines)
+            )
 
         messages: list[dict[str, Any]] = [{"role": "system", "content": "\n\n".join(system_parts)}]
         if visible_history:

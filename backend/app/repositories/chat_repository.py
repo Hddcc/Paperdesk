@@ -116,9 +116,12 @@ class ChatRepository(BaseRepository):
                     citations_json,
                     used_document_ids_json,
                     memory_hits_json,
+                    saved_report_id,
+                    agent_trace_id,
+                    action_status,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message.id,
@@ -131,11 +134,51 @@ class ChatRepository(BaseRepository):
                     json.dumps(message.citations, ensure_ascii=False),
                     json.dumps(message.used_document_ids, ensure_ascii=False),
                     json.dumps([item.model_dump(mode="json") for item in message.memory_hits], ensure_ascii=False),
+                    message.saved_report_id,
+                    message.agent_trace_id,
+                    message.action_status,
                     message.created_at.isoformat(),
                 ),
             )
         self.touch_session(message.session_id)
         return message
+
+    def get_message(self, message_id: str) -> ChatMessage | None:
+        with self.database.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM chat_messages
+                WHERE id = ?
+                """,
+                (message_id,),
+            ).fetchone()
+            attachment_rows = conn.execute(
+                """
+                SELECT *
+                FROM chat_attachments
+                WHERE message_id = ?
+                ORDER BY sort_order ASC, created_at ASC
+                """,
+                (message_id,),
+            ).fetchall()
+        if row is None:
+            return None
+        message = self._row_to_message(row)
+        message.attachments = [self._row_to_attachment(item) for item in attachment_rows]
+        return message
+
+    def update_message_report(self, message_id: str, report_id: str) -> ChatMessage | None:
+        with self.database.connection() as conn:
+            conn.execute(
+                """
+                UPDATE chat_messages
+                SET saved_report_id = ?, action_status = ?
+                WHERE id = ?
+                """,
+                (report_id, "report_saved", message_id),
+            )
+        return self.get_message(message_id)
 
     def list_messages(self, session_id: str) -> list[ChatMessage]:
         with self.database.connection() as conn:
@@ -413,6 +456,9 @@ class ChatRepository(BaseRepository):
             citations=json.loads(row["citations_json"]),
             used_document_ids=json.loads(row["used_document_ids_json"]),
             memory_hits=memory_hits,
+            saved_report_id=row["saved_report_id"] if "saved_report_id" in row.keys() else None,
+            agent_trace_id=row["agent_trace_id"] if "agent_trace_id" in row.keys() else None,
+            action_status=row["action_status"] if "action_status" in row.keys() else None,
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 

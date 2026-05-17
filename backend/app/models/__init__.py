@@ -14,6 +14,7 @@ from .chat import (
     MemoryRecord,
     MemorySnapshot,
 )
+from .agent_orchestration import AgentModeDecision, AgentOrchestratorInput, AgentRunMode
 from .enums import EvidenceSourceType, ResearchRunStatus, TodoTaskStatus
 from .library import (
     ChunkRecord,
@@ -24,6 +25,7 @@ from .library import (
     LibraryDocument,
 )
 from .paper import (
+    EvidenceQuality,
     EvidenceItem,
     PaperAnalysisRequest,
     PaperAnalysisResponse,
@@ -38,6 +40,7 @@ from .paper import (
     RagAskResponse,
 )
 from .report import CitationRecord, ReportListItem, ResearchReport, TaskSummary
+from .reflection import ReflectionImprovementAction, ReflectionResult
 from .research import ResearchRequest, ResearchRun, ResearchRunDetail, ResearchState, TodoTask
 from .research_runtime import (
     PlannerProviderType,
@@ -94,6 +97,9 @@ from .task_routing import (
 __all__ = [
     "AgentTask",
     "AgentTaskStatus",
+    "AgentModeDecision",
+    "AgentOrchestratorInput",
+    "AgentRunMode",
     "ChunkRecord",
     "ChatAttachment",
     "ChatContextState",
@@ -111,6 +117,7 @@ __all__ = [
     "DocumentCategoryAssignmentRequest",
     "DocumentCategoryCreateRequest",
     "DocumentCategoryUpdateRequest",
+    "EvidenceQuality",
     "EvidenceItem",
     "EvidenceSourceType",
     "Heartbeat",
@@ -153,6 +160,8 @@ __all__ = [
     "ResearchRun",
     "ResearchRunDetail",
     "ResearchRunStatus",
+    "ReflectionImprovementAction",
+    "ReflectionResult",
     "ResearchRuntimePhase",
     "ResearchRuntimeState",
     "ResearchRuntimeStep",

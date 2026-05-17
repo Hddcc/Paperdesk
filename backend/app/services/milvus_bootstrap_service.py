@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 import subprocess
 import sys
@@ -130,7 +131,7 @@ class MilvusBootstrapService:
             "  use:\n"
             "    embed: true\n"
             "  data:\n"
-            f"    dir: {self._to_posix(self.runtime_dir / 'volumes' / 'etcd')}\n",
+            "    dir: /var/lib/milvus/etcd\n",
             encoding="utf-8",
         )
         user_config.write_text("common:\n  security:\n    authorizationEnabled: false\n", encoding="utf-8")
@@ -193,10 +194,53 @@ class MilvusBootstrapService:
         while time.time() < deadline:
             if self._is_port_open(host, port):
                 return
+            state = self._container_state()
+            if state and not state.get("Running", False):
+                exit_code = state.get("ExitCode")
+                logs = self._tail_logs()
+                detail = f"Milvus container exited with code {exit_code} before {host}:{port} became ready."
+                if logs:
+                    detail = f"{detail}\nLast Milvus logs:\n{logs}"
+                raise RuntimeError(detail)
             time.sleep(2)
         raise RuntimeError(
             f"Milvus 容器已启动，但 {host}:{port} 在 {self.timeout_seconds} 秒内仍未就绪。"
         )
+
+    def _container_state(self) -> dict | None:
+        result = subprocess.run(
+            ["docker", "inspect", self.container_name, "--format", "{{json .State}}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return None
+
+    def _tail_logs(self) -> str:
+        result = subprocess.run(
+            ["docker", "logs", "--tail", "80", self.container_name],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+        return self._compact_text(output, limit=3000)
+
+    @staticmethod
+    def _compact_text(text: str, *, limit: int) -> str:
+        cleaned = "\n".join(line.rstrip() for line in text.splitlines() if line.strip())
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[-limit:]
 
     @staticmethod
     def _run(command: list[str], action: str) -> None:
