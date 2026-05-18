@@ -6,28 +6,23 @@ import json
 from queue import Queue
 from threading import Thread
 import time
-from datetime import datetime, timezone
 from contextlib import suppress
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.api.main import get_chat_repository, get_chat_service, get_report_repository, get_research_repository
+from app.api.main import get_chat_service, get_report_lifecycle_service
 from app.models import (
     ChatContextState,
     ChatMessageRequest,
     ChatSendResponse,
     ChatSessionCreateRequest,
     ChatSessionDetail,
-    CitationRecord,
     MemorySnapshot,
-    ResearchReport,
     ResearchRunStatus,
-    TaskSummary,
 )
-from app.repositories import ChatRepository, ReportRepository, ResearchRepository
-from app.services import ChatService
+from app.services import ChatService, ReportLifecycleService
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -181,58 +176,16 @@ def send_message_stream(
 def save_message_as_report(
     session_id: str,
     message_id: str,
-    chat_repository: ChatRepository = Depends(get_chat_repository),
-    research_repository: ResearchRepository = Depends(get_research_repository),
-    report_repository: ReportRepository = Depends(get_report_repository),
+    service: ReportLifecycleService = Depends(get_report_lifecycle_service),
 ) -> dict:
-    session = chat_repository.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Chat session not found")
-
-    message = chat_repository.get_message(message_id)
-    if message is None or message.session_id != session_id:
-        raise HTTPException(status_code=404, detail="Chat message not found")
-    if message.role != "assistant":
-        raise HTTPException(status_code=400, detail="Only assistant messages can be saved as reports")
-
-    if message.saved_report_id:
-        existing = report_repository.get_report(message.saved_report_id)
-        if existing is not None:
-            return existing.model_dump(mode="json")
-
-    topic = _report_topic(session.title, message.content)
-    run_id = f"chat-report-{uuid4().hex}"
-    research_repository.create_run(run_id, topic)
-    research_repository.update_run_status(run_id, ResearchRunStatus.COMPLETED)
-
-    citations = list(message.citations)
-    report = ResearchReport(
-        id=str(uuid4()),
-        topic=topic,
-        markdown=message.content,
-        task_summaries=[
-            TaskSummary(
-                task_id=message.id,
-                title=topic,
-                intent="Saved from a PaperDesk assistant chat response.",
-                summary=message.content,
-                summary_markdown=message.content,
-            )
-        ],
-        citations=citations,
-        citation_items=[
-            CitationRecord(
-                citation_label=citation,
-                source_type="chat",
-                title=citation,
-            )
-            for citation in citations
-        ],
-        created_at=datetime.now(timezone.utc),
-    )
-    saved = report_repository.create_report(report, run_id)
-    chat_repository.update_message_report(message.id, saved.id)
-    return saved.model_dump(mode="json")
+    try:
+        report = service.save_from_message(session_id=session_id, message_id=message_id)
+    except ValueError as exc:
+        status_code = 400 if str(exc).startswith("Only assistant") else 404
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return report.model_dump(mode="json")
 
 
 def _sse_event(event: str, payload: dict) -> str:
@@ -270,13 +223,3 @@ def _record_stream_cancelled(service: ChatService, session_id: str) -> None:
             payload={"session_id": session_id, "user_stopped": True},
         )
         repository.update_run_status(trace_id, ResearchRunStatus.COMPLETED)
-
-
-def _report_topic(session_title: str, content: str) -> str:
-    if session_title and session_title != "新对话":
-        return session_title[:80]
-    for line in content.splitlines():
-        cleaned = line.strip(" #")
-        if cleaned:
-            return cleaned[:80]
-    return "知识库聊天报告"

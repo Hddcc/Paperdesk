@@ -314,8 +314,13 @@ export async function saveChatMessageAsReport(
   messageId: string
 ): Promise<ResearchReport> {
   try {
-    const response = await fetch(`${baseUrl}/api/chat/sessions/${sessionId}/messages/${messageId}/report`, {
-      method: "POST"
+    const response = await fetch(`${baseUrl}/api/reports/from-message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
+        message_id: messageId
+      })
     });
     return parseJson<ResearchReport>(response);
   } catch (err) {
@@ -372,7 +377,7 @@ export async function getResearchRun(taskId: string): Promise<ResearchRunDetail>
 }
 
 export async function exportReportMarkdown(reportId: string): Promise<string> {
-  const response = await fetch(`${baseUrl}/api/export/${reportId}`);
+  const response = await fetch(`${baseUrl}/api/reports/${reportId}/export.md`);
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
     throw new Error(detail || `Export failed: ${response.status}`);

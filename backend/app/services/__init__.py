@@ -20,6 +20,7 @@ from .pdf_parser import PdfParser
 from .query_translation_service import QueryTranslationService
 from .rag_service import RagService
 from .research_context_assembler import ResearchContextAssembler
+from .report_lifecycle_service import ReportLifecycleService
 from .research_task_router import ResearchTaskRouter
 from .research_workspace_service import ResearchWorkspaceService
 from .text_chunker import TextChunker
@@ -45,6 +46,7 @@ __all__ = [
     "QueryTranslationService",
     "RagService",
     "ResearchContextAssembler",
+    "ReportLifecycleService",
     "ResearchTaskRouter",
     "ResearchWorkspaceService",
     "TextChunker",

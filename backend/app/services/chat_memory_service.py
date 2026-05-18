@@ -150,13 +150,23 @@ class ChatMemoryService:
                 )
             )
 
-        if any(token in normalized for token in ("默认", "以后", "我希望", "不要")) and len(normalized) >= 8:
+        if any(token in normalized.casefold() for token in ("markdown", "md 格式", "md格式")):
             preferences.append(
                 (
-                    self._truncate(normalized, 48),
-                    normalized,
-                    "chat_message",
-                    message_id,
+                    "回答时优先使用 Markdown 格式。",
+                    "用户曾明确要求使用 Markdown 或 MD 格式。",
+                    "user_preference",
+                    "markdown_format",
+                )
+            )
+
+        if any(token in normalized for token in ("先总结再展开", "先概括再展开", "先总结")):
+            preferences.append(
+                (
+                    "回答时优先先总结再展开。",
+                    "用户曾明确要求先给总结再展开说明。",
+                    "user_preference",
+                    "summary_first",
                 )
             )
 
@@ -225,8 +235,12 @@ class ChatMemoryService:
         session_id: str,
         trace_id: str,
         lessons: list[str],
+        persist_long_term: bool = False,
     ) -> None:
         """Persist reusable self-reflection lessons into long-term memory."""
+
+        if not persist_long_term:
+            return
 
         for lesson in lessons:
             normalized = self._truncate(lesson, 160)

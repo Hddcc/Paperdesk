@@ -139,6 +139,13 @@ class SQLiteDatabase:
                     citations_text TEXT NOT NULL,
                     task_summaries_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    lifecycle_status TEXT NOT NULL DEFAULT 'saved_report',
+                    source TEXT NOT NULL DEFAULT 'research_task',
+                    source_message_id TEXT,
+                    paper_ids_json TEXT NOT NULL DEFAULT '[]',
+                    category_ids_json TEXT NOT NULL DEFAULT '[]',
+                    evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT,
                     FOREIGN KEY (run_id) REFERENCES research_runs (id)
                 );
 
@@ -294,6 +301,7 @@ class SQLiteDatabase:
             self._ensure_todo_task_columns(conn)
             self._ensure_library_document_columns(conn)
             self._ensure_chat_message_columns(conn)
+            self._ensure_report_columns(conn)
             self._ensure_research_run_columns(conn)
             self._migrate_legacy_documents(conn)
             self._migrate_legacy_reports(conn)
@@ -399,6 +407,31 @@ class SQLiteDatabase:
         self._ensure_column(conn, "chat_messages", "agent_trace_id", "TEXT")
         self._ensure_column(conn, "chat_messages", "action_status", "TEXT")
 
+    def _ensure_report_columns(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists(conn, "report_records"):
+            return
+
+        self._ensure_column(conn, "report_records", "lifecycle_status", "TEXT NOT NULL DEFAULT 'saved_report'")
+        self._ensure_column(conn, "report_records", "source", "TEXT NOT NULL DEFAULT 'research_task'")
+        self._ensure_column(conn, "report_records", "source_message_id", "TEXT")
+        self._ensure_column(conn, "report_records", "paper_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+        self._ensure_column(conn, "report_records", "category_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+        self._ensure_column(conn, "report_records", "evidence_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+        self._ensure_column(conn, "report_records", "updated_at", "TEXT")
+
+        conn.execute(
+            """
+            UPDATE report_records
+            SET
+                lifecycle_status = COALESCE(NULLIF(lifecycle_status, ''), 'saved_report'),
+                source = COALESCE(NULLIF(source, ''), 'research_task'),
+                paper_ids_json = COALESCE(NULLIF(paper_ids_json, ''), '[]'),
+                category_ids_json = COALESCE(NULLIF(category_ids_json, ''), '[]'),
+                evidence_ids_json = COALESCE(NULLIF(evidence_ids_json, ''), '[]'),
+                updated_at = COALESCE(updated_at, created_at)
+            """
+        )
+
     def _ensure_research_run_columns(self, conn: sqlite3.Connection) -> None:
         if not self._table_exists(conn, "research_runs"):
             return
@@ -469,7 +502,10 @@ class SQLiteDatabase:
                 markdown,
                 citations_text,
                 task_summaries_json,
-                created_at
+                created_at,
+                lifecycle_status,
+                source,
+                updated_at
             )
             SELECT
                 reports.id,
@@ -478,6 +514,9 @@ class SQLiteDatabase:
                 reports.markdown,
                 reports.citations,
                 reports.task_summaries_json,
+                reports.created_at,
+                'saved_report',
+                'research_task',
                 reports.created_at
             FROM reports
             WHERE NOT EXISTS (

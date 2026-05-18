@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 from .paper import EvidenceItem, PaperRecord
+
+
+ReportLifecycleStatus = Literal["chat_answer", "report_draft", "saved_report", "exported_markdown"]
+ReportSource = Literal["knowledge_answer", "research_task", "manual_save"]
 
 
 class CitationRecord(BaseModel):
@@ -46,15 +51,24 @@ class ResearchReport(BaseModel):
     report_id: str | None = None
     topic: str
     markdown: str
+    lifecycle_status: ReportLifecycleStatus = "saved_report"
+    source: ReportSource = "research_task"
+    source_message_id: str | None = None
+    paper_ids: list[str] = Field(default_factory=list)
+    category_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
     task_summaries: list[TaskSummary] = Field(default_factory=list)
     citations: list[str] = Field(default_factory=list)
     citation_items: list[CitationRecord] = Field(default_factory=list)
     created_at: datetime
+    updated_at: datetime | None = None
 
     @model_validator(mode="after")
     def sync_report_id(self) -> "ResearchReport":
         if self.report_id is None:
             self.report_id = self.id
+        if self.updated_at is None:
+            self.updated_at = self.created_at
         return self
 
 
@@ -64,4 +78,3 @@ class ReportListItem(BaseModel):
     id: str
     topic: str
     created_at: datetime
-

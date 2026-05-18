@@ -22,7 +22,7 @@
                 <span class="card-meta">{{ formatTime(report.created_at) }}</span>
               </button>
               <div class="card-actions">
-                <button class="button-danger action-button" @click="store.removeReport(report.id)">
+                <button class="button-danger action-button" @click="removeReportWithConfirmation(report.id)">
                   <Trash2 :size="15" />
                   删除
                 </button>
@@ -109,5 +109,14 @@ async function handleExport() {
   } finally {
     exporting.value = false;
   }
+}
+
+async function removeReportWithConfirmation(reportId: string) {
+  const report = store.reports.find((item) => item.id === reportId);
+  const title = report?.topic || reportId;
+  if (!window.confirm(`确认删除报告「${title}」？此操作会移除报告记录和已导出的 Markdown 文件。`)) {
+    return;
+  }
+  await store.removeReport(reportId);
 }
 </script>

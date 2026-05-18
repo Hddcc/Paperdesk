@@ -5,12 +5,20 @@ from pathlib import Path
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel, Field
 
-from app.api.main import get_export_service, get_report_repository
+from app.api.main import get_export_service, get_report_lifecycle_service, get_report_repository
 from app.repositories import ReportRepository
-from app.services import ExportService
+from app.services import ExportService, ReportLifecycleService
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+
+
+class ReportFromMessageRequest(BaseModel):
+    message_id: str = Field(..., min_length=1)
+    session_id: str | None = None
+    optional_title: str | None = None
 
 
 @router.get("")
@@ -24,6 +32,45 @@ def get_report(report_id: str, repository: ReportRepository = Depends(get_report
     if report is None:
         raise HTTPException(status_code=404, detail="Report not found")
     return report.model_dump(mode="json")
+
+
+@router.post("/from-message")
+def save_report_from_message(
+    request: ReportFromMessageRequest,
+    service: ReportLifecycleService = Depends(get_report_lifecycle_service),
+) -> dict:
+    if not request.session_id:
+        raise HTTPException(status_code=400, detail="session_id is required for local chat messages")
+    try:
+        report = service.save_from_message(
+            session_id=request.session_id,
+            message_id=request.message_id,
+            optional_title=request.optional_title,
+        )
+    except ValueError as exc:
+        status_code = 400 if str(exc).startswith("Only assistant") else 404
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return report.model_dump(mode="json")
+
+
+@router.get("/{report_id}/export.md")
+def export_report_markdown(
+    report_id: str,
+    repository: ReportRepository = Depends(get_report_repository),
+    export_service: ExportService = Depends(get_export_service),
+) -> PlainTextResponse:
+    report = repository.get_report(report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    export_path = export_service.export_markdown(report)
+    return PlainTextResponse(
+        content=report.markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{export_path.name}"'},
+    )
 
 
 @router.delete("/{report_id}")

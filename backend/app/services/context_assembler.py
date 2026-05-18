@@ -44,7 +44,8 @@ class ContextAssembler:
         user_preferences = self.file_store.read_user_preferences()
         compact_summaries = self.file_store.list_compact_summaries(session.id, limit=3)
         raw_history = [message for message in history if message.role in {"user", "assistant"}]
-        visible_history = [message for message in raw_history if message.id not in compacted_ids]
+        recent_message_limit = 16
+        visible_history = [message for message in raw_history if message.id not in compacted_ids][-recent_message_limit:]
 
         stage = "normal"
         evidence_lines = self._render_full_evidence(evidence_items)
@@ -84,7 +85,9 @@ class ContextAssembler:
                 history=raw_history,
                 already_compacted_ids=compacted_ids,
             )
-            visible_history = [message for message in raw_history if message.id not in compacted_ids]
+            visible_history = [
+                message for message in raw_history if message.id not in compacted_ids
+            ][-recent_message_limit:]
             compact_summaries = self.file_store.list_compact_summaries(session.id, limit=3)
             stage = "history_compacted"
             messages, sources = self._build_messages(
@@ -185,9 +188,11 @@ class ContextAssembler:
     ) -> tuple[list[dict[str, Any]], list[str]]:
         sources = ["system_instruction", "project_rules"]
         system_parts = [
-            "你是 PaperDesk 的知识库聊天助手。",
+            "你是 PaperDesk 的论文阅读与通用问答助手。",
             "默认使用中文回答。",
-            "优先直接回答用户问题；当存在可用证据时，把证据整合进答案。",
+            "普通历史、常识、编程、写作等问题要像通用 AI 一样自然回答，不要主动声称知识库范围不足。",
+            "只有当用户明确要求根据论文库、上传论文、所选论文或文献证据回答时，才把答案限定在论文库证据内；若这类证据不可用，再说明证据不足。",
+            "当本轮存在可用论文证据时，把证据整合进答案；论文库相关结论不能脱离证据胡编。",
             "如果用户在同一条消息里提出多个问题，无论数量多少，都必须按问题顺序逐项回答；不要只输出检索状态、证据数量或内部过程。",
             "记忆是索引，不是真相。如果记忆摘要与当前材料冲突，以当前材料为准。",
             project_rules,

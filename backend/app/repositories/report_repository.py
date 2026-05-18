@@ -26,9 +26,16 @@ class ReportRepository(BaseRepository):
                     markdown,
                     citations_text,
                     task_summaries_json,
-                    created_at
+                    created_at,
+                    lifecycle_status,
+                    source,
+                    source_message_id,
+                    paper_ids_json,
+                    category_ids_json,
+                    evidence_ids_json,
+                    updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     report.id,
@@ -41,6 +48,13 @@ class ReportRepository(BaseRepository):
                         ensure_ascii=False,
                     ),
                     report.created_at.isoformat(),
+                    report.lifecycle_status,
+                    report.source,
+                    report.source_message_id,
+                    json.dumps(report.paper_ids, ensure_ascii=False),
+                    json.dumps(report.category_ids, ensure_ascii=False),
+                    json.dumps(report.evidence_ids, ensure_ascii=False),
+                    (report.updated_at or report.created_at).isoformat(),
                 ),
             )
             for index, citation in enumerate(report.citation_items):
@@ -170,6 +184,23 @@ class ReportRepository(BaseRepository):
             citations=[line for line in report_row["citations_text"].splitlines() if line],
             citation_items=[CitationRecord(**dict(row)) for row in citation_rows],
             created_at=datetime.fromisoformat(report_row["created_at"]),
+            lifecycle_status=report_row["lifecycle_status"] if "lifecycle_status" in report_row.keys() else "saved_report",
+            source=report_row["source"] if "source" in report_row.keys() else "research_task",
+            source_message_id=(
+                report_row["source_message_id"] if "source_message_id" in report_row.keys() else None
+            ),
+            paper_ids=self._load_string_list(
+                report_row["paper_ids_json"] if "paper_ids_json" in report_row.keys() else "[]"
+            ),
+            category_ids=self._load_string_list(
+                report_row["category_ids_json"] if "category_ids_json" in report_row.keys() else "[]"
+            ),
+            evidence_ids=self._load_string_list(
+                report_row["evidence_ids_json"] if "evidence_ids_json" in report_row.keys() else "[]"
+            ),
+            updated_at=datetime.fromisoformat(
+                report_row["updated_at"] if "updated_at" in report_row.keys() and report_row["updated_at"] else report_row["created_at"]
+            ),
         )
 
     @staticmethod
@@ -197,6 +228,16 @@ class ReportRepository(BaseRepository):
             )
             for item in payload
         ]
+
+    @staticmethod
+    def _load_string_list(payload: str) -> list[str]:
+        try:
+            value = json.loads(payload or "[]")
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value if item]
 
     @staticmethod
     def _sanitize_user_facing_markdown(markdown: str) -> str:

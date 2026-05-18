@@ -17,6 +17,46 @@ from app.runtime.knowledge_agent_runtime import KnowledgeAgentResult, KnowledgeA
 from app.runtime.agent_orchestrator import AgentOrchestrator, _ModeCandidate
 
 
+def _install_fake_openai(monkeypatch, module_path: str, *, content: str | None = None, error: Exception | None = None):
+    class FakeMessage:
+        def __init__(self, value: str | None) -> None:
+            self.content = value
+
+    class FakeChoice:
+        def __init__(self, value: str | None) -> None:
+            self.message = FakeMessage(value)
+
+    class FakeResponse:
+        def __init__(self, value: str | None) -> None:
+            self.choices = [FakeChoice(value)]
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            _ = kwargs
+            if error is not None:
+                raise error
+            return FakeResponse(content)
+
+    class FakeChat:
+        def __init__(self) -> None:
+            self.completions = FakeCompletions()
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs) -> None:
+            _ = kwargs
+            self.chat = FakeChat()
+
+    monkeypatch.setattr(module_path, FakeOpenAI)
+
+
+def _trace_payloads(trace_id: str, status: str) -> list[dict]:
+    return [
+        trace.payload
+        for trace in get_repository().runtime.list_traces(trace_id)
+        if trace.status == status
+    ]
+
+
 def _build_pdf_bytes(text: str, *, title: str) -> bytes:
     document = fitz.open()
     page = document.new_page()
@@ -199,6 +239,12 @@ def test_delete_chat_session_removes_it_from_list(client):
 
 def test_chat_uses_selected_library_documents(client, monkeypatch):
     document = _upload_document(client, monkeypatch)
+    _install_fake_openai(
+        monkeypatch,
+        "app.runtime.knowledge_agent_runtime.OpenAI",
+        content="The selected paper explains retrieval grounding, attribution, and evaluation evidence.",
+    )
+    get_knowledge_agent_runtime().api_key = "selected-doc-key"
     create_response = client.post("/api/chat/sessions", json={"title": "RAG 文档对话"})
     assert create_response.status_code == 200
     session_id = create_response.json()["id"]
@@ -253,8 +299,138 @@ def test_general_multi_question_bundle_stays_direct_when_llm_suggests_react(clie
     assert all(trace.status != "react_action_planned" for trace in traces)
 
 
+def test_direct_answer_success_uses_llm_output_for_general_question(client, monkeypatch):
+    answer = (
+        "\u79e6\u59cb\u7687\u7edf\u4e00\u516d\u56fd\u7684\u987a\u5e8f\u662f"
+        "\u97e9\u3001\u8d75\u3001\u9b4f\u3001\u695a\u3001\u71d5\u3001\u9f50\uff1b"
+        "\u6700\u96be\u901a\u5e38\u8ba4\u4e3a\u662f\u695a\u56fd\uff1b"
+        "\u79e6\u59cb\u7687\u4e0b\u4e00\u4efb\u662f\u79e6\u4e8c\u4e16\u80e1\u4ea5\u3002"
+    )
+    _install_fake_openai(monkeypatch, "app.services.chat_service.OpenAI", content=answer)
+    service = get_chat_service()
+    service.api_key = "direct-success-key"
+    service.base_url = "http://fake-llm"
+    session = client.post("/api/chat/sessions", json={"title": "direct success"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": (
+                "\u79e6\u59cb\u7687\u7edf\u4e00\u516d\u56fd\u7684\u987a\u5e8f\u662f\uff1f"
+                "\u6700\u96be\u7684\u662f\u54ea\u4e2a\u56fd\u5bb6\uff1f"
+                "\u79e6\u59cb\u7687\u4e0b\u4e00\u4efb\u662f\u8c01\uff1f"
+            ),
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "direct_completed"
+    assert "\u97e9\u3001\u8d75\u3001\u9b4f\u3001\u695a\u3001\u71d5\u3001\u9f50" in assistant["content"]
+    assert "\u6ca1\u6709\u9644\u52a0\u77e5\u8bc6\u5e93\u8bc1\u636e" not in assistant["content"]
+    payloads = _trace_payloads(assistant["agent_trace_id"], "direct_llm_call_finished")
+    assert payloads
+    assert payloads[-1]["status"] == "success"
+
+
+def test_direct_answer_general_history_question_does_not_claim_library_limit(client, monkeypatch):
+    answer = "秦始皇统一六国的顺序是韩、赵、魏、楚、燕、齐；秦始皇之后继位的是秦二世胡亥。"
+    captured: dict = {}
+
+    class FakeMessage:
+        def __init__(self, value: str) -> None:
+            self.content = value
+
+    class FakeChoice:
+        def __init__(self, value: str) -> None:
+            self.message = FakeMessage(value)
+
+    class FakeResponse:
+        def __init__(self, value: str) -> None:
+            self.choices = [FakeChoice(value)]
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return FakeResponse(answer)
+
+    class FakeChat:
+        def __init__(self) -> None:
+            self.completions = FakeCompletions()
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs) -> None:
+            _ = kwargs
+            self.chat = FakeChat()
+
+    monkeypatch.setattr("app.services.chat_service.OpenAI", FakeOpenAI)
+    service = get_chat_service()
+    service.api_key = "direct-natural-key"
+    service.base_url = "http://fake-llm"
+    session = client.post("/api/chat/sessions", json={"title": "natural direct"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "秦始皇统一六国的顺序是？最难的是哪个国家？秦始皇下一任是谁？",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "direct_completed"
+    assert "韩、赵、魏、楚、燕、齐" in assistant["content"]
+    assert "知识库无法" not in assistant["content"]
+    assert "无法直接回答" not in assistant["content"]
+    assert "根据我的知识库" not in assistant["content"]
+    system_prompt = captured["messages"][0]["content"]
+    assert "PaperDesk 知识库运行态摘要" not in system_prompt
+    assert "通用问答助手" in system_prompt
+
+
+def test_direct_answer_llm_failure_is_observable(client, monkeypatch):
+    _install_fake_openai(
+        monkeypatch,
+        "app.services.chat_service.OpenAI",
+        error=RuntimeError("fake provider exploded"),
+    )
+    service = get_chat_service()
+    service.api_key = "direct-failure-key"
+    service.base_url = "http://fake-llm"
+    session = client.post("/api/chat/sessions", json={"title": "direct failure"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "who was the next ruler after Qin Shi Huang?",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "direct_completed"
+    assert "model call" in assistant["content"].lower() or "\u6a21\u578b\u8c03\u7528" in assistant["content"]
+    payloads = _trace_payloads(assistant["agent_trace_id"], "direct_llm_call_finished")
+    assert payloads
+    assert payloads[-1]["status"] == "error"
+    assert payloads[-1]["error_type"] == "RuntimeError"
+    assert "fake provider exploded" in payloads[-1]["error"]
+
+
 def test_selected_document_multi_question_drafts_answer_after_retrieval(client, monkeypatch):
     document = _create_ready_document("doc-compound-rag", "CompoundRag.pdf", title="Compound RAG Paper")
+    _install_fake_openai(
+        monkeypatch,
+        "app.runtime.knowledge_agent_runtime.OpenAI",
+        content="Compound RAG Paper studies retrieval grounding, answer synthesis, evaluation evidence, experiments, conclusions, limits, and improvements.",
+    )
+    get_knowledge_agent_runtime().api_key = "compound-draft-key"
     session = client.post("/api/chat/sessions", json={"title": "论文多问题"}).json()
 
     def fake_retrieve_evidence(self, **kwargs):
@@ -305,6 +481,12 @@ def test_selected_documents_innovation_question_drafts_answer_after_retrieval(cl
     doc_a = _create_ready_document("doc-innovation-a", "BlindDiff.pdf", title="BlindDiff")
     doc_b = _create_ready_document("doc-innovation-b", "PAMI_LUT.pdf", title="PAMI LUT")
     doc_c = _create_ready_document("doc-innovation-c", "Deform-Mamba.pdf", title="Deform-Mamba")
+    _install_fake_openai(
+        monkeypatch,
+        "app.runtime.knowledge_agent_runtime.OpenAI",
+        content="BlindDiff, PAMI LUT, and Deform-Mamba each contribute distinct image restoration techniques grounded in the retrieved evidence.",
+    )
+    get_knowledge_agent_runtime().api_key = "innovation-draft-key"
     session = client.post("/api/chat/sessions", json={"title": "论文创新点"}).json()
 
     def fake_retrieve_evidence(self, **kwargs):
@@ -348,6 +530,200 @@ def test_selected_documents_innovation_question_drafts_answer_after_retrieval(cl
     ]
     assert "evidence.retriever.search" in observed_tools
     assert "report.drafter.write" in observed_tools
+
+
+def test_selected_documents_review_success_uses_evidence_and_llm_draft(client, monkeypatch):
+    doc_a = _create_ready_document("doc-review-success-a", "ReviewA.pdf", title="Review A")
+    doc_b = _create_ready_document("doc-review-success-b", "ReviewB.pdf", title="Review B")
+    session = client.post("/api/chat/sessions", json={"title": "review success"}).json()
+    draft = (
+        "The review synthesizes the adaptive retrieval method, the cross-document contribution, "
+        "and the ablation experiment evidence from both selected papers."
+    )
+    _install_fake_openai(monkeypatch, "app.runtime.knowledge_agent_runtime.OpenAI", content=draft)
+    runtime = get_knowledge_agent_runtime()
+    runtime.api_key = "draft-success-key"
+    runtime.base_url = "http://fake-llm"
+
+    def fake_next_action(self, **kwargs):
+        observations = kwargs["observations"]
+        if not observations:
+            return _ReactAction(
+                "evidence.retriever.search",
+                {"question": kwargs["content"], "document_ids": kwargs["selected_document_ids"]},
+                "retrieve selected paper evidence",
+            )
+        return _ReactAction(
+            "report.drafter.write",
+            {"question": kwargs["content"], "document_ids": kwargs["selected_document_ids"]},
+            "draft grounded review",
+        )
+
+    def fake_retrieve_evidence(self, **kwargs):
+        documents = kwargs["documents"]
+        return [
+            EvidenceItem(
+                id=f"review-success-{document.id}",
+                source_type="local_document",
+                source_id=document.id,
+                title=document.title,
+                snippet=(
+                    f"{document.title} describes an adaptive retrieval method, "
+                    "a concrete contribution, and controlled experiment results."
+                ),
+                citation_label=f"{document.filename} p.2",
+                document_id=document.id,
+                page_number=2,
+                score=0.92,
+                metadata={"section": "Introduction"},
+            )
+            for document in documents
+        ]
+
+    monkeypatch.setattr(KnowledgeAgentRuntime, "_next_react_action", fake_next_action)
+    monkeypatch.setattr(RagService, "retrieve_evidence", fake_retrieve_evidence)
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "write a 1000 word review report based on these selected papers",
+            "attachments": [],
+            "selected_document_ids": [doc_a.id, doc_b.id],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "completed"
+    assert "adaptive retrieval method" in assistant["content"]
+    assert "cross-document contribution" in assistant["content"]
+    assert "ablation experiment" in assistant["content"]
+    assert "##" not in assistant["content"] or "involved papers" not in assistant["content"].lower()
+    payloads = _trace_payloads(assistant["agent_trace_id"], "react_observation")
+    drafter_payload = next(
+        payload["payload"]
+        for payload in payloads
+        if payload.get("tool") == "report.drafter.write"
+    )
+    assert drafter_payload["llm_draft_success"] is True
+    assert drafter_payload["fallback_used"] is False
+    assert drafter_payload["evidence_count"] == 2
+    assert drafter_payload["used_document_count"] == 2
+
+
+def test_selected_documents_review_with_evidence_marks_drafter_failure_degraded(client, monkeypatch):
+    document = _create_ready_document("doc-review-draft-fails", "DraftFails.pdf", title="Draft Fails")
+    session = client.post("/api/chat/sessions", json={"title": "review draft failure"}).json()
+    _install_fake_openai(
+        monkeypatch,
+        "app.runtime.knowledge_agent_runtime.OpenAI",
+        error=RuntimeError("draft provider unavailable"),
+    )
+    runtime = get_knowledge_agent_runtime()
+    runtime.api_key = "draft-failure-key"
+    runtime.base_url = "http://fake-llm"
+
+    def fake_next_action(self, **kwargs):
+        observations = kwargs["observations"]
+        if not observations:
+            return _ReactAction(
+                "evidence.retriever.search",
+                {"question": kwargs["content"], "document_ids": kwargs["selected_document_ids"]},
+                "retrieve selected paper evidence",
+            )
+        return _ReactAction(
+            "report.drafter.write",
+            {"question": kwargs["content"], "document_ids": kwargs["selected_document_ids"]},
+            "draft grounded review",
+        )
+
+    def fake_retrieve_evidence(self, **kwargs):
+        _ = self, kwargs
+        return [
+            EvidenceItem(
+                id="draft-failure-evidence",
+                source_type="local_document",
+                source_id=document.id,
+                title=document.title,
+                snippet="The paper contains real method and experiment evidence for a review.",
+                citation_label="DraftFails.pdf p.4",
+                document_id=document.id,
+                page_number=4,
+                score=0.9,
+                metadata={"section": "Method"},
+            )
+        ]
+
+    monkeypatch.setattr(KnowledgeAgentRuntime, "_next_react_action", fake_next_action)
+    monkeypatch.setattr(RagService, "retrieve_evidence", fake_retrieve_evidence)
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "write a review report based on the selected paper",
+            "attachments": [],
+            "selected_document_ids": [document.id],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "degraded"
+    assert assistant["retrieval_status"] == "degraded"
+    payloads = _trace_payloads(assistant["agent_trace_id"], "react_observation")
+    drafter_payload = next(
+        payload["payload"]
+        for payload in payloads
+        if payload.get("tool") == "report.drafter.write"
+    )
+    assert drafter_payload["llm_draft_success"] is False
+    assert drafter_payload["fallback_used"] is True
+    assert "RuntimeError" in drafter_payload["drafting_error"]
+    assert "draft provider unavailable" in drafter_payload["drafting_error"]
+
+
+def test_knowledge_default_does_not_persist_subagent_tasks_for_selected_document_summary(client, monkeypatch):
+    document = _create_ready_document("doc-no-subagent-default", "NoSubagentDefault.pdf", title="No Subagent Default")
+    session = client.post("/api/chat/sessions", json={"title": "Subagent 闅旂"}).json()
+
+    def fake_retrieve_evidence(self, **kwargs):
+        _ = self, kwargs
+        return [
+            EvidenceItem(
+                id="no-subagent-evidence",
+                source_type="local_document",
+                source_id=document.id,
+                title=document.title,
+                snippet="The paper provides grounded evidence for the requested summary.",
+                citation_label="NoSubagentDefault.pdf p.1",
+                document_id=document.id,
+                page_number=1,
+                score=0.9,
+            )
+        ]
+
+    monkeypatch.setattr(RagService, "retrieve_evidence", fake_retrieve_evidence)
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "鎬荤粨杩欑瘒璁烘枃",
+            "attachments": [],
+            "selected_document_ids": [document.id],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "completed"
+    assert get_repository().runtime.list_tasks(assistant["agent_trace_id"]) == []
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert any(
+        trace.status == "knowledge_internal_step_started"
+        and trace.payload.get("experimental_feature") == "subagent"
+        and trace.payload.get("config_flag") == "ENABLE_SUBAGENT_EXECUTION=false"
+        for trace in traces
+    )
 
 
 def test_selected_documents_metadata_question_uses_metadata_not_report_template(client):
@@ -395,6 +771,12 @@ def test_selected_documents_metadata_question_uses_metadata_not_report_template(
 def test_react_final_answer_synthesis_repairs_retrieval_status_only_answer(client, monkeypatch):
     doc_a = _create_ready_document("doc-status-only-a", "StatusOnlyA.pdf", title="Status Only A")
     doc_b = _create_ready_document("doc-status-only-b", "StatusOnlyB.pdf", title="Status Only B")
+    _install_fake_openai(
+        monkeypatch,
+        "app.runtime.knowledge_agent_runtime.OpenAI",
+        content="Status Only A and Status Only B both introduce an evidence-grounded contribution for restoration.",
+    )
+    get_knowledge_agent_runtime().api_key = "status-repair-key"
     session = client.post("/api/chat/sessions", json={"title": "检索后合成"}).json()
 
     def fake_next_action(self, **kwargs):
@@ -499,6 +881,12 @@ def test_chat_service_boundary_repairs_status_only_agent_result(client, monkeypa
 
 def test_selected_library_documents_do_not_route_direct_when_llm_suggests_direct(client, monkeypatch):
     document = _create_ready_document("doc-selected-direct-guard", "SelectedDirectGuard.pdf")
+    _install_fake_openai(
+        monkeypatch,
+        "app.runtime.knowledge_agent_runtime.OpenAI",
+        content="The selected paper discusses grounded paper analysis from local PDF chunks.",
+    )
+    get_knowledge_agent_runtime().api_key = "selected-route-key"
     session = client.post("/api/chat/sessions", json={"title": "选中文档路由"}).json()
 
     def fake_llm_candidate(self, payload):
@@ -551,6 +939,32 @@ def test_selected_library_documents_do_not_route_direct_when_llm_suggests_direct
     )
 
 
+def test_selected_documents_without_evidence_do_not_generate_metadata_only_summary(client, monkeypatch):
+    document_a = _create_ready_document("doc-no-evidence-a", "NoEvidenceA.pdf", title="No Evidence A")
+    document_b = _create_ready_document("doc-no-evidence-b", "NoEvidenceB.pdf", title="No Evidence B")
+    session = client.post("/api/chat/sessions", json={"title": "无证据综述"}).json()
+
+    monkeypatch.setattr(RagService, "retrieve_evidence", lambda self, **kwargs: [])
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "根据这两篇文章写一份1000字的综述报告",
+            "attachments": [],
+            "selected_document_ids": [document_a.id, document_b.id],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "needs_clarification"
+    assert assistant["retrieval_status"] == "skipped"
+    assert "没有检索到可引用的论文正文证据" in assistant["content"]
+    assert "不能只根据文件名、标题或元数据生成综述报告" in assistant["content"]
+    assert "# 根据这两篇文章写一份1000字的综述报告" not in assistant["content"]
+    assert "## 涉及论文" not in assistant["content"]
+
+
 def test_rag_uses_keyword_chunks_when_vector_store_is_unavailable(client):
     _ = client
     document = _create_ready_document("doc-keyword-vector-down", "KeywordVectorDown.pdf")
@@ -591,6 +1005,47 @@ def test_rag_uses_keyword_chunks_when_vector_store_is_unavailable(client):
     assert result.evidence_items[0].strategy == "keyword"
 
 
+def test_rag_summary_rerank_prefers_body_sections_over_references(client):
+    _ = client
+    document = _create_ready_document("doc-rerank-sections", "RerankSections.pdf", title="Rerank Sections")
+    reference_item = EvidenceItem(
+        id="rerank-reference",
+        source_type="local_document",
+        source_id=document.id,
+        title=document.title,
+        snippet="REFERENCES [1] Prior work. Acknowledgement: funding support.",
+        citation_label="RerankSections.pdf p.12",
+        document_id=document.id,
+        page_number=12,
+        score=0.5,
+        metadata={"section": "References"},
+    )
+    body_item = EvidenceItem(
+        id="rerank-body",
+        source_type="local_document",
+        source_id=document.id,
+        title=document.title,
+        snippet=(
+            "Introduction and Method: the paper proposes a contribution and reports "
+            "experiment results with evaluation evidence."
+        ),
+        citation_label="RerankSections.pdf p.2",
+        document_id=document.id,
+        page_number=2,
+        score=0.5,
+        metadata={"section": "Method"},
+    )
+
+    ranked = RagService._rerank(
+        [reference_item, body_item],
+        documents=[document],
+        question="write a review report for this paper",
+    )
+
+    assert ranked[0].id == "rerank-body"
+    assert ranked[0].rerank_score > ranked[1].rerank_score
+
+
 def test_chat_agent_answers_library_count_from_sqlite(client):
     _create_ready_document("doc-a12", "A12AAAAA.pdf")
     _create_ready_document("doc-b45", "B45BBB.pdf")
@@ -611,9 +1066,13 @@ def test_chat_agent_answers_library_count_from_sqlite(client):
     assert assistant["action_status"] == "completed", assistant["content"]
     assert assistant["agent_trace_id"]
     traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
-    assert any(trace.status == "agent_mode_selected" and trace.payload["mode"] == "REACT" for trace in traces)
+    mode_trace = next(trace for trace in traces if trace.status == "agent_mode_selected")
+    assert mode_trace.payload["mode"] == "REACT"
+    assert mode_trace.payload["route"] == "ToolAction"
+    assert mode_trace.payload["intent"] in {"paper_qa", "tag_query"}
+    assert mode_trace.payload["requires_tools"] is True
     assert any(trace.status == "react_action_planned" for trace in traces)
-    assert any(trace.status == "reflection_result_created" for trace in traces)
+    assert all(trace.status != "reflection_result_created" for trace in traces)
 
 
 def test_chat_agent_reads_document_categories_as_tags(client):
@@ -739,7 +1198,7 @@ def test_chat_agent_resolves_existing_tag_entity_before_paper_candidates_for_rep
     assert response.status_code == 200
     assistant = response.json()["assistant_message"]
     content = assistant["content"]
-    assert assistant["action_status"] == "completed"
+    assert assistant["action_status"] == "degraded"
     assert "没有在论文库中唯一定位" not in content
     assert "已识别到「hx23」是标签/分类" in content
     assert "3 篇" in content
@@ -873,8 +1332,6 @@ def test_chat_agent_compares_two_existing_tag_collections(client, monkeypatch):
     assert response.status_code == 200
     content = response.json()["assistant_message"]["content"]
     assert "已识别到「A组、B组」是标签/分类" in content
-    assert "A组：TagA.pdf" in content
-    assert "B组：TagB.pdf" in content
     assert "TagA.pdf" in content
     assert "TagB.pdf" in content
 
@@ -1215,14 +1672,12 @@ def test_low_score_reflection_runs_one_improvement_and_records_lesson(client, mo
     assert response.status_code == 200
     payload = response.json()
     assistant = payload["assistant_message"]
-    assert calls["count"] == 2
-    assert "自检" not in assistant["content"]
-    assert "补充检索后的回答" in assistant["content"]
+    assert calls["count"] == 1
+    assert "我猜测论文库里有很多论文" in assistant["content"]
     traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
-    assert sum(1 for trace in traces if trace.status == "reflection_improvement_started") == 1
-    assert any(trace.status == "reflection_improvement_finished" for trace in traces)
-    assert any(trace.status == "reflection_result_created" for trace in traces)
-    assert any("反思经验" in item["summary"] for item in payload["memory_snapshot"]["items"])
+    assert all(trace.status != "reflection_improvement_started" for trace in traces)
+    assert all(trace.status != "reflection_result_created" for trace in traces)
+    assert not any("反思经验" in item["summary"] for item in payload["memory_snapshot"]["items"])
 
 
 def test_chat_agent_creates_tag_and_assigns_only_untagged_documents(client):
@@ -2161,6 +2616,480 @@ def test_chat_agent_hides_llm_process_text_after_verified_library_write(client, 
     assert [category.name for category in get_repository().get_document(untagged_b.id).categories] == ["happy"]
 
 
+def test_intent_scope_assigns_label_only_to_current_selection(client):
+    selected_a = _create_ready_document("doc-scope-current-a", "ScopeCurrentA.pdf")
+    selected_b = _create_ready_document("doc-scope-current-b", "ScopeCurrentB.pdf")
+    untouched = _create_ready_document("doc-scope-current-other", "ScopeCurrentOther.pdf")
+    session = client.post("/api/chat/sessions", json={"title": "当前选择打标签"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "给这些论文打上“超分”标签",
+            "attachments": [],
+            "selected_document_ids": [selected_a.id, selected_b.id],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "completed", assistant["content"]
+    assert [item.name for item in get_repository().get_document(selected_a.id).categories] == ["超分"]
+    assert [item.name for item in get_repository().get_document(selected_b.id).categories] == ["超分"]
+    assert get_repository().get_document(untouched.id).categories == []
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assign_payload = next(
+        trace.payload["payload"]
+        for trace in traces
+        if trace.status == "react_observation" and trace.payload.get("tool") == "library.operator.assign_category"
+    )
+    assert set(assign_payload["document_ids"]) == {selected_a.id, selected_b.id}
+    assert assign_payload["_resolved_action"]["scope_type"] == "current_selection"
+
+
+def test_intent_scope_assigns_label_to_recent_selected_documents(client, monkeypatch):
+    doc_a = _create_ready_document("doc-scope-recent-a", "ScopeRecentA.pdf")
+    doc_b = _create_ready_document("doc-scope-recent-b", "ScopeRecentB.pdf")
+    untouched = _create_ready_document("doc-scope-recent-other", "ScopeRecentOther.pdf")
+    session = client.post("/api/chat/sessions", json={"title": "最近选择打标签"}).json()
+    runtime = get_knowledge_agent_runtime()
+    runtime._write_react_state(
+        session["id"],
+        {
+            "last_document_set": {
+                "label": "刚才分析的 2 篇论文",
+                "document_ids": [doc_a.id, doc_b.id],
+                "source_tool": "report.drafter.write",
+                "count": 2,
+            },
+            "last_user_goal": "根据这几篇论文写个简短总结",
+        },
+    )
+
+    second = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "把刚刚这几篇论文打上“超分”标签",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert second.status_code == 200
+    assistant = second.json()["assistant_message"]
+    assert assistant["action_status"] == "completed", assistant["content"]
+    assert [item.name for item in get_repository().get_document(doc_a.id).categories] == ["超分"]
+    assert [item.name for item in get_repository().get_document(doc_b.id).categories] == ["超分"]
+    assert get_repository().get_document(untouched.id).categories == []
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assign_payload = next(
+        trace.payload["payload"]
+        for trace in traces
+        if trace.status == "react_observation" and trace.payload.get("tool") == "library.operator.assign_category"
+    )
+    assert set(assign_payload["document_ids"]) == {doc_a.id, doc_b.id}
+    assert assign_payload["_resolved_action"]["scope_type"] == "recent_selection"
+
+
+def test_intent_scope_changes_label_on_recent_single_document_only(client, monkeypatch):
+    recent = _create_ready_document("doc-scope-single-change", "ScopeSingleChange.pdf")
+    earlier_a = _create_ready_document("doc-scope-single-earlier-a", "ScopeEarlierA.pdf")
+    earlier_b = _create_ready_document("doc-scope-single-earlier-b", "ScopeEarlierB.pdf")
+    untouched = _create_ready_document("doc-scope-single-change-other", "ScopeSingleOther.pdf")
+    old = get_repository().category.create_category("超分", "#6957d8")
+    get_repository().category.replace_document_categories(recent.id, [old.id])
+    get_repository().category.replace_document_categories(untouched.id, [old.id])
+    session = client.post("/api/chat/sessions", json={"title": "最近单篇改标签"}).json()
+    runtime = get_knowledge_agent_runtime()
+    runtime._write_react_state(
+        session["id"],
+        {
+            "last_document_set": {
+                "label": "刚才分析的 1 篇论文",
+                "document_ids": [recent.id],
+                "source_tool": "report.drafter.write",
+                "count": 1,
+            },
+            "last_single_document": {
+                "label": "刚才分析的 1 篇论文",
+                "document_id": recent.id,
+                "document_ids": [recent.id],
+                "source_tool": "report.drafter.write",
+                "count": 1,
+            },
+            "last_multi_document_set": {
+                "label": "更早分析的 2 篇论文",
+                "document_ids": [earlier_a.id, earlier_b.id],
+                "source_tool": "report.drafter.write",
+                "count": 2,
+            },
+            "last_user_goal": "介绍这篇论文",
+        },
+    )
+    monkeypatch.setattr(runtime, "api_key", "test-key")
+
+    def fake_llm_action(self, **kwargs):
+        _ = self, kwargs
+        return _ReactAction(
+            "library.operator.rename_category",
+            {"source_category_name": "超分", "target_category_name": "英文超分"},
+            "LLM incorrectly selected global rename.",
+        )
+
+    monkeypatch.setattr(KnowledgeAgentRuntime, "_next_react_action_with_llm", fake_llm_action)
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={"content": "把这篇论文的标签改成“英文超分”", "attachments": [], "selected_document_ids": []},
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "completed", assistant["content"]
+    assert [item.name for item in get_repository().get_document(recent.id).categories] == ["超分", "英文超分"]
+    assert [item.name for item in get_repository().get_document(untouched.id).categories] == ["超分"]
+    assert get_repository().get_document(earlier_a.id).categories == []
+    assert get_repository().get_document(earlier_b.id).categories == []
+    assert any(category.name == "超分" for category in get_repository().category.list_categories())
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert not any(
+        trace.status == "react_observation"
+        and trace.payload.get("tool") == "library.operator.rename_category"
+        and trace.payload.get("status") == "completed"
+        for trace in traces
+    )
+    assign_payload = next(
+        trace.payload["payload"]
+        for trace in traces
+        if trace.status == "react_observation" and trace.payload.get("tool") == "library.operator.assign_category"
+    )
+    assert assign_payload["document_ids"] == [recent.id]
+    assert assign_payload["_resolved_action"]["target_type"] == "paper_label_relation"
+    assert assign_payload["_resolved_action"]["scope_type"] == "recent_selection"
+
+
+def test_intent_scope_adds_label_to_recent_single_document_only(client):
+    recent = _create_ready_document("doc-scope-single-add", "ScopeSingleAdd.pdf")
+    untouched = _create_ready_document("doc-scope-single-add-other", "ScopeSingleAddOther.pdf")
+    session = client.post("/api/chat/sessions", json={"title": "最近单篇加标签"}).json()
+    get_knowledge_agent_runtime()._write_react_state(
+        session["id"],
+        {
+            "last_single_document": {
+                "label": "刚才分析的 1 篇论文",
+                "document_id": recent.id,
+                "document_ids": [recent.id],
+                "source_tool": "report.drafter.write",
+                "count": 1,
+            },
+            "last_document_set": {
+                "label": "刚才分析的 1 篇论文",
+                "document_ids": [recent.id],
+                "source_tool": "report.drafter.write",
+                "count": 1,
+            },
+        },
+    )
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={"content": "给这篇论文打上英文超分标签", "attachments": [], "selected_document_ids": []},
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "completed", assistant["content"]
+    assert [item.name for item in get_repository().get_document(recent.id).categories] == ["英文超分"]
+    assert get_repository().get_document(untouched.id).categories == []
+
+
+def test_intent_scope_removes_label_from_recent_single_document_only(client):
+    recent = _create_ready_document("doc-scope-single-remove", "ScopeSingleRemove.pdf")
+    untouched = _create_ready_document("doc-scope-single-remove-other", "ScopeSingleRemoveOther.pdf")
+    target = get_repository().category.create_category("英文超分", "#6957d8")
+    other = get_repository().category.create_category("其它", "#047c71")
+    get_repository().category.replace_document_categories(recent.id, [target.id, other.id])
+    get_repository().category.replace_document_categories(untouched.id, [target.id, other.id])
+    session = client.post("/api/chat/sessions", json={"title": "最近单篇删标签"}).json()
+    get_knowledge_agent_runtime()._write_react_state(
+        session["id"],
+        {
+            "last_single_document": {
+                "label": "刚才分析的 1 篇论文",
+                "document_id": recent.id,
+                "document_ids": [recent.id],
+                "source_tool": "report.drafter.write",
+                "count": 1,
+            },
+            "last_document_set": {
+                "label": "刚才分析的 1 篇论文",
+                "document_ids": [recent.id],
+                "source_tool": "report.drafter.write",
+                "count": 1,
+            },
+        },
+    )
+
+    preview = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={"content": "把这篇论文的英文超分标签删掉", "attachments": [], "selected_document_ids": []},
+    )
+
+    assert preview.status_code == 200
+    assistant = preview.json()["assistant_message"]
+    assert assistant["action_status"] == "confirmation_required", assistant["content"]
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    preview_payload = next(
+        trace.payload
+        for trace in traces
+        if trace.status == "write_preview_created" and trace.payload.get("tool") == "library.operator.clear_categories"
+    )
+    assert preview_payload["affected_count"] == 1
+    assert {item["document_id"] for item in preview_payload["targets"]} == {recent.id}
+
+    confirm = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={"content": "确认移除英文超分标签", "attachments": [], "selected_document_ids": []},
+    )
+    assert confirm.status_code == 200
+    assert confirm.json()["assistant_message"]["action_status"] == "completed"
+    assert [item.name for item in get_repository().get_document(recent.id).categories] == ["其它"]
+    assert [item.name for item in get_repository().get_document(untouched.id).categories] == ["英文超分", "其它"]
+
+
+def test_intent_scope_remove_label_from_recent_documents_only(client):
+    doc_a = _create_ready_document("doc-scope-remove-a", "ScopeRemoveA.pdf")
+    doc_b = _create_ready_document("doc-scope-remove-b", "ScopeRemoveB.pdf")
+    untouched = _create_ready_document("doc-scope-remove-other", "ScopeRemoveOther.pdf")
+    category = get_repository().category.create_category("超分", "#6957d8")
+    other = get_repository().category.create_category("其它", "#047c71")
+    for document in (doc_a, doc_b, untouched):
+        get_repository().category.replace_document_categories(document.id, [category.id, other.id])
+    session = client.post("/api/chat/sessions", json={"title": "最近选择删标签"}).json()
+
+    first = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "给这些论文打上“临时”标签",
+            "attachments": [],
+            "selected_document_ids": [doc_a.id, doc_b.id],
+        },
+    )
+    assert first.status_code == 200
+
+    preview = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "把刚刚这几篇论文的超分标签删掉",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert preview.status_code == 200
+    payload = preview.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] == "confirmation_required", assistant["content"]
+    assert payload["library_mutated"] is False
+    assert "确认移除超分标签" in assistant["content"]
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    preview_payload = next(
+        trace.payload
+        for trace in traces
+        if trace.status == "write_preview_created" and trace.payload.get("tool") == "library.operator.clear_categories"
+    )
+    assert preview_payload["affected_count"] == 2
+    assert {item["document_id"] for item in preview_payload["targets"]} == {doc_a.id, doc_b.id}
+
+    confirm = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={"content": "确认移除超分标签", "attachments": [], "selected_document_ids": []},
+    )
+    assert confirm.status_code == 200
+    assert confirm.json()["assistant_message"]["action_status"] == "completed"
+    assert [item.name for item in get_repository().get_document(doc_a.id).categories] == ["其它", "临时"]
+    assert [item.name for item in get_repository().get_document(doc_b.id).categories] == ["其它", "临时"]
+    assert [item.name for item in get_repository().get_document(untouched.id).categories] == ["超分", "其它"]
+
+
+def test_intent_scope_ambiguous_recent_reference_does_not_default_to_all_library(client):
+    doc_a = _create_ready_document("doc-scope-ambiguous-a", "ScopeAmbiguousA.pdf")
+    doc_b = _create_ready_document("doc-scope-ambiguous-b", "ScopeAmbiguousB.pdf")
+    session = client.post("/api/chat/sessions", json={"title": "无上下文模糊指代"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "把刚刚这几篇论文打上“超分”标签",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] in {"validation_failed", "needs_clarification", "degraded"}
+    assert payload["library_mutated"] is False
+    assert get_repository().get_document(doc_a.id).categories == []
+    assert get_repository().get_document(doc_b.id).categories == []
+
+
+def test_intent_scope_ambiguous_single_reference_does_not_search_or_mutate_all_library(client):
+    doc_a = _create_ready_document("doc-scope-ambiguous-single-a", "ScopeAmbiguousSingleA.pdf")
+    doc_b = _create_ready_document("doc-scope-ambiguous-single-b", "ScopeAmbiguousSingleB.pdf")
+    session = client.post("/api/chat/sessions", json={"title": "无上下文单篇指代"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={"content": "把这篇论文标签改成英文超分", "attachments": [], "selected_document_ids": []},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] in {"validation_failed", "needs_clarification", "degraded"}
+    assert payload["library_mutated"] is False
+    assert get_repository().get_document(doc_a.id).categories == []
+    assert get_repository().get_document(doc_b.id).categories == []
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert not any(
+        trace.status == "react_observation"
+        and trace.payload.get("tool") == "library.explorer.find_documents"
+        for trace in traces
+    )
+
+
+def test_intent_scope_explicit_all_library_batch_assign_requires_confirmation_or_refusal(client):
+    doc_a = _create_ready_document("doc-scope-all-a", "ScopeAllA.pdf")
+    doc_b = _create_ready_document("doc-scope-all-b", "ScopeAllB.pdf")
+    session = client.post("/api/chat/sessions", json={"title": "明确全库打标签"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "把所有论文都打上“超分”标签",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] in {"validation_failed", "confirmation_required"}
+    assert payload["library_mutated"] is False
+    assert get_repository().get_document(doc_a.id).categories == []
+    assert get_repository().get_document(doc_b.id).categories == []
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert any(
+        trace.status == "react_observation"
+        and trace.payload.get("tool") == "library.operator.assign_category"
+        and trace.payload.get("payload", {}).get("guardrail") in {"write_scope_validation", None}
+        for trace in traces
+    )
+
+
+def test_intent_scope_delete_empty_labels_is_entity_level_not_relation_clear(client):
+    empty = get_repository().category.create_category("空标签", "#6957d8")
+    used = get_repository().category.create_category("已用", "#047c71")
+    document = _create_ready_document("doc-scope-delete-empty", "ScopeDeleteEmpty.pdf")
+    get_repository().category.replace_document_categories(document.id, [used.id])
+    session = client.post("/api/chat/sessions", json={"title": "删除空标签分类"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={"content": "删除空标签分类", "attachments": [], "selected_document_ids": []},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] == "confirmation_required"
+    assert payload["library_mutated"] is False
+    assert [item.name for item in get_repository().get_document(document.id).categories] == ["已用"]
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert any(
+        trace.status == "write_preview_created"
+        and trace.payload.get("tool") == "library.operator.delete_unused_categories"
+        and trace.payload.get("operation_level") == "entity-level"
+        for trace in traces
+    )
+    assert not any(
+        trace.status == "write_preview_created"
+        and trace.payload.get("tool") == "library.operator.clear_categories"
+        for trace in traces
+    )
+    assert empty.name in assistant["content"]
+
+
+def test_intent_scope_explicit_label_entity_rename_still_uses_rename_category(client):
+    document = _create_ready_document("doc-scope-entity-rename", "ScopeEntityRename.pdf")
+    old = get_repository().category.create_category("A标签", "#6957d8")
+    get_repository().category.replace_document_categories(document.id, [old.id])
+    session = client.post("/api/chat/sessions", json={"title": "实体标签重命名"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={"content": "把标签 A标签 重命名为 B标签", "attachments": [], "selected_document_ids": []},
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "completed", assistant["content"]
+    assert [item.name for item in get_repository().get_document(document.id).categories] == ["B标签"]
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert any(
+        trace.status == "react_observation"
+        and trace.payload.get("tool") == "library.operator.rename_category"
+        and trace.payload.get("status") == "completed"
+        for trace in traces
+    )
+
+
+def test_intent_scope_selected_paper_question_goes_through_evidence_chain(client, monkeypatch):
+    document = _create_ready_document("doc-scope-paper-qa", "ScopePaperQA.pdf", title="Scope Paper QA")
+    session = client.post("/api/chat/sessions", json={"title": "这篇论文讲什么"}).json()
+    _install_fake_openai(
+        monkeypatch,
+        "app.runtime.knowledge_agent_runtime.OpenAI",
+        content="这篇论文围绕正文证据中的方法、贡献和实验结果展开。",
+    )
+    runtime = get_knowledge_agent_runtime()
+    runtime.api_key = "paper-qa-scope-key"
+
+    def fake_retrieve_evidence(self, **kwargs):
+        documents = kwargs["documents"]
+        return [
+            EvidenceItem(
+                id=f"paper-qa-{documents[0].id}",
+                source_type="local_document",
+                source_id=documents[0].id,
+                title=documents[0].title,
+                snippet="The paper proposes a method, explains contributions, and reports experiment results.",
+                citation_label=f"{documents[0].filename} p.1",
+                document_id=documents[0].id,
+                page_number=1,
+                score=0.9,
+            )
+        ]
+
+    monkeypatch.setattr(RagService, "retrieve_evidence", fake_retrieve_evidence)
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={"content": "这篇论文讲什么", "attachments": [], "selected_document_ids": [document.id]},
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "completed"
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    tools = [trace.payload.get("tool") for trace in traces if trace.status == "react_observation"]
+    assert "evidence.retriever.search" in tools
+    assert assistant["used_document_ids"] == [document.id]
+
+
 def test_chat_agent_assigns_multiple_tags_to_all_untagged_documents(client):
     existing = get_repository().category.create_category("已有标签", "#6957d8")
     tagged = _create_ready_document("doc-multitag-tagged", "AlreadyTagged.pdf")
@@ -2298,7 +3227,7 @@ def test_chat_agent_compares_only_documents_with_named_category(client, monkeypa
 
     assert response.status_code == 200
     assistant = response.json()["assistant_message"]
-    assert assistant["action_status"] == "completed"
+    assert assistant["action_status"] == "degraded"
     assert len(calls) == 1
     assert set(calls[0]) == {selected_a.id, selected_b.id}
     assert other.id not in calls[0]
@@ -2314,7 +3243,7 @@ def test_chat_agent_compares_only_documents_with_named_category(client, monkeypa
     assert set(find_observation.payload["payload"]["document_ids"]) == {selected_a.id, selected_b.id}
 
 
-def test_chat_agent_writes_report_from_all_chinese_category_documents_with_real_abstracts(client):
+def test_chat_agent_writes_report_from_all_chinese_category_documents_with_real_abstracts(client, monkeypatch):
     chinese = get_repository().category.create_category("chinese", "#0f5fb8")
     selected_a = _create_ready_document("doc-chinese-report-a", "ChineseReportA.pdf", title="Chinese Report A")
     selected_b = _create_ready_document("doc-chinese-report-b", "ChineseReportB.pdf", title="Chinese Report B")
@@ -2335,6 +3264,17 @@ def test_chat_agent_writes_report_from_all_chinese_category_documents_with_real_
         "Abstract This third paper builds a mobile image enhancement network with efficient dual stream design.",
     )
     _add_abstract_chunk(other, "Abstract This unrelated paper should not be used for the chinese tag report.")
+    _install_fake_openai(
+        monkeypatch,
+        "app.runtime.knowledge_agent_runtime.OpenAI",
+        content=(
+            "论文一：\n论文名称：ChineseReportA.pdf\n论文完整摘要：Abstract This first paper studies adaptive lookup tables for image enhancement with reliable training evidence.\n论文页数：10页\n"
+            "论文二：\n论文名称：ChineseReportB.pdf\n论文完整摘要：Abstract This second paper proposes zero-reference curve estimation for low-light image enhancement.\n论文页数：10页\n"
+            "论文三：\n论文名称：ChineseReportC.pdf\n论文完整摘要：Abstract This third paper builds a mobile image enhancement network with efficient dual stream design.\n论文页数：10页\n"
+            "三篇文章都关注图像增强，但方法路线分别强调 lookup tables、zero-reference curve estimation 和 dual stream design。"
+        ),
+    )
+    get_knowledge_agent_runtime().api_key = "chinese-report-key"
     session = client.post("/api/chat/sessions", json={"title": "chinese报告"}).json()
 
     response = client.post(
@@ -2353,7 +3293,7 @@ def test_chat_agent_writes_report_from_all_chinese_category_documents_with_real_
     assert response.status_code == 200
     payload = response.json()
     assistant = payload["assistant_message"]
-    assert assistant["action_status"] == "completed"
+    assert assistant["action_status"] == "degraded"
     assert set(assistant["used_document_ids"]) == {selected_a.id, selected_b.id, selected_c.id}
     assert other.id not in assistant["used_document_ids"]
     content = assistant["content"]
@@ -2473,9 +3413,11 @@ def test_chat_agent_executes_llm_planned_complex_tool_chain(client, monkeypatch)
     assistant = response.json()["assistant_message"]
     assert assistant["action_status"] == "completed"
     traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
-    assert any(trace.status == "agent_mode_selected" and trace.payload["mode"] == "PLANNER" for trace in traces)
-    assert any(trace.status == "planner_plan_created" for trace in traces)
-    assert any(trace.status == "reflection_result_created" for trace in traces)
+    mode_trace = next(trace for trace in traces if trace.status == "agent_mode_selected")
+    assert mode_trace.payload["route"] == "ConfirmedWrite"
+    assert mode_trace.payload["requires_confirmation"] is False
+    assert all(trace.status != "planner_plan_created" for trace in traces)
+    assert all(trace.status != "reflection_result_created" for trace in traces)
     assert "法律" in assistant["content"]
     assert "历史" in assistant["content"]
     assert "600" in assistant["content"]
@@ -2487,6 +3429,11 @@ def test_chat_agent_executes_llm_planned_complex_tool_chain(client, monkeypatch)
         and trace.payload.get("tool") == "evidence.retriever.search_by_category"
     )
     category_groups = grouped_observation.payload["payload"]["category_groups"]
+    standard_observation = grouped_observation.payload["observation"]
+    assert standard_observation["tool_name"] == "evidence.retriever.search_by_category"
+    assert standard_observation["operation_level"] == "query-level"
+    assert standard_observation["io_type"] == "read"
+    assert standard_observation["counts"]["evidence_items"] == 0
     assert category_groups
     assert all("evidence_quality" in group for group in category_groups)
     assert all(group["evidence_boundary"] == "该标签下论文存在，但正文证据不足。" for group in category_groups)
@@ -2499,6 +3446,26 @@ def test_chat_agent_executes_llm_planned_complex_tool_chain(client, monkeypatch)
     assert [category.name for category in refreshed_history_a.categories] == ["历史"]
     assert [category.name for category in refreshed_history_b.categories] == ["历史"]
     assert [category.name for category in refreshed_law.categories] == ["法律"]
+
+
+def test_chat_tool_registry_returns_structured_tool_metadata(client):
+    _ = client
+    runtime = get_knowledge_agent_runtime()
+    registry_observation = runtime._finalize_tool_observation(
+        runtime._tool_registry_list("run-tool-metadata", None, "", {}, [])
+    )
+
+    tools = registry_observation.payload["tools"]
+    delete_tool = next(tool for tool in tools if tool["name"] == "library.operator.delete_unused_categories")
+    assert delete_tool["operation_level"] == "entity-level"
+    assert delete_tool["io_type"] == "write"
+    assert delete_tool["write_type"] == "delete"
+    assert delete_tool["requires_confirmation"] is True
+    assert delete_tool["requires_post_read_verification"] is True
+    assert all("operation_level" in tool and "io_type" in tool for tool in tools)
+    assert all(tool["scope"] != "experimental" for tool in tools)
+    assert registry_observation.observation["tool_name"] == "tool.registry.list"
+    assert registry_observation.observation["success"] is True
 
 
 def test_chat_agent_requires_confirmation_before_destructive_actions(client):
@@ -2575,7 +3542,14 @@ def test_chat_agent_previews_unused_category_entity_cleanup_without_clearing_doc
     traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
     preview = next(trace for trace in traces if trace.status == "write_preview_created")
     assert preview.payload["tool"] == "library.operator.delete_unused_categories"
-    assert preview.payload["operation_level"] == "entity"
+    assert preview.payload["operation_level"] == "entity-level"
+    assert preview.payload["write_type"] == "delete"
+    assert preview.payload["target_type"] == "category"
+    assert preview.payload["target_count"] == 2
+    assert preview.payload["will_delete_entities"] is True
+    assert preview.payload["will_modify_relations"] is False
+    assert preview.payload["requires_confirmation"] is True
+    assert {target["name"] for target in preview.payload["targets"]} == {"空标签A", "空标签B"}
     assert all(
         not (
             trace.status == "react_observation"
@@ -2583,6 +3557,20 @@ def test_chat_agent_previews_unused_category_entity_cleanup_without_clearing_doc
         )
         for trace in traces
     )
+    react_preview = next(
+        trace
+        for trace in traces
+        if trace.status == "react_observation"
+        and trace.payload.get("tool") == "library.operator.delete_unused_categories"
+    )
+    observation = react_preview.payload["observation"]
+    assert observation["tool_name"] == "library.operator.delete_unused_categories"
+    assert observation["success"] is False
+    assert observation["operation_level"] == "entity-level"
+    assert observation["io_type"] == "write"
+    assert observation["write_type"] == "delete"
+    assert observation["requires_confirmation"] is True
+    assert observation["error"]["code"] == "CONFIRMATION_REQUIRED"
 
 
 def test_chat_agent_confirms_unused_category_entity_cleanup_only_deletes_empty_entities(client):
@@ -2629,6 +3617,16 @@ def test_chat_agent_confirms_unused_category_entity_cleanup_only_deletes_empty_e
     assert get_repository().category.get_category(non_empty_d.id) is not None
     assert [category.name for category in get_repository().get_document(doc_c.id).categories] == before_doc_c
     assert [category.name for category in get_repository().get_document(doc_d.id).categories] == before_doc_d
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    executed = next(trace for trace in traces if trace.status == "pending_write_executed")
+    assert executed.payload["operation_level"] == "entity-level"
+    assert executed.payload["library_mutated"] is True
+    write_log = next(
+        trace
+        for trace in traces
+        if trace.status == "pending_write_executed"
+    )
+    assert write_log.payload["operation_level"] == "entity-level"
 
 
 def test_chat_agent_unused_category_cleanup_noops_when_none_empty(client):
@@ -2655,6 +3653,32 @@ def test_chat_agent_unused_category_cleanup_noops_when_none_empty(client):
     assert "要清空分类/标签的论文" not in assistant["content"]
     assert get_repository().category.get_category(non_empty.id) is not None
     assert [category.name for category in get_repository().get_document(doc.id).categories] == ["非空无清理"]
+
+
+def test_chat_agent_clarifies_ambiguous_delete_papers_under_tag(client):
+    category = get_repository().category.create_category("模糊标签", "#0f5fb8")
+    document = _create_ready_document("doc-ambiguous-delete-tag", "AmbiguousDeleteTag.pdf")
+    get_repository().category.replace_document_categories(document.id, [category.id])
+    session = client.post("/api/chat/sessions", json={"title": "模糊删除"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "删除这个标签下的论文",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assistant = payload["assistant_message"]
+    assert assistant["action_status"] in {"needs_clarification", "completed"}
+    assert payload["library_mutated"] is False
+    assert "删除论文实体" in assistant["content"]
+    assert "标签/分类之间的关系" in assistant["content"]
+    assert get_repository().category.get_category(category.id) is not None
+    assert [item.name for item in get_repository().get_document(document.id).categories] == ["模糊标签"]
 
 
 def test_chat_agent_does_not_report_category_delete_success_without_verification(client, monkeypatch):
@@ -2724,6 +3748,79 @@ def test_chat_assistant_message_can_be_saved_as_report(client):
     detail_response = client.get(f"/api/chat/sessions/{session['id']}")
     saved_message = next(item for item in detail_response.json()["messages"] if item["id"] == assistant["id"])
     assert saved_message["saved_report_id"] == report["id"]
+    assert report["lifecycle_status"] == "saved_report"
+    assert report["source"] == "knowledge_answer"
+    assert report["source_message_id"] == assistant["id"]
+    assert report["paper_ids"] == assistant["used_document_ids"]
+    assert report["updated_at"]
+
+    alias_response = client.post(
+        "/api/reports/from-message",
+        json={"session_id": session["id"], "message_id": assistant["id"]},
+    )
+    assert alias_response.status_code == 200
+    assert alias_response.json()["id"] == report["id"]
+
+
+def test_chat_answer_does_not_auto_create_saved_report(client):
+    session = client.post("/api/chat/sessions", json={"title": "普通回答不保存"}).json()
+    send_response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "总结一下 RAG 的常见评估方式",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+    assert send_response.status_code == 200
+    assistant = send_response.json()["assistant_message"]
+    assert assistant["saved_report_id"] is None
+
+    list_response = client.get("/api/reports")
+    assert list_response.status_code == 200
+    assert list_response.json() == []
+
+
+def test_direct_chat_without_llm_returns_configuration_boundary_not_placeholder(client):
+    session = client.post("/api/chat/sessions", json={"title": "通用问题"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "秦始皇统一六国的顺序是？最难的是哪个国家？秦始皇下一任是谁？",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "direct_completed"
+    assert "当前没有可用的 LLM 配置" in assistant["content"]
+    assert "我先根据你这轮的问题" not in assistant["content"]
+    assert "我会按普通聊天方式先回答" not in assistant["content"]
+
+
+def test_chat_memory_only_records_low_risk_preferences(client):
+    session = client.post("/api/chat/sessions", json={"title": "偏好收敛"}).json()
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "以后不要把这次工具误判写进长期记忆，但默认中文，Markdown，先总结再展开，并列出处。",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+    assert response.status_code == 200
+
+    memory_response = client.get(f"/api/chat/sessions/{session['id']}/memory")
+    assert memory_response.status_code == 200
+    summaries = [item["summary"] for item in memory_response.json()["items"]]
+    assert "默认使用中文回答。" in summaries
+    assert "回答时优先使用 Markdown 格式。" in summaries
+    assert "回答时优先先总结再展开。" in summaries
+    assert "回答时优先给出引用或出处。" in summaries
+    assert all("工具误判" not in summary for summary in summaries)
 
 
 def test_chat_reports_selected_document_retrieval_failure_without_fake_fallback(client, monkeypatch):
@@ -2793,6 +3890,25 @@ def test_chat_local_pdf_attachment_does_not_trigger_library_ingestion(client):
     assert assistant["warning"] in (None, "")
     assert assistant["used_document_ids"] == []
     assert any("draft-paper.pdf" in item["summary"] for item in payload["memory_snapshot"]["items"])
+
+
+def test_knowledge_research_task_request_redirects_when_upgrade_disabled(client, monkeypatch):
+    monkeypatch.setenv("ENABLE_RESEARCH_FROM_KNOWLEDGE", "false")
+    session = client.post("/api/chat/sessions", json={"title": "Research redirect"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "请按研究任务执行，分步骤完成研究计划",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "research_task_redirect"
+    assert "不会直接启动实验性的 Research Task Agent Loop" in assistant["content"]
 
 
 def test_chat_context_compacts_long_history_into_runtime_context_files(client):
