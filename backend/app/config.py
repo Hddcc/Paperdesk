@@ -29,12 +29,12 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_model: str = "gpt-4o-mini"
     max_context_tokens: int | None = None
-    response_reserve_tokens: int = 12000
-    compact_warn_ratio: float = 0.82
-    compact_force_ratio: float = 0.92
-    recent_turns_min: int = 3
-    max_evidence_items: int = 4
-    max_evidence_chars_per_item: int = 280
+    response_reserve_tokens: int = 16000
+    compact_warn_ratio: float = 0.72
+    compact_force_ratio: float = 0.90
+    recent_turns_min: int = 8
+    max_evidence_items: int = 8
+    max_evidence_chars_per_item: int = 420
     openalex_api_key: str | None = None
     embedding_provider: str = "local"
     embedding_model: str = "BAAI/bge-m3"
@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     openalex_base_url: str = "https://api.openalex.org"
     arxiv_base_url: str = "http://export.arxiv.org/api/query"
     cors_origins: str = Field(default="*")
+    enable_research_task_agent: bool = False
+    enable_research_from_knowledge: bool = False
+    enable_experimental_mcp: bool = False
+    enable_mcp_in_knowledge: bool = False
+    enable_subagent_execution: bool = False
+    enable_auto_reflection: bool = False
 
     @field_validator(
         "llm_base_url",

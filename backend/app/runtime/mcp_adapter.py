@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from app.models import ToolDeclaration, ToolSource
+from app.models import ToolDeclaration, ToolSource, ToolSpec
 
 
 class ReadOnlyMcpAdapter:
@@ -35,7 +35,39 @@ class ReadOnlyMcpAdapter:
             return None
         if not isinstance(tool.input_schema, dict) or not isinstance(tool.output_schema, dict):
             return None
-        return tool.model_copy(update={"source": ToolSource.MCP})
+        spec = tool.spec or ToolSpec(
+            name=tool.tool_id,
+            display_name=tool.name,
+            description=tool.description,
+            scope="experimental",
+            maturity="experimental",
+            operation_level="query-level",
+            io_type="read",
+            write_type="none",
+            destructive=False,
+            requires_confirmation=False,
+            input_object_types=[],
+            output_observation_type="mcp_read_observation",
+            requires_post_read_verification=False,
+            verification_tool=None,
+            available_by_default=False,
+            source=ToolSource.MCP.value,
+        )
+        safe_spec = spec.model_copy(
+            update={
+                "scope": spec.scope if spec.scope in {"research", "mcp", "experimental"} else "experimental",
+                "maturity": "experimental",
+                "operation_level": "query-level",
+                "io_type": "read",
+                "write_type": "none",
+                "destructive": False,
+                "requires_confirmation": False,
+                "available_by_default": False,
+                "feature_flag": "ENABLE_EXPERIMENTAL_MCP",
+                "source": ToolSource.MCP.value,
+            }
+        )
+        return tool.model_copy(update={"source": ToolSource.MCP, "read_only": True, "spec": safe_spec})
 
 
 def default_read_only_academic_mcp_declarations() -> list[ToolDeclaration]:
@@ -69,6 +101,23 @@ def default_read_only_academic_mcp_declarations() -> list[ToolDeclaration]:
             output_schema=common_output,
             read_only=True,
             enabled=True,
+            spec=ToolSpec(
+                name="mcp/academic_search",
+                display_name="External academic search",
+                description="Read-only external academic search declaration.",
+                scope="mcp",
+                maturity="experimental",
+                operation_level="query-level",
+                io_type="read",
+                write_type="none",
+                destructive=False,
+                requires_confirmation=False,
+                input_object_types=["paper"],
+                output_observation_type="mcp_read_observation",
+                available_by_default=False,
+                feature_flag="ENABLE_EXPERIMENTAL_MCP",
+                source=ToolSource.MCP.value,
+            ),
         ),
         ToolDeclaration(
             tool_id="mcp/academic_metadata",
@@ -88,6 +137,23 @@ def default_read_only_academic_mcp_declarations() -> list[ToolDeclaration]:
             output_schema=common_output,
             read_only=True,
             enabled=True,
+            spec=ToolSpec(
+                name="mcp/academic_metadata",
+                display_name="External paper metadata lookup",
+                description="Read-only external paper metadata lookup declaration.",
+                scope="mcp",
+                maturity="experimental",
+                operation_level="query-level",
+                io_type="read",
+                write_type="none",
+                destructive=False,
+                requires_confirmation=False,
+                input_object_types=["paper"],
+                output_observation_type="mcp_read_observation",
+                available_by_default=False,
+                feature_flag="ENABLE_EXPERIMENTAL_MCP",
+                source=ToolSource.MCP.value,
+            ),
         ),
         ToolDeclaration(
             tool_id="mcp/read_only_web_fetch",
@@ -105,5 +171,22 @@ def default_read_only_academic_mcp_declarations() -> list[ToolDeclaration]:
             output_schema=common_output,
             read_only=True,
             enabled=True,
+            spec=ToolSpec(
+                name="mcp/read_only_web_fetch",
+                display_name="Read-only source page fetch",
+                description="Read-only external source page fetch declaration.",
+                scope="mcp",
+                maturity="experimental",
+                operation_level="query-level",
+                io_type="read",
+                write_type="none",
+                destructive=False,
+                requires_confirmation=False,
+                input_object_types=["paper"],
+                output_observation_type="mcp_read_observation",
+                available_by_default=False,
+                feature_flag="ENABLE_EXPERIMENTAL_MCP",
+                source=ToolSource.MCP.value,
+            ),
         ),
     ]

@@ -152,6 +152,9 @@ def client(sandbox_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("MILVUS_DATABASE", "paperdesk_test")
     monkeypatch.setenv("MILVUS_COLLECTION", "paperdesk_test_collection")
     monkeypatch.setenv("MILVUS_AUTO_START", "false")
+    monkeypatch.setenv("ENABLE_RESEARCH_TASK_AGENT", "true")
+    monkeypatch.setenv("ENABLE_EXPERIMENTAL_MCP", "true")
+    monkeypatch.setenv("ENABLE_SUBAGENT_EXECUTION", "false")
 
     from app.api.main import (
         get_chat_memory_service,
@@ -175,6 +178,7 @@ def client(sandbox_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         get_query_translation_service,
         get_rag_service,
         get_report_writer,
+        get_report_lifecycle_service,
         get_repository,
         get_research_orchestrator,
         get_research_workspace_service,
@@ -206,6 +210,7 @@ def client(sandbox_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     get_export_service.cache_clear()
     get_research_workspace_service.cache_clear()
     get_report_writer.cache_clear()
+    get_report_lifecycle_service.cache_clear()
     get_rag_service.cache_clear()
     get_research_orchestrator.cache_clear()
     get_reflection_runtime.cache_clear()

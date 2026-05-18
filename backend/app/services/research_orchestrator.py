@@ -96,6 +96,8 @@ class ResearchOrchestrator:
         export_service: ExportService,
         workspace_service: ResearchWorkspaceService,
         context_assembler: ResearchContextAssembler,
+        enable_experimental_mcp: bool = False,
+        enable_subagent_execution: bool = False,
     ) -> None:
         self.research_repository = research_repository
         self.paper_repository = paper_repository
@@ -110,15 +112,21 @@ class ResearchOrchestrator:
         self.export_service = export_service
         self.workspace_service = workspace_service
         self.context_assembler = context_assembler
+        self.enable_experimental_mcp = enable_experimental_mcp
+        self.enable_subagent_execution = enable_subagent_execution
 
-        mcp_tools = ReadOnlyMcpAdapter(
-            allowed_tool_ids={
-                "mcp/academic_search",
-                "mcp/academic_metadata",
-                "mcp/read_only_web_fetch",
-            }
-        ).normalize(default_read_only_academic_mcp_declarations())
-        self.tool_registry = ToolRegistry(mcp_tools)
+        mcp_tools = (
+            ReadOnlyMcpAdapter(
+                allowed_tool_ids={
+                    "mcp/academic_search",
+                    "mcp/academic_metadata",
+                    "mcp/read_only_web_fetch",
+                }
+            ).normalize(default_read_only_academic_mcp_declarations())
+            if enable_experimental_mcp
+            else []
+        )
+        self.tool_registry = ToolRegistry(mcp_tools, enable_experimental_mcp=enable_experimental_mcp)
         self.skill_registry = SkillRegistry()
         self.main_runtime = MainAgentRuntime(
             {tool.tool_id: tool for tool in self.tool_registry.list_enabled()}
@@ -823,7 +831,6 @@ class ResearchOrchestrator:
             else:
                 report = self.report_writer.write(request.topic, state_task_summaries(runtime_state))
             state.report = report
-            self.export_service.export_markdown(report)
             self.report_repository.create_report(report, state.run_id)
             runtime_state.report_id = report.id
             self._emit(

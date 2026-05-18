@@ -128,8 +128,9 @@ class RagService:
             self._remember_retrieval(cached)
             return cached
 
-        candidate_limit = max(top_k * 3, top_k)
-        query_candidates = [question]
+        synthesis_query = self._is_synthesis_query(question)
+        candidate_limit = max(top_k * (5 if synthesis_query else 3), top_k)
+        query_candidates = self._expanded_queries(question)
         translated = self._translate_query(question)
         if translated and translated not in query_candidates:
             query_candidates.append(translated)
@@ -157,8 +158,8 @@ class RagService:
 
         merged = self._deduplicate(candidates)
         filtered = self._similarity_filter(merged)
-        reranked = self._rerank(filtered, documents=documents)
-        evidence_items = reranked[:top_k]
+        reranked = self._rerank(filtered, documents=documents, question=question)
+        evidence_items = self._select_top_evidence(reranked, documents=documents, top_k=top_k, ensure_coverage=synthesis_query)
         quality = self.assess_evidence_quality(evidence_items, documents)
         retrieval_strategy = "hybrid"
         if vector_failed:
@@ -354,10 +355,11 @@ class RagService:
             filtered.append(item)
         return filtered
 
-    @staticmethod
-    def _rerank(items: list[EvidenceItem], *, documents: list[LibraryDocument]) -> list[EvidenceItem]:
+    @classmethod
+    def _rerank(cls, items: list[EvidenceItem], *, documents: list[LibraryDocument], question: str = "") -> list[EvidenceItem]:
         selected_ids = {document.id for document in documents}
         document_counts: dict[str, int] = {}
+        synthesis_query = cls._is_synthesis_query(question)
         for item in items:
             document_id = item.document_id or item.source_id
             document_counts[document_id] = document_counts.get(document_id, 0) + 1
@@ -376,6 +378,9 @@ class RagService:
                 score += 0.05
             if item.title and item.title in (item.quote or item.snippet):
                 score += 0.03
+            section_score = cls._section_quality_score(item)
+            if synthesis_query:
+                score += section_score
             document_id = item.document_id or item.source_id
             if document_counts.get(document_id, 0) > 2:
                 score -= min(0.08, (document_counts[document_id] - 2) * 0.02)
@@ -390,6 +395,127 @@ class RagService:
             }
             reranked.append(next_item)
         return sorted(reranked, key=lambda item: item.rerank_score or item.score or 0.0, reverse=True)
+
+    @classmethod
+    def _expanded_queries(cls, question: str) -> list[str]:
+        queries = [question]
+        if not cls._is_synthesis_query(question):
+            return queries
+        expansions = [
+            f"{question} abstract introduction method contribution experiment result conclusion",
+            f"{question} 摘要 引言 方法 贡献 实验 结果 结论",
+        ]
+        for query in expansions:
+            if query not in queries:
+                queries.append(query)
+        return queries
+
+    @staticmethod
+    def _is_synthesis_query(question: str) -> bool:
+        normalized = question.casefold()
+        markers = (
+            "总结",
+            "综述",
+            "报告",
+            "概述",
+            "对比",
+            "比较",
+            "分析",
+            "创新点",
+            "贡献",
+            "summary",
+            "summarize",
+            "review",
+            "survey",
+            "report",
+            "compare",
+            "comparison",
+            "analysis",
+        )
+        return any(marker in normalized for marker in markers)
+
+    @staticmethod
+    def _section_quality_score(item: EvidenceItem) -> float:
+        metadata = item.metadata or {}
+        section_text = " ".join(
+            str(value)
+            for value in (
+                item.title,
+                metadata.get("section"),
+                metadata.get("heading"),
+                metadata.get("title"),
+                item.quote or item.snippet,
+            )
+            if value
+        ).casefold()
+        positive_markers = (
+            "abstract",
+            "introduction",
+            "method",
+            "approach",
+            "contribution",
+            "experiment",
+            "evaluation",
+            "result",
+            "conclusion",
+            "摘要",
+            "引言",
+            "方法",
+            "贡献",
+            "实验",
+            "结果",
+            "结论",
+        )
+        negative_markers = (
+            "references",
+            "reference",
+            "bibliography",
+            "acknowledgement",
+            "acknowledgment",
+            "致谢",
+            "参考文献",
+        )
+        score = 0.0
+        if any(marker in section_text for marker in positive_markers):
+            score += 0.18
+        if any(marker in section_text for marker in negative_markers):
+            score -= 0.35
+        return score
+
+    @staticmethod
+    def _select_top_evidence(
+        items: list[EvidenceItem],
+        *,
+        documents: list[LibraryDocument],
+        top_k: int,
+        ensure_coverage: bool,
+    ) -> list[EvidenceItem]:
+        if not ensure_coverage or len(documents) <= 1:
+            return items[:top_k]
+        selected: list[EvidenceItem] = []
+        selected_ids: set[str] = set()
+        for document in documents:
+            match = next(
+                (
+                    item
+                    for item in items
+                    if (item.document_id or item.source_id) == document.id and item.id not in selected_ids
+                ),
+                None,
+            )
+            if match is not None:
+                selected.append(match)
+                selected_ids.add(match.id)
+            if len(selected) >= top_k:
+                return selected
+        for item in items:
+            if item.id in selected_ids:
+                continue
+            selected.append(item)
+            selected_ids.add(item.id)
+            if len(selected) >= top_k:
+                break
+        return selected
 
     def _cache_key(
         self,

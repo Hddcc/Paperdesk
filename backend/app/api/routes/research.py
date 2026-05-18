@@ -14,6 +14,7 @@ from app.api.main import (
     get_research_repository,
     get_runtime_repository,
 )
+from app.config import Settings, get_settings
 from app.models import ResearchRequest, ResearchRunDetail, TaskSummary
 from app.repositories import ReportRepository, ResearchRepository, RuntimeRepository
 from app.services.research_orchestrator import ResearchOrchestrator
@@ -25,7 +26,14 @@ router = APIRouter(prefix="/research", tags=["research"])
 def stream_research(
     request: ResearchRequest,
     orchestrator: ResearchOrchestrator = Depends(get_research_orchestrator),
+    settings: Settings = Depends(get_settings),
 ) -> StreamingResponse:
+    if not settings.enable_research_task_agent:
+        raise HTTPException(
+            status_code=403,
+            detail="Research Task Agent is experimental and disabled. Set ENABLE_RESEARCH_TASK_AGENT=true to use this endpoint.",
+        )
+
     def event_iterator():
         try:
             for event in orchestrator.run_stream(request):
@@ -48,7 +56,14 @@ def stream_research(
 def resume_research_stream(
     run_id: str,
     orchestrator: ResearchOrchestrator = Depends(get_research_orchestrator),
+    settings: Settings = Depends(get_settings),
 ) -> StreamingResponse:
+    if not settings.enable_research_task_agent:
+        raise HTTPException(
+            status_code=403,
+            detail="Research Task Agent is experimental and disabled. Set ENABLE_RESEARCH_TASK_AGENT=true to use this endpoint.",
+        )
+
     def event_iterator():
         try:
             for event in orchestrator.resume_stream(run_id):

@@ -87,6 +87,7 @@ class ReflectionRuntime:
         api_key: str | None = None,
         base_url: str | None = None,
         timeout: float = 30.0,
+        persist_lessons_to_memory: bool = False,
     ) -> None:
         self.knowledge_agent_runtime = knowledge_agent_runtime
         self.runtime_repository = runtime_repository
@@ -95,6 +96,7 @@ class ReflectionRuntime:
         self.api_key = api_key
         self.base_url = base_url
         self.timeout = timeout
+        self.persist_lessons_to_memory = persist_lessons_to_memory
         self.message_bus = MessageBus(runtime_repository)
 
     def handle(
@@ -815,6 +817,7 @@ class ReflectionRuntime:
                 session_id=session.id,
                 trace_id=trace_id,
                 lessons=reflection.memory_lessons,
+                persist_long_term=self.persist_lessons_to_memory,
             )
 
     def _append_reflection_record(

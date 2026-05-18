@@ -302,13 +302,17 @@ def test_research_stream_and_report_persistence(client, monkeypatch):
     assert run_payload["task_artifacts"] == []
     assert run_payload["report"]["id"] == report_id
 
-    export_response = client.get(f"/api/export/{report_id}")
+    report_path = Path(os.environ["REPORT_DIR"]) / f"{report_id}.md"
+    assert not report_path.exists()
+
+    export_response = client.get(f"/api/reports/{report_id}/export.md")
     assert export_response.status_code == 200
     assert export_response.headers["content-disposition"] == (
         f'attachment; filename="{report_id}.md"'
     )
     assert "text/markdown" in export_response.headers["content-type"]
     assert export_response.text == report["markdown"]
+    assert report_path.exists()
 
     conn = sqlite3.connect(os.environ["SQLITE_PATH"])
     try:
@@ -424,6 +428,10 @@ def test_report_can_be_deleted_from_history(client, monkeypatch):
     report_id = report_event["report_id"]
 
     report_path = Path(os.environ["REPORT_DIR"]) / f"{report_id}.md"
+    assert not report_path.exists()
+
+    export_response = client.get(f"/api/reports/{report_id}/export.md")
+    assert export_response.status_code == 200
     assert report_path.exists()
 
     delete_response = client.delete(f"/api/reports/{report_id}")

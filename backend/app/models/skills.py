@@ -24,6 +24,81 @@ class ToolSource(str, Enum):
     MCP = "mcp"
 
 
+class ToolSpec(BaseModel):
+    """Machine-readable safety and routing metadata for an Agent tool.
+
+    ToolSpec is descriptive metadata, not an execution contract. Runtime code
+    still owns tool invocation, payload shape, preview/confirmation, and
+    verification behavior.
+
+    Field boundaries:
+    - scope separates knowledge, research, mcp, and experimental declarations.
+    - maturity and available_by_default only describe default exposure
+      eligibility; registry filters still decide whether a tool is listed.
+    - io_type, write_type, destructive, and requires_confirmation describe
+      safety posture for routing and auditing, not permission to bypass runtime
+      guardrails.
+    - feature_flag documents the configuration gate expected before exposing an
+      optional or external capability.
+    """
+
+    name: str
+    display_name: str = ""
+    description: str
+    scope: str = "experimental"
+    maturity: str = "stable"
+    operation_level: str
+    io_type: str
+    write_type: str = "none"
+    destructive: bool = False
+    requires_confirmation: bool = False
+    input_object_types: list[str] = Field(default_factory=list)
+    output_observation_type: str = "tool_observation"
+    requires_post_read_verification: bool = False
+    verification_tool: str | None = None
+    available_by_default: bool = False
+    feature_flag: str | None = None
+    source: str = "builtin"
+
+
+class ToolObservationError(BaseModel):
+    """Structured error payload for failed tool observations."""
+
+    code: str
+    message: str
+    recoverable: bool = True
+    suggested_next_action: str = "ask_user_to_clarify"
+
+
+class ToolVerification(BaseModel):
+    """Structured post-read verification status."""
+
+    performed: bool = False
+    success: bool = False
+    method: str = "none"
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolObservation(BaseModel):
+    """Normalized tool observation envelope used by Agent runtimes."""
+
+    tool_name: str
+    success: bool
+    operation_level: str
+    io_type: str
+    write_type: str = "none"
+    target_objects: list[dict[str, Any]] = Field(default_factory=list)
+    affected_objects: list[dict[str, Any]] = Field(default_factory=list)
+    counts: dict[str, Any] = Field(default_factory=dict)
+    data: dict[str, Any] = Field(default_factory=dict)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    requires_followup: bool = False
+    requires_confirmation: bool = False
+    verification: ToolVerification | None = None
+    error: ToolObservationError | None = None
+    message: str = ""
+
+
 class ToolDeclaration(BaseModel):
     """Stable declaration for a tool that can be selected by the main agent."""
 
@@ -35,6 +110,7 @@ class ToolDeclaration(BaseModel):
     output_schema: dict[str, Any] = Field(default_factory=dict)
     read_only: bool = True
     enabled: bool = True
+    spec: ToolSpec | None = None
 
 
 class SkillDefinition(BaseModel):

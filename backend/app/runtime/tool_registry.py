@@ -1,10 +1,16 @@
-"""Unified backend tool declarations for research capabilities."""
+"""Unified backend tool declarations for PaperDesk agent capabilities.
+
+ToolRegistry is a declaration and metadata catalog. It is intentionally not a
+tool execution center: Knowledge execution still lives in KnowledgeAgentRuntime,
+Research execution still lives in the research loop, and MCP declarations stay
+behind explicit experimental gates.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
-from app.models import ResearchActionType, ToolDeclaration, ToolSource
+from app.models import ResearchActionType, ToolDeclaration, ToolSource, ToolSpec
 from .mcp_adapter import (
     ReadOnlyMcpAdapter,
     default_read_only_academic_mcp_declarations,
@@ -12,13 +18,38 @@ from .mcp_adapter import (
 
 
 class ToolRegistry:
-    """Register builtin and external tool declarations behind one lookup API."""
+    """Register builtin and external tool declarations behind one lookup API.
 
-    def __init__(self, declarations: Iterable[ToolDeclaration] | None = None) -> None:
+    This registry describes capabilities and metadata; runtime classes still
+    execute tools. Scope and feature flags keep knowledge, research, MCP, and
+    experimental tools from leaking into the default Knowledge path.
+
+    Boundary vocabulary:
+    - scope="knowledge": stable PaperDesk Knowledge Chat tools.
+    - scope="research": Research Agent Loop tools, not default Knowledge tools.
+    - scope="mcp": external MCP declarations behind feature flags.
+    - scope="experimental": opt-in learning or future-facing capabilities.
+    - available_by_default means "eligible for default selection" only after
+      maturity, scope, source, and feature-flag filters also pass.
+    """
+
+    def __init__(
+        self,
+        declarations: Iterable[ToolDeclaration] | None = None,
+        *,
+        enable_experimental_mcp: bool = False,
+        enable_mcp_in_knowledge: bool = False,
+    ) -> None:
         self._tools: dict[str, ToolDeclaration] = {}
+        self.enable_experimental_mcp = enable_experimental_mcp
+        self.enable_mcp_in_knowledge = enable_mcp_in_knowledge
         for declaration in builtin_tool_declarations():
             self.register(declaration)
-        external_declarations = list(declarations) if declarations is not None else default_mcp_tool_declarations()
+        external_declarations = (
+            list(declarations)
+            if declarations is not None
+            else default_mcp_tool_declarations(enabled=enable_experimental_mcp)
+        )
         for declaration in external_declarations:
             self.register(declaration)
 
@@ -40,6 +71,47 @@ class ToolRegistry:
     def filter_enabled(self, tool_ids: Iterable[str]) -> list[ToolDeclaration]:
         return [tool for tool_id in tool_ids if (tool := self.get(tool_id)) is not None]
 
+    def list_default_candidates(
+        self,
+        *,
+        scope: str = "knowledge",
+        operation_levels: Iterable[str] | None = None,
+    ) -> list[ToolDeclaration]:
+        """Return default candidates only when structured metadata allows it.
+
+        This is the registry-side boundary for default tool exposure. It does
+        not execute tools and does not relax runtime guardrails: destructive or
+        write-capable tools still need their runtime preview, confirmation, and
+        verification paths when selected.
+        """
+
+        allowed_levels = set(operation_levels or [])
+        candidates: list[ToolDeclaration] = []
+        for tool in self.list_enabled():
+            spec = tool.spec
+            if spec is None:
+                continue
+            if not spec.available_by_default:
+                continue
+            if spec.maturity != "stable":
+                continue
+            if spec.scope == "experimental":
+                continue
+            if spec.source == ToolSource.MCP.value and not (
+                self.enable_experimental_mcp and (scope != "knowledge" or self.enable_mcp_in_knowledge)
+            ):
+                continue
+            if spec.source == ToolSource.MCP.value and (
+                spec.io_type != "read" or spec.operation_level != "query-level" or spec.destructive
+            ):
+                continue
+            if spec.scope not in {scope, "shared", "common"}:
+                continue
+            if allowed_levels and spec.operation_level not in allowed_levels:
+                continue
+            candidates.append(tool)
+        return candidates
+
     def label_for(self, tool_id: str, fallback: str | None = None) -> str:
         tool = self.get(tool_id)
         if tool is None:
@@ -48,7 +120,11 @@ class ToolRegistry:
 
 
 def builtin_tool_declarations() -> list[ToolDeclaration]:
-    """Declare current builtin research tools without changing execution logic."""
+    """Declare builtin Research Agent Loop tools.
+
+    These declarations are scoped as research capabilities and remain separate
+    from the Knowledge Chat default candidate set.
+    """
 
     common_output = {
         "type": "object",
@@ -179,7 +255,12 @@ def builtin_tool_declarations() -> list[ToolDeclaration]:
 
 
 def paperdesk_chat_tool_declarations(output_schema: dict) -> list[ToolDeclaration]:
-    """Expose chat-side PaperDesk tools to the LLM router without changing execution."""
+    """Expose Knowledge Chat tool metadata without changing execution.
+
+    These declarations describe read/write safety, object scope, confirmation
+    needs, and observation types for routing and auditing. Actual execution and
+    payload construction remain in KnowledgeAgentRuntime.
+    """
 
     def chat_tool(
         tool_id: str,
@@ -191,11 +272,39 @@ def paperdesk_chat_tool_declarations(output_schema: dict) -> list[ToolDeclaratio
         risk_level: str = "read_only",
         required_args: list[str] | None = None,
         scope_type: str = "none",
-        operation_level: str = "none",
+        operation_level: str = "query-level",
+        io_type: str | None = None,
+        write_type: str = "none",
+        target_type: str = "none",
+        destructive: bool = False,
         requires_confirmation: bool = False,
         requires_verification: bool = False,
         operation_type: str = "none",
+        scope: str = "knowledge",
+        output_observation_type: str = "tool_observation",
+        verification_tool: str | None = None,
+        available_by_default: bool = True,
     ) -> ToolDeclaration:
+        resolved_io_type = io_type or ("read" if read_only else "write")
+        input_object_types = [] if target_type == "none" else [target_type]
+        spec = ToolSpec(
+            name=tool_id,
+            display_name=name,
+            description=description,
+            scope=scope,
+            operation_level=operation_level,
+            io_type=resolved_io_type,
+            write_type=write_type,
+            destructive=destructive,
+            requires_confirmation=requires_confirmation,
+            input_object_types=input_object_types,
+            output_observation_type=output_observation_type,
+            requires_post_read_verification=requires_verification,
+            verification_tool=verification_tool,
+            available_by_default=available_by_default,
+            maturity="stable" if scope != "experimental" else "experimental",
+            source=ToolSource.BUILTIN.value,
+        )
         return ToolDeclaration(
             tool_id=tool_id,
             source=ToolSource.BUILTIN,
@@ -208,6 +317,10 @@ def paperdesk_chat_tool_declarations(output_schema: dict) -> list[ToolDeclaratio
                 "required_args": required_args or [],
                 "scope_type": scope_type,
                 "operation_level": operation_level,
+                "io_type": resolved_io_type,
+                "write_type": write_type,
+                "target_type": target_type,
+                "destructive": destructive,
                 "requires_confirmation": requires_confirmation,
                 "requires_verification": requires_verification,
                 "operation_type": operation_type,
@@ -219,6 +332,7 @@ def paperdesk_chat_tool_declarations(output_schema: dict) -> list[ToolDeclaratio
             output_schema=output_schema,
             read_only=read_only,
             enabled=True,
+            spec=spec,
         )
 
     return [
@@ -267,9 +381,13 @@ def paperdesk_chat_tool_declarations(output_schema: dict) -> list[ToolDeclaratio
             risk_level="safe_write",
             required_args=["category_name"],
             scope_type="single_entity",
-            operation_level="entity",
+            operation_level="entity-level",
+            write_type="create",
+            target_type="category",
             requires_verification=True,
+            verification_tool="library.explorer.category_stats",
             operation_type="create_entity",
+            output_observation_type="category_write_observation",
         ),
         chat_tool(
             "library.operator.assign_category",
@@ -280,9 +398,13 @@ def paperdesk_chat_tool_declarations(output_schema: dict) -> list[ToolDeclaratio
             risk_level="scoped_write",
             required_args=["category_name"],
             scope_type="documents|untagged|last_referenced",
-            operation_level="relation",
+            operation_level="relation-level",
+            write_type="append",
+            target_type="paper-category relation",
             requires_verification=True,
+            verification_tool="library.explorer.document_categories",
             operation_type="append_relation",
+            output_observation_type="category_relation_write_observation",
         ),
         chat_tool(
             "library.operator.rename_category",
@@ -293,9 +415,13 @@ def paperdesk_chat_tool_declarations(output_schema: dict) -> list[ToolDeclaratio
             risk_level="scoped_write",
             required_args=["source_category_name", "target_category_name"],
             scope_type="single_entity",
-            operation_level="entity",
+            operation_level="entity-level",
+            write_type="update",
+            target_type="category",
             requires_verification=True,
+            verification_tool="library.explorer.category_stats",
             operation_type="rename_or_merge_entity",
+            output_observation_type="category_write_observation",
         ),
         chat_tool(
             "library.operator.delete_unused_categories",
@@ -306,10 +432,15 @@ def paperdesk_chat_tool_declarations(output_schema: dict) -> list[ToolDeclaratio
             risk_level="destructive",
             required_args=["selector"],
             scope_type="category_entities_with_zero_documents",
-            operation_level="entity",
+            operation_level="entity-level",
+            write_type="delete",
+            target_type="category",
+            destructive=True,
             requires_confirmation=True,
             requires_verification=True,
+            verification_tool="library.explorer.category_stats",
             operation_type="delete_unused_category_entities",
+            output_observation_type="category_delete_observation",
         ),
         chat_tool(
             "library.operator.clear_categories",
@@ -320,34 +451,47 @@ def paperdesk_chat_tool_declarations(output_schema: dict) -> list[ToolDeclaratio
             risk_level="destructive|critical",
             required_args=["operation"],
             scope_type="explicit",
-            operation_level="relation|document|global",
+            operation_level="relation-level",
+            write_type="clear",
+            target_type="paper-category relation",
+            destructive=True,
             requires_confirmation=True,
             requires_verification=True,
+            verification_tool="library.explorer.document_categories",
             operation_type="remove_or_clear_relations",
+            output_observation_type="category_relation_clear_observation",
         ),
         chat_tool(
             "evidence.retriever.search",
             "Retrieve document evidence",
             "Retrieve local RAG evidence from ready papers for grounded document QA, summaries, comparisons, and reports.",
             {"question": "string", "document_ids": "array"},
+            target_type="paper",
+            output_observation_type="rag_search_observation",
         ),
         chat_tool(
             "evidence.retriever.search_by_category",
             "Retrieve evidence by tag/category",
             "Retrieve grouped RAG evidence for papers under one or more tag/category entities.",
             {"question": "string", "category_names": "array"},
+            target_type="category",
+            output_observation_type="rag_search_observation",
         ),
         chat_tool(
             "report.drafter.write",
             "Synthesize grounded answer",
             "Generate the final user-facing answer from resolved documents and retrieved evidence. Use only when the user actually asks for analysis, summary, comparison, or report output.",
             {"question": "string", "document_ids": "array"},
+            target_type="report",
+            output_observation_type="report_observation",
         ),
         chat_tool(
             "report.drafter.write_by_category",
             "Synthesize grouped tag/category answer",
             "Generate final grouped summaries or comparisons from tag/category evidence groups.",
             {"question": "string", "target_chars": "integer"},
+            target_type="report",
+            output_observation_type="report_observation",
         ),
         chat_tool(
             "memory.read",
@@ -363,14 +507,26 @@ def paperdesk_chat_tool_declarations(output_schema: dict) -> list[ToolDeclaratio
             read_only=False,
             risk_level="safe_write",
             scope_type="session_memory",
+            operation_level="content-level",
+            write_type="append",
+            target_type="memory",
             operation_type="memory_note",
+            scope="experimental",
+            available_by_default=False,
         ),
     ]
 
 
-def default_mcp_tool_declarations() -> list[ToolDeclaration]:
-    """Expose the first read-only academic MCP tools through the unified registry."""
+def default_mcp_tool_declarations(*, enabled: bool = False) -> list[ToolDeclaration]:
+    """Expose read-only academic MCP declarations when explicitly enabled.
 
+    MCP tools are normalized as experimental, read-only, and unavailable by
+    default. Enabling them registers declarations; it does not make them part of
+    the default Knowledge path unless the registry and caller both allow it.
+    """
+
+    if not enabled:
+        return []
     allowed_ids = {
         "mcp/academic_search",
         "mcp/academic_metadata",
@@ -390,6 +546,27 @@ def _tool(
     *,
     read_only: bool = True,
 ) -> ToolDeclaration:
+    """Build a Research tool declaration; this helper does not execute tools."""
+
+    io_type = "read" if read_only else "write"
+    spec = ToolSpec(
+        name=tool_id,
+        display_name=name,
+        description=description,
+        scope="research",
+        maturity="experimental",
+        operation_level="content-level" if not read_only else "query-level",
+        io_type=io_type,
+        write_type="export" if not read_only and action == ResearchActionType.FINALIZE_REPORT else ("none" if read_only else "update"),
+        destructive=False,
+        requires_confirmation=False,
+        input_object_types=[],
+        output_observation_type="research_tool_observation",
+        requires_post_read_verification=not read_only,
+        verification_tool=None,
+        available_by_default=True,
+        source=ToolSource.BUILTIN.value,
+    )
     return ToolDeclaration(
         tool_id=tool_id,
         source=ToolSource.BUILTIN,
@@ -406,4 +583,5 @@ def _tool(
         output_schema=output_schema,
         read_only=read_only,
         enabled=True,
+        spec=spec,
     )

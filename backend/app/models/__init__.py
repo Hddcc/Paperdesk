@@ -14,7 +14,15 @@ from .chat import (
     MemoryRecord,
     MemorySnapshot,
 )
-from .agent_orchestration import AgentModeDecision, AgentOrchestratorInput, AgentRunMode
+from .agent_orchestration import (
+    AgentModeDecision,
+    AgentOrchestratorInput,
+    AgentRunMode,
+    KnowledgeIntent,
+    KnowledgeRiskLevel,
+    KnowledgeRoute,
+    KnowledgeTargetObject,
+)
 from .enums import EvidenceSourceType, ResearchRunStatus, TodoTaskStatus
 from .library import (
     ChunkRecord,
@@ -83,7 +91,17 @@ from .runtime import (
     ToolPolicy,
     TraceEventType,
 )
-from .skills import SkillDefinition, SkillExecutionMode, SkillManifest, ToolDeclaration, ToolSource
+from .skills import (
+    SkillDefinition,
+    SkillExecutionMode,
+    SkillManifest,
+    ToolDeclaration,
+    ToolObservation,
+    ToolObservationError,
+    ToolSource,
+    ToolSpec,
+    ToolVerification,
+)
 from .task_routing import (
     ResearchArtifactProtocol,
     ResearchArtifactProtocolType,
@@ -100,6 +118,10 @@ __all__ = [
     "AgentModeDecision",
     "AgentOrchestratorInput",
     "AgentRunMode",
+    "KnowledgeIntent",
+    "KnowledgeRiskLevel",
+    "KnowledgeRoute",
+    "KnowledgeTargetObject",
     "ChunkRecord",
     "ChatAttachment",
     "ChatContextState",
@@ -187,8 +209,12 @@ __all__ = [
     "TaskNotification",
     "TaskTimeout",
     "ToolDeclaration",
+    "ToolObservation",
+    "ToolObservationError",
     "ToolPolicy",
     "ToolSource",
+    "ToolSpec",
+    "ToolVerification",
     "TraceEventType",
     "TodoTask",
     "TodoTaskStatus",

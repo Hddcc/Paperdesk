@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
 import shutil
@@ -31,6 +32,28 @@ from .context_assembler import ContextAssembler
 from .rag_service import RagService
 
 
+@dataclass(slots=True)
+class _LLMDiagnostic:
+    status: str
+    error_type: str | None = None
+    error: str | None = None
+    model: str | None = None
+    base_url_configured: bool = False
+    api_key_configured: bool = False
+    stream: bool = False
+
+    def as_trace_payload(self) -> dict:
+        return {
+            "status": self.status,
+            "error_type": self.error_type,
+            "error": self.error,
+            "model": self.model,
+            "base_url_configured": self.base_url_configured,
+            "api_key_configured": self.api_key_configured,
+            "stream": self.stream,
+        }
+
+
 class ChatService:
     """Persist chat sessions while mixing model replies with optional RAG context."""
 
@@ -46,6 +69,8 @@ class ChatService:
         knowledge_agent_runtime=None,
         knowledge_planner_runtime=None,
         reflection_runtime=None,
+        enable_research_from_knowledge: bool = False,
+        enable_auto_reflection: bool = False,
         model: str,
         api_key: str | None,
         base_url: str | None,
@@ -60,10 +85,18 @@ class ChatService:
         self.knowledge_agent_runtime = knowledge_agent_runtime
         self.knowledge_planner_runtime = knowledge_planner_runtime
         self.reflection_runtime = reflection_runtime
+        self.enable_research_from_knowledge = enable_research_from_knowledge
+        self.enable_auto_reflection = enable_auto_reflection
         self.model = model
         self.api_key = api_key
         self.base_url = base_url
         self.timeout = timeout
+        self.last_llm_diagnostic = _LLMDiagnostic(
+            status="not_called",
+            model=self.model,
+            base_url_configured=bool(self.base_url),
+            api_key_configured=bool(self.api_key),
+        )
 
     def list_sessions(self) -> list[ChatSession]:
         return self.chat_repository.list_sessions()
@@ -152,6 +185,7 @@ class ChatService:
         )
 
         document_ids = self._collect_document_ids(normalized_attachments, request.selected_document_ids)
+        research_redirect = self._research_task_redirect_message(request.content)
         warning: str | None = None
         retrieval_failure_message: str | None = None
         retrieval_status = "skipped"
@@ -172,24 +206,39 @@ class ChatService:
             session_id=session.id,
             selected_document_ids=document_ids,
         )
-        mode_decision = self._select_agent_mode(
-            session=session,
-            user_message=user_message,
-            request=request,
-            attachments=normalized_attachments,
-            selected_document_ids=document_ids,
-            memory_snapshot=memory_snapshot,
-        )
+        mode_decision = None
+        if research_redirect is None:
+            mode_decision = self._select_agent_mode(
+                session=session,
+                user_message=user_message,
+                request=request,
+                attachments=normalized_attachments,
+                selected_document_ids=document_ids,
+                memory_snapshot=memory_snapshot,
+            )
         agent_trace_id = mode_decision.trace_id if mode_decision is not None else None
 
-        agent_result = self._execute_agent_mode(
-            decision=mode_decision,
-            session=session,
-            request=request,
-            attachments=normalized_attachments,
-            selected_document_ids=document_ids,
-            history=history_before_current,
-        )
+        agent_result = None
+        if research_redirect is not None:
+            assistant_text = research_redirect
+            retrieval_status = "skipped"
+            action_status = "research_task_redirect"
+            context_state = self._assemble_context_state(
+                session=session,
+                history=history_before_current,
+                current_request=request,
+                attachments=normalized_attachments,
+                evidence_items=[],
+            )
+        else:
+            agent_result = self._execute_agent_mode(
+                decision=mode_decision,
+                session=session,
+                request=request,
+                attachments=normalized_attachments,
+                selected_document_ids=document_ids,
+                history=history_before_current,
+            )
 
         if agent_result is not None:
             agent_result = self._review_agent_result(
@@ -258,6 +307,7 @@ class ChatService:
             )
             citations = []
             action_status = "direct_completed"
+            self._append_direct_llm_trace(mode_decision)
             self._finish_agent_trace(
                 mode_decision,
                 action_status=action_status,
@@ -290,7 +340,7 @@ class ChatService:
                 retrieval_status = "skipped"
                 warning = "所选论文仍在入库处理中，本轮先按普通模型回答。"
 
-        if retrieval_failure_message and agent_result is None and not (
+        if retrieval_failure_message and research_redirect is None and agent_result is None and not (
             mode_decision is not None and mode_decision.mode == AgentRunMode.DIRECT
         ):
             assistant_text = retrieval_failure_message
@@ -311,7 +361,7 @@ class ChatService:
                     used_document_count=len(document_ids),
                     evidence_count=0,
                 )
-        elif agent_result is None and not (mode_decision is not None and mode_decision.mode == AgentRunMode.DIRECT):
+        elif research_redirect is None and agent_result is None and not (mode_decision is not None and mode_decision.mode == AgentRunMode.DIRECT):
             memory_snapshot = self.memory_service.build_snapshot(
                 session_id=session.id,
                 selected_document_ids=document_ids,
@@ -326,6 +376,7 @@ class ChatService:
                 delta_sink=delta_sink,
             )
             citations = self._collect_citations(evidence_items)
+            self._append_direct_llm_trace(mode_decision)
             if mode_decision is not None:
                 action_status = "fallback_completed"
                 self._finish_agent_trace(
@@ -372,11 +423,13 @@ class ChatService:
         selected_document_ids: list[str],
         result,
     ):
-        if decision is None or self.reflection_runtime is None:
+        if decision is None or self.reflection_runtime is None or not self.enable_auto_reflection:
             return result
         if result.action_status in {"confirmation_required", "needs_clarification", "validation_failed", "failed"}:
             return result
         if decision.mode not in {AgentRunMode.REACT, AgentRunMode.PLANNER}:
+            return result
+        if not self._should_run_reflection_review(result):
             return result
         try:
             return self.reflection_runtime.review_agent_result(
@@ -389,6 +442,12 @@ class ChatService:
             )
         except Exception:
             return result
+
+    @staticmethod
+    def _should_run_reflection_review(result) -> bool:
+        action_status = str(getattr(result, "action_status", "") or "")
+        retrieval_status = str(getattr(result, "retrieval_status", "") or "")
+        return action_status in {"failed", "validation_failed"} or retrieval_status == "degraded"
 
     def _generate_answer(
         self,
@@ -407,7 +466,11 @@ class ChatService:
             current_request=current_request,
             attachments=attachments,
             evidence_items=evidence_items,
-            knowledge_context_lines=self._knowledge_context_lines(),
+            knowledge_context_lines=self._knowledge_context_lines(
+                current_request=current_request,
+                attachments=attachments,
+                evidence_items=evidence_items,
+            ),
         )
         try:
             response = self._call_llm(
@@ -421,8 +484,19 @@ class ChatService:
             content=current_request.content,
             attachments=attachments,
             evidence_items=evidence_items,
+            model_available=bool(self.api_key),
         )
         return answer, context_state
+
+    def _append_direct_llm_trace(self, decision: AgentModeDecision | None) -> None:
+        if decision is None or self.agent_orchestrator is None:
+            return
+        self.agent_orchestrator.append_trace(
+            decision.trace_id,
+            status="direct_llm_call_finished",
+            message="Direct answer LLM call finished.",
+            payload=self.last_llm_diagnostic.as_trace_payload(),
+        )
 
     def _assemble_context_state(
         self,
@@ -439,7 +513,11 @@ class ChatService:
             current_request=current_request,
             attachments=attachments,
             evidence_items=evidence_items,
-            knowledge_context_lines=self._knowledge_context_lines(),
+            knowledge_context_lines=self._knowledge_context_lines(
+                current_request=current_request,
+                attachments=attachments,
+                evidence_items=evidence_items,
+            ),
         )
         return context_state
 
@@ -453,6 +531,9 @@ class ChatService:
         selected_document_ids: list[str],
         memory_snapshot: MemorySnapshot,
     ) -> AgentModeDecision | None:
+        # ChatService assembles the chat-side decision packet, then delegates
+        # routing to AgentOrchestrator. Product routing rules should live
+        # there, not in API handlers or frontend store state.
         if self.agent_orchestrator is None:
             return None
         conversation_referents: dict = {}
@@ -475,10 +556,11 @@ class ChatService:
             conversation_referents=conversation_referents,
             memory_snapshot=memory_snapshot,
             available_tools=self.agent_orchestrator.available_tools(),
-            available_skills=self.agent_orchestrator.available_skills(),
+            available_skills=[],
             runtime_context={
                 "has_pending_action": has_pending_action,
                 "session_title": session.title,
+                "entrypoint": "knowledge",
             },
         )
         try:
@@ -496,6 +578,9 @@ class ChatService:
         selected_document_ids: list[str],
         history: list[ChatMessage],
     ):
+        # Runtime dispatch remains the compatibility boundary: DIRECT falls
+        # back to normal answer generation, while REACT/PLANNER/REFLECTION are
+        # delegated to their existing runtimes without changing chat behavior.
         if self._has_pending_action(session.id):
             return self._run_knowledge_agent(
                 session=session,
@@ -603,6 +688,31 @@ class ChatService:
         except Exception:
             return None
 
+    def _research_task_redirect_message(self, content: str) -> str | None:
+        if self.enable_research_from_knowledge:
+            return None
+        if not self._looks_like_explicit_research_task_request(content):
+            return None
+        return (
+            "当前 Knowledge 页面保持在稳定论文库问答链路中，不会直接启动实验性的 Research Task Agent Loop。"
+            "我可以先帮你把这个需求整理成研究计划、检索问题和报告大纲；如果要运行后端研究任务，"
+            "请使用明确的 `/api/research/stream` 实验入口，并开启对应配置。"
+        )
+
+    @staticmethod
+    def _looks_like_explicit_research_task_request(content: str) -> bool:
+        normalized = content.casefold()
+        markers = (
+            "创建研究任务",
+            "按研究任务执行",
+            "分步骤完成研究计划",
+            "分步骤研究",
+            "研究任务 agent",
+            "research task",
+            "research agent",
+        )
+        return any(marker in normalized for marker in markers)
+
     def _has_pending_action(self, session_id: str) -> bool:
         if self.knowledge_agent_runtime is None:
             return False
@@ -611,13 +721,58 @@ class ChatService:
         except Exception:
             return False
 
-    def _knowledge_context_lines(self) -> list[str]:
+    def _knowledge_context_lines(
+        self,
+        *,
+        current_request: ChatMessageRequest | None = None,
+        attachments: list[ChatAttachment] | None = None,
+        evidence_items=None,
+    ) -> list[str]:
+        if current_request is not None:
+            has_library_attachment = any(
+                item.kind in {"uploaded_pdf", "library_document"}
+                for item in (attachments or [])
+            )
+            if not has_library_attachment and not evidence_items and not self._explicitly_requests_library_grounding(
+                current_request.content
+            ):
+                return []
         if self.knowledge_agent_runtime is None:
             return []
         try:
             return self.knowledge_agent_runtime.build_context_lines()
         except Exception:
             return []
+
+    @staticmethod
+    def _explicitly_requests_library_grounding(content: str) -> bool:
+        normalized = content.casefold()
+        return any(
+            marker in normalized
+            for marker in (
+                "论文库",
+                "文献库",
+                "库里",
+                "库内",
+                "上传论文",
+                "所选论文",
+                "选中的论文",
+                "这篇论文",
+                "这几篇论文",
+                "这些论文",
+                "根据论文",
+                "基于论文",
+                "根据文献",
+                "基于文献",
+                "文献证据",
+                "paper library",
+                "uploaded paper",
+                "selected paper",
+                "selected papers",
+                "based on the paper",
+                "based on these papers",
+            )
+        )
 
     @staticmethod
     def _selected_document_retrieval_failed_message() -> str:
@@ -635,6 +790,13 @@ class ChatService:
         delta_sink: Callable[[str], None] | None = None,
     ) -> str | None:
         if not self.api_key:
+            self.last_llm_diagnostic = _LLMDiagnostic(
+                status="not_configured",
+                model=self.model,
+                base_url_configured=bool(self.base_url),
+                api_key_configured=False,
+                stream=delta_sink is not None,
+            )
             return None
         try:
             client = OpenAI(
@@ -661,25 +823,64 @@ class ChatService:
                         continue
                     parts.append(text)
                     delta_sink(text)
-                return "".join(parts).strip() if parts else None
+                result = "".join(parts).strip() if parts else None
+                self.last_llm_diagnostic = _LLMDiagnostic(
+                    status="success" if result else "empty_response",
+                    model=self.model,
+                    base_url_configured=bool(self.base_url),
+                    api_key_configured=True,
+                    stream=True,
+                )
+                return result
             response = client.chat.completions.create(
                 model=self.model,
                 temperature=0.3,
                 messages=messages,
             )
         except Exception as exc:
+            self.last_llm_diagnostic = _LLMDiagnostic(
+                status="error",
+                error_type=type(exc).__name__,
+                error=str(exc)[:500],
+                model=self.model,
+                base_url_configured=bool(self.base_url),
+                api_key_configured=True,
+                stream=delta_sink is not None,
+            )
             if has_images:
                 raise RuntimeError("当前模型未开启图片理解或图片请求失败，请检查视觉模型配置。") from exc
             return None
 
         choices = getattr(response, "choices", None)
         if not choices:
+            self.last_llm_diagnostic = _LLMDiagnostic(
+                status="empty_response",
+                model=self.model,
+                base_url_configured=bool(self.base_url),
+                api_key_configured=True,
+                stream=False,
+            )
             return None
         message = getattr(choices[0], "message", None)
         if message is None:
+            self.last_llm_diagnostic = _LLMDiagnostic(
+                status="empty_response",
+                model=self.model,
+                base_url_configured=bool(self.base_url),
+                api_key_configured=True,
+                stream=False,
+            )
             return None
         content = getattr(message, "content", None)
-        return self._content_to_text(content, strip=True)
+        result = self._content_to_text(content, strip=True)
+        self.last_llm_diagnostic = _LLMDiagnostic(
+            status="success" if result else "empty_response",
+            model=self.model,
+            base_url_configured=bool(self.base_url),
+            api_key_configured=True,
+            stream=False,
+        )
+        return result
 
     @staticmethod
     def _content_to_text(content, *, strip: bool = False) -> str | None:
@@ -696,20 +897,44 @@ class ChatService:
             return "\n".join(parts).strip() if parts else None
         return None
 
-    def _build_template_answer(self, *, content: str, attachments: list[ChatAttachment], evidence_items) -> str:
-        lines = [f"我先根据你这轮的问题“{content.strip()}”整理一下。"]
+    def _build_template_answer(
+        self,
+        *,
+        content: str,
+        attachments: list[ChatAttachment],
+        evidence_items,
+        model_available: bool,
+    ) -> str:
         if evidence_items:
-            lines.append("我从当前附加论文里提取到这些可直接引用的证据：")
+            lines = [
+                f"针对你的问题“{content.strip()}”，我只能基于本轮已检索到的证据先给出证据层面的回答：",
+                "",
+            ]
             for index, item in enumerate(evidence_items[:3], start=1):
                 lines.append(f"{index}. {item.quote or item.snippet}（{item.citation_label}）")
-            lines.append("如果你愿意，我可以继续把这些证据整理成更完整的中文结论。")
-        elif any(item.kind == "image" for item in attachments):
-            lines.append("我已经收到图片附件。当前环境未返回正式模型结果，但消息和图片都已进入会话历史。")
-        elif any(item.kind in {"uploaded_pdf", "library_document"} for item in attachments):
-            lines.append("我已经收到论文上下文。如果论文仍在入库处理中，本轮会先按普通聊天理解你的问题。")
-        else:
-            lines.append("当前这轮没有附加知识库证据，我会按普通聊天方式先回答。")
-        return "\n".join(lines)
+            lines.append("")
+            lines.append("证据边界：以上内容只来自本轮检索片段；更完整的综述需要继续基于正文证据合成。")
+            return "\n".join(lines)
+
+        if any(item.kind in {"uploaded_pdf", "library_document"} for item in attachments):
+            return (
+                "本轮没有检索到可引用的论文正文证据，因此我不能只凭文件名、标题或元数据生成论文总结。"
+                "请确认论文已完成入库并且正文索引可用后再试。"
+            )
+
+        if any(item.kind == "image" for item in attachments):
+            return (
+                "我已收到图片附件，但当前模型没有返回可用结果。"
+                "请检查视觉模型配置或稍后重试。"
+            )
+
+        if not model_available:
+            return (
+                "当前没有可用的 LLM 配置，无法可靠回答这个通用问题。"
+                "请配置 LLM_API_KEY/LLM_BASE_URL 后重试；在模型可用时，普通问题会走直接问答链路。"
+            )
+
+        return "当前模型调用没有返回可用内容，请稍后重试。"
 
     def _normalize_attachments(
         self,

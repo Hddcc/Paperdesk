@@ -43,11 +43,13 @@ from app.services import (
     QueryTranslationService,
     RagService,
     ResearchContextAssembler,
+    ReportLifecycleService,
     ResearchWorkspaceService,
     TextChunker,
 )
 from app.services.research_orchestrator import ResearchOrchestrator
 from app.runtime import AgentOrchestrator, KnowledgeAgentRuntime, KnowledgePlannerRuntime, ReflectionRuntime
+from app.runtime import ToolRegistry
 from app.vectorstores import MilvusVectorStore
 
 logger = logging.getLogger(__name__)
@@ -182,6 +184,15 @@ def get_chat_repository():
 
 
 @lru_cache(maxsize=1)
+def get_report_lifecycle_service() -> ReportLifecycleService:
+    return ReportLifecycleService(
+        chat_repository=get_chat_repository(),
+        research_repository=get_research_repository(),
+        report_repository=get_report_repository(),
+    )
+
+
+@lru_cache(maxsize=1)
 def get_context_file_store() -> ContextFileStore:
     return ContextFileStore(get_settings())
 
@@ -193,7 +204,14 @@ def get_context_budget_service() -> ContextBudgetService:
 
 @lru_cache(maxsize=1)
 def get_context_compaction_service() -> ContextCompactionService:
-    return ContextCompactionService(get_settings(), get_context_file_store())
+    settings = get_settings()
+    return ContextCompactionService(
+        settings,
+        get_context_file_store(),
+        model=settings.effective_llm_model,
+        api_key=settings.effective_llm_api_key,
+        base_url=settings.effective_llm_base_url,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -317,6 +335,8 @@ def get_chat_service() -> ChatService:
         knowledge_agent_runtime=get_knowledge_agent_runtime(),
         knowledge_planner_runtime=get_knowledge_planner_runtime(),
         reflection_runtime=get_reflection_runtime(),
+        enable_research_from_knowledge=settings.enable_research_from_knowledge,
+        enable_auto_reflection=settings.enable_auto_reflection,
         model=settings.effective_llm_model,
         api_key=settings.effective_llm_api_key,
         base_url=settings.effective_llm_base_url,
@@ -337,6 +357,7 @@ def get_knowledge_agent_runtime() -> KnowledgeAgentRuntime:
         model=settings.effective_llm_model,
         api_key=settings.effective_llm_api_key,
         base_url=settings.effective_llm_base_url,
+        enable_subagent_execution=settings.enable_subagent_execution,
     )
 
 
@@ -346,6 +367,13 @@ def get_agent_orchestrator() -> AgentOrchestrator:
     return AgentOrchestrator(
         research_repository=get_research_repository(),
         runtime_repository=get_runtime_repository(),
+        tool_registry=ToolRegistry(
+            enable_experimental_mcp=settings.enable_experimental_mcp,
+            enable_mcp_in_knowledge=settings.enable_mcp_in_knowledge,
+        ),
+        enable_optional_planner=True,
+        enable_auto_reflection=settings.enable_auto_reflection,
+        enable_mcp_in_knowledge=settings.enable_mcp_in_knowledge,
         model=settings.effective_llm_model,
         api_key=settings.effective_llm_api_key,
         base_url=settings.effective_llm_base_url,
@@ -370,6 +398,7 @@ def get_reflection_runtime() -> ReflectionRuntime:
         model=settings.effective_llm_model,
         api_key=settings.effective_llm_api_key,
         base_url=settings.effective_llm_base_url,
+        persist_lessons_to_memory=settings.enable_auto_reflection,
     )
 
 
@@ -385,6 +414,7 @@ def get_paper_selection_agent() -> PaperSelectionAgent:
 
 @lru_cache(maxsize=1)
 def get_research_orchestrator() -> ResearchOrchestrator:
+    settings = get_settings()
     return ResearchOrchestrator(
         research_repository=get_research_repository(),
         paper_repository=get_paper_repository(),
@@ -403,6 +433,8 @@ def get_research_orchestrator() -> ResearchOrchestrator:
         export_service=get_export_service(),
         workspace_service=get_research_workspace_service(),
         context_assembler=get_research_context_assembler(),
+        enable_experimental_mcp=settings.enable_experimental_mcp,
+        enable_subagent_execution=settings.enable_subagent_execution,
     )
 
 

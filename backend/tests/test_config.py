@@ -67,6 +67,12 @@ def test_settings_read_env_file_and_prepare_runtime_paths(sandbox_dir) -> None:
     assert settings.milvus_collection == "paperdesk_collection"
     assert settings.openalex_base_url == "https://openalex.example/api"
     assert settings.arxiv_base_url == "https://arxiv.example/api"
+    assert settings.enable_research_task_agent is False
+    assert settings.enable_research_from_knowledge is False
+    assert settings.enable_experimental_mcp is False
+    assert settings.enable_mcp_in_knowledge is False
+    assert settings.enable_subagent_execution is False
+    assert settings.enable_auto_reflection is False
     assert settings.get_cors_origins_list() == [
         "http://localhost:5173",
         "http://127.0.0.1:5173",

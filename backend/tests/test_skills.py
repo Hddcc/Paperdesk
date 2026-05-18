@@ -73,7 +73,7 @@ def test_disabled_skill_is_not_a_candidate(sandbox_dir):
 
 def test_skill_available_tools_resolve_to_tool_declarations():
     skill_registry = SkillRegistry()
-    tool_registry = ToolRegistry()
+    tool_registry = ToolRegistry(enable_experimental_mcp=True)
     manifest = skill_registry.default_for(ResearchTaskType.RESEARCH_BRIEF_TASK)
     assert manifest is not None
     skill = skill_registry.load_definition(manifest.skill_id)
@@ -89,7 +89,7 @@ def test_skill_available_tools_resolve_to_tool_declarations():
 
 
 def test_tool_registry_declarations_are_serializable():
-    registry = ToolRegistry()
+    registry = ToolRegistry(enable_experimental_mcp=True)
 
     tools = registry.list_enabled()
 
@@ -104,6 +104,64 @@ def test_tool_registry_declarations_are_serializable():
         assert payload["enabled"] is True
         assert isinstance(payload["input_schema"], dict)
         assert isinstance(payload["output_schema"], dict)
+        assert payload["spec"] is not None
+        assert payload["spec"]["name"] == payload["tool_id"]
+        assert payload["spec"]["operation_level"] in {"query-level", "entity-level", "relation-level", "content-level"}
+        assert payload["spec"]["io_type"] in {"read", "write"}
+
+
+def test_knowledge_default_tool_candidates_are_metadata_filtered():
+    registry = ToolRegistry()
+
+    candidates = registry.list_default_candidates(scope="knowledge")
+    candidate_ids = {tool.tool_id for tool in candidates}
+
+    assert "library.operator.delete_unused_categories" in candidate_ids
+    assert "library.operator.clear_categories" in candidate_ids
+    assert "memory.write" not in candidate_ids
+    assert all(not tool.tool_id.startswith("mcp/") for tool in candidates)
+    assert all(tool.spec is not None for tool in candidates)
+    assert all(tool.spec.available_by_default for tool in candidates if tool.spec is not None)
+    assert all(tool.spec.scope != "experimental" for tool in candidates if tool.spec is not None)
+    assert all(tool.spec.maturity == "stable" for tool in candidates if tool.spec is not None)
+
+
+def test_knowledge_default_tool_candidates_do_not_include_non_knowledge_scopes():
+    registry = ToolRegistry(enable_experimental_mcp=True)
+
+    candidates = registry.list_default_candidates(scope="knowledge")
+    candidate_scopes = {tool.spec.scope for tool in candidates if tool.spec is not None}
+
+    assert "research" not in candidate_scopes
+    assert "mcp" not in candidate_scopes
+    assert "experimental" not in candidate_scopes
+
+
+def test_knowledge_write_tool_specs_distinguish_entity_and_relation_operations():
+    registry = ToolRegistry()
+
+    delete_unused = registry.get("library.operator.delete_unused_categories")
+    clear_categories = registry.get("library.operator.clear_categories")
+    list_by_category = registry.get("library.explorer.find_documents")
+
+    assert delete_unused is not None and delete_unused.spec is not None
+    assert delete_unused.spec.operation_level == "entity-level"
+    assert delete_unused.spec.io_type == "write"
+    assert delete_unused.spec.write_type == "delete"
+    assert delete_unused.spec.destructive is True
+    assert delete_unused.spec.requires_confirmation is True
+    assert delete_unused.spec.requires_post_read_verification is True
+
+    assert clear_categories is not None and clear_categories.spec is not None
+    assert clear_categories.spec.operation_level == "relation-level"
+    assert clear_categories.spec.write_type == "clear"
+    assert clear_categories.spec.input_object_types == ["paper-category relation"]
+
+    assert list_by_category is not None and list_by_category.spec is not None
+    assert list_by_category.spec.operation_level == "query-level"
+    assert list_by_category.spec.io_type == "read"
+    assert list_by_category.spec.destructive is False
+    assert list_by_category.spec.requires_confirmation is False
 
 
 def test_read_only_mcp_adapter_accepts_only_whitelisted_read_only_tools():
@@ -154,8 +212,14 @@ def test_mcp_absence_keeps_builtin_tools_available():
     assert registry.get("search_local/vector_recall_default") is not None
 
 
-def test_default_tool_registry_exposes_read_only_academic_mcp_tools():
+def test_default_tool_registry_keeps_mcp_disabled_by_default():
     registry = ToolRegistry()
+
+    assert registry.get("mcp/academic_search") is None
+
+
+def test_enabled_tool_registry_exposes_read_only_academic_mcp_tools():
+    registry = ToolRegistry(enable_experimental_mcp=True)
 
     academic_search = registry.get("mcp/academic_search")
 
@@ -163,3 +227,8 @@ def test_default_tool_registry_exposes_read_only_academic_mcp_tools():
     assert academic_search.source == ToolSource.MCP
     assert academic_search.read_only is True
     assert academic_search.input_schema["action_type"] == "search_online"
+    assert academic_search.spec is not None
+    assert academic_search.spec.io_type == "read"
+    assert academic_search.spec.operation_level == "query-level"
+    assert academic_search.spec.maturity == "experimental"
+    assert academic_search.spec.available_by_default is False
