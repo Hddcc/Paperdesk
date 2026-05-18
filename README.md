@@ -221,6 +221,8 @@ uv run pytest -q
 
 ## 3. 项目结构
 
+### 3.1 目录结构
+
 ```text
 paperdesk/
 ├─ README.md                     # 项目首页说明
@@ -247,6 +249,35 @@ paperdesk/
 ```
 
 如果你准备按代码阅读项目，比较推荐的顺序是：先看 `frontend/src/views` 了解页面入口，再看 `backend/app/api/main.py` 了解后端装配，然后继续顺着 `services`、`runtime`、`repositories` 往下读。
+
+### 3.2 运行结构视角
+
+PaperDesk 的运行架构大致分为四层：应用接入层承接用户操作和 API 请求，Agent Runtime 层负责意图判断与工具调度，论文库能力层提供检索、分类和报告等业务能力，基础设施与扩展层保存数据并接入模型能力。
+
+<img src="docs/images/image-20260518183318980.png" alt="PaperDesk 运行结构视角" width="720" />
+
+```text
+应用接入层
+Vue Workbench / FastAPI
+Knowledge / Library / PDF Reader / Reports
+Chat API / Upload API / Library API / Report API / Streaming
+承接用户操作、页面入口和前后端通信。
+
+Agent Runtime 层
+Chat Service / Agent Orchestrator / Knowledge Runtime
+意图识别 / 路由决策 / 作用范围解析 / 工具调度 / 写操作确认 / Trace
+判断普通问答、论文问答和写操作，并决定是否调用工具或进入确认流程。
+
+论文库能力层
+Paper Tools / RAG Tools / Category Tools / Report Tools / Context
+PDF 解析 / Chunk 切分 / 证据检索 / 标签关系操作 / 报告保存 / 上下文压缩
+把 Agent 的动作落到论文库、检索、标签分类和报告能力上。
+
+基础设施与扩展层
+SQLite / Milvus / Local Files / LLM / Embedding / Research Runtime
+论文记录 / 分类标签 / 会话 / 报告 / PDF / 向量索引 / MCP / Skills / Subagent / Planner / Reflection
+保存本地数据，提供模型能力，并保留可选研究型 Agent 扩展。
+```
 
 ## 4. Agent 架构介绍
 
