@@ -254,6 +254,12 @@ def test_direct_category_replace_empty_list_only_clears_one_document(client, mon
         f"/api/documents/{first_document['id']}/categories",
         json={"category_ids": []},
     )
+    assert clear_one.status_code == 400
+
+    clear_one = client.put(
+        f"/api/documents/{first_document['id']}/categories",
+        json={"category_ids": [], "confirm_clear": True},
+    )
     assert clear_one.status_code == 200
 
     documents = client.get("/api/documents").json()

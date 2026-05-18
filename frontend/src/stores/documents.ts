@@ -160,7 +160,11 @@ export const useDocumentStore = defineStore("documents", () => {
     }
   }
 
-  async function saveDocumentCategories(documentId: string, categoryIds: string[]) {
+  async function saveDocumentCategories(
+    documentId: string,
+    categoryIds: string[],
+    options: { confirmClear?: boolean } = {}
+  ) {
     const previousDocuments = documents.value;
     const selectedCategories = categories.value.filter((category) => categoryIds.includes(category.id));
     documents.value = documents.value.map((document) =>
@@ -174,7 +178,8 @@ export const useDocumentStore = defineStore("documents", () => {
     error.value = "";
     try {
       const updated = await assignDocumentCategories(documentId, {
-        category_ids: categoryIds
+        category_ids: categoryIds,
+        confirm_clear: options.confirmClear ?? false
       });
       upsertDocument(updated);
     } catch (err) {

@@ -134,6 +134,7 @@ export interface DocumentCategoryUpdateRequest {
 
 export interface DocumentCategoryAssignmentRequest {
   category_ids: string[];
+  confirm_clear?: boolean;
 }
 
 export interface EvidenceItem {
@@ -177,10 +178,17 @@ export interface ResearchReport {
   report_id?: string | null;
   topic: string;
   markdown: string;
+  lifecycle_status?: "chat_answer" | "report_draft" | "saved_report" | "exported_markdown";
+  source?: "knowledge_answer" | "research_task" | "manual_save";
+  source_message_id?: string | null;
+  paper_ids?: string[];
+  category_ids?: string[];
+  evidence_ids?: string[];
   task_summaries: TaskSummary[];
   citations: string[];
   citation_items?: CitationRecord[];
   created_at: string;
+  updated_at?: string | null;
 }
 
 export interface ReportListItem {

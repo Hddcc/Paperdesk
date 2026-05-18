@@ -36,6 +36,7 @@ class DocumentCategoryAssignmentRequest(BaseModel):
     """Replace the category set for one document."""
 
     category_ids: list[str] = Field(default_factory=list)
+    confirm_clear: bool = False
 
 
 class LibraryDocument(BaseModel):

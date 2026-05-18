@@ -141,7 +141,7 @@
               >
                 <Tags :size="17" />
               </button>
-              <button class="icon-danger-button" title="删除" aria-label="删除论文" @click="store.removeDocument(document.id)">
+              <button class="icon-danger-button" title="删除" aria-label="删除论文" @click="removeDocumentWithConfirmation(document)">
                 <Trash2 :size="17" />
               </button>
             </div>
@@ -429,8 +429,24 @@ async function saveCategoryDialog() {
   if (!categoryDialogDocument.value) {
     return;
   }
-  await store.saveDocumentCategories(categoryDialogDocument.value.id, draftCategoryIds.value);
+  const clearsExistingCategories = categoryDialogDocument.value.categories.length > 0 && draftCategoryIds.value.length === 0;
+  if (
+    clearsExistingCategories &&
+    !window.confirm("这是清空所有分类，需要确认。清空后会移除这篇论文的所有分类关系，分类本身不会被删除。是否确认清空？")
+  ) {
+    return;
+  }
+  await store.saveDocumentCategories(categoryDialogDocument.value.id, draftCategoryIds.value, {
+    confirmClear: clearsExistingCategories
+  });
   closeCategoryDialog();
+}
+
+async function removeDocumentWithConfirmation(document: LibraryDocument) {
+  if (!window.confirm("删除后会移除论文记录、PDF 文件和向量索引，是否确认删除？")) {
+    return;
+  }
+  await store.removeDocument(document.id);
 }
 
 function categoryCount(categoryId: string) {

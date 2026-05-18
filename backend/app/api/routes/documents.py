@@ -71,6 +71,12 @@ def assign_document_categories(
     library_repository: LibraryRepository = Depends(get_library_repository),
     category_repository: CategoryRepository = Depends(get_category_repository),
 ) -> dict:
+    current_categories = category_repository.list_document_categories(document_id)
+    if current_categories and not payload.category_ids and not payload.confirm_clear:
+        raise HTTPException(
+            status_code=400,
+            detail="Clearing all categories for this document requires confirm_clear=true.",
+        )
     categories = category_repository.replace_document_categories(document_id, payload.category_ids)
     if categories is None:
         raise HTTPException(status_code=404, detail="Document not found")
