@@ -25,3 +25,6 @@ __pycache__/
 .claude/CLAUDE.md
 .claude/runtime/
 .claude/sessions/
+
+judge/eval_run_*/
+judge/__pycache__/
