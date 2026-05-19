@@ -328,6 +328,7 @@ def get_chat_service() -> ChatService:
     return ChatService(
         chat_repository=get_chat_repository(),
         library_repository=get_library_repository(),
+        category_repository=get_category_repository(),
         rag_service=get_rag_service(),
         memory_service=get_chat_memory_service(),
         context_assembler=get_context_assembler(),

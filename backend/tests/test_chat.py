@@ -10,6 +10,10 @@ from app.services.rag_service import RetrievalResult
 from app.models import EvidenceQuality
 from app.models import EvidenceItem
 from app.models import AgentRunMode
+from app.models import AgentModeDecision
+from app.models import KnowledgeIntent
+from app.models import KnowledgeRiskLevel
+from app.models import KnowledgeRoute
 from app.api.main import get_chat_service, get_knowledge_agent_runtime, get_repository
 from app.models import ChunkRecord
 from app.models import LibraryDocument
@@ -333,6 +337,603 @@ def test_direct_answer_success_uses_llm_output_for_general_question(client, monk
     payloads = _trace_payloads(assistant["agent_trace_id"], "direct_llm_call_finished")
     assert payloads
     assert payloads[-1]["status"] == "success"
+
+
+def test_general_chat_fast_path_skips_router_and_uses_direct_llm(client, monkeypatch):
+    answer = "Paris, France."
+    _install_fake_openai(monkeypatch, "app.services.chat_service.OpenAI", content=answer)
+    service = get_chat_service()
+    service.api_key = "direct-fast-path-key"
+    service.base_url = "http://fake-llm"
+
+    def fail_select_mode(self, payload):
+        _ = self, payload
+        raise AssertionError("router should be skipped for pure general chat")
+
+    monkeypatch.setattr(AgentOrchestrator, "select_mode", fail_select_mode)
+    session = client.post("/api/chat/sessions", json={"title": "general fast path"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "What is the capital of France? Answer with the city and country.",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["content"] == answer
+    assert assistant["action_status"] == "direct_completed"
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    selected = next(trace for trace in traces if trace.status == "agent_mode_selected")
+    assert selected.payload["decision_source"] == "local_fast_path"
+    assert selected.payload["mode"] == "DIRECT"
+    assert any(trace.status == "direct_llm_call_finished" for trace in traces)
+    assert all(trace.status != "react_action_planned" for trace in traces)
+
+
+def test_fast_path_private_classifiers_cover_chinese_library_reads(client):
+    service = get_chat_service()
+
+    assert service._is_library_count_read("\u6211\u672c\u5730\u8bba\u6587\u5e93\u91cc\u6709\u51e0\u7bc7\u8bba\u6587\uff1f")
+    assert service._has_library_or_paper_reference("\u6211\u672c\u5730\u8bba\u6587\u5e93\u91cc\u6709\u51e0\u7bc7\u8bba\u6587\uff1f")
+    assert not service._can_skip_router_for_general_chat(
+        content="\u6211\u672c\u5730\u8bba\u6587\u5e93\u91cc\u6709\u51e0\u7bc7\u8bba\u6587\uff1f",
+        selected_document_ids=[],
+        attachments=[],
+    )
+
+
+def test_selected_document_paper_question_does_not_use_general_chat_fast_path(client, monkeypatch):
+    document = _create_ready_document("doc-fast-path-selected", "SelectedFastPath.pdf")
+    called = {"router": False}
+
+    def fake_select_mode(self, payload):
+        called["router"] = True
+        trace_id = self._begin_trace(payload)
+        return AgentModeDecision(
+            mode=AgentRunMode.REACT,
+            route=KnowledgeRoute.TOOL_ACTION,
+            intent=KnowledgeIntent.PAPER_QA,
+            reason="selected paper question requires knowledge runtime",
+            confidence=0.9,
+            target_runtime="KnowledgeAgentRuntime",
+            requires_tools=True,
+            requires_rag=True,
+            risk_level=KnowledgeRiskLevel.LOW,
+            trace_id=trace_id,
+        )
+
+    def fake_execute_agent_mode(self, **kwargs):
+        return KnowledgeAgentResult(
+            content="grounded selected-paper answer",
+            action_status="completed",
+            retrieval_status="ready",
+            used_document_ids=[document.id],
+            agent_trace_id=kwargs["decision"].trace_id,
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "select_mode", fake_select_mode)
+    monkeypatch.setattr(type(get_chat_service()), "_execute_agent_mode", fake_execute_agent_mode)
+    session = client.post("/api/chat/sessions", json={"title": "selected not direct"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "\u8fd9\u7bc7\u8bba\u6587\u8bb2\u4ec0\u4e48\uff1f",
+            "attachments": [],
+            "selected_document_ids": [document.id],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert called["router"] is True
+    assert assistant["action_status"] == "completed"
+    assert assistant["content"] == "grounded selected-paper answer"
+
+
+def test_library_grounded_question_does_not_use_general_chat_fast_path(client, monkeypatch):
+    called = {"router": False}
+
+    def fake_select_mode(self, payload):
+        called["router"] = True
+        trace_id = self._begin_trace(payload)
+        return AgentModeDecision(
+            mode=AgentRunMode.REACT,
+            route=KnowledgeRoute.TOOL_ACTION,
+            intent=KnowledgeIntent.PAPER_QA,
+            reason="library-grounded question requires router",
+            confidence=0.9,
+            target_runtime="KnowledgeAgentRuntime",
+            requires_tools=True,
+            requires_rag=True,
+            risk_level=KnowledgeRiskLevel.LOW,
+            trace_id=trace_id,
+        )
+
+    def fake_execute_agent_mode(self, **kwargs):
+        return KnowledgeAgentResult(
+            content="library-grounded answer",
+            action_status="completed",
+            retrieval_status="ready",
+            agent_trace_id=kwargs["decision"].trace_id,
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "select_mode", fake_select_mode)
+    monkeypatch.setattr(type(get_chat_service()), "_execute_agent_mode", fake_execute_agent_mode)
+    session = client.post("/api/chat/sessions", json={"title": "library grounded"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "\u6839\u636e\u6211\u7684\u8bba\u6587\u5e93\uff0c\u4f4e\u5149\u7167\u589e\u5f3a\u65b9\u5411\u6709\u54ea\u4e9b\u65b9\u6cd5\uff1f",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert called["router"] is True
+    assert response.json()["assistant_message"]["content"] == "library-grounded answer"
+
+
+def test_metadata_read_fast_path_uses_template_without_react(client, monkeypatch):
+    document = _create_ready_document("doc-fast-path-meta", "MetaFastPath.pdf", title="Meta Fast Path Paper")
+    get_repository().chunk.replace_document_chunks(
+        document.id,
+        [
+            ChunkRecord(
+                id="chunk-fast-path-meta-1",
+                document_id=document.id,
+                page_number=1,
+                chunk_index=0,
+                text="metadata chunk",
+                metadata={"authors": ["Alice Zhang", "Bob Li"]},
+            )
+        ],
+    )
+
+    def fail_select_mode(self, payload):
+        _ = self, payload
+        raise AssertionError("router should be skipped for pure metadata read")
+
+    monkeypatch.setattr(AgentOrchestrator, "select_mode", fail_select_mode)
+    session = client.post("/api/chat/sessions", json={"title": "metadata fast path"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "\u8fd9\u7bc7\u8bba\u6587\u7684\u6807\u9898\u3001\u4f5c\u8005\u548c\u9875\u6570\u662f\u591a\u5c11\uff1f",
+            "attachments": [],
+            "selected_document_ids": [document.id],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "completed"
+    assert "Meta Fast Path Paper" in assistant["content"]
+    assert "\u4f5c\u8005\uff1aAlice Zhang\u3001Bob Li" in assistant["content"]
+    assert "\u9875\u6570\uff1a10" in assistant["content"]
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert any(trace.status == "agent_mode_selected" and trace.payload["decision_source"] == "local_fast_path" for trace in traces)
+    assert any(
+        trace.status == "tool_call_log"
+        and trace.payload["tool_name"] == "library.explorer.document_metadata"
+        and trace.payload["io_type"] == "read"
+        and trace.payload["write_type"] == "none"
+        for trace in traces
+    )
+    assert any(
+        trace.status == "deterministic_observation"
+        and trace.payload["tool"] == "library.explorer.document_metadata"
+        for trace in traces
+    )
+    assert all(trace.status != "react_action_planned" for trace in traces)
+
+
+def test_category_stats_fast_path_uses_template_without_react(client, monkeypatch):
+    doc_a = _create_ready_document("doc-fast-path-tag-a", "TagA.pdf", title="Tagged A")
+    doc_b = _create_ready_document("doc-fast-path-tag-b", "TagB.pdf", title="Tagged B")
+    tag = get_repository().category.create_category("\u7efc\u8ff0", "#0f5fb8")
+    get_repository().category.replace_document_categories(doc_a.id, [tag.id])
+    get_repository().category.replace_document_categories(doc_b.id, [tag.id])
+
+    def fail_select_mode(self, payload):
+        _ = self, payload
+        raise AssertionError("router should be skipped for pure category stats read")
+
+    monkeypatch.setattr(AgentOrchestrator, "select_mode", fail_select_mode)
+    session = client.post("/api/chat/sessions", json={"title": "category fast path"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "\u5f53\u524d\u6709\u54ea\u4e9b\u6807\u7b7e\u5206\u7c7b\uff1f\u8bf7\u7ed9\u51fa\u6bcf\u4e2a\u6807\u7b7e\u6570\u91cf\u3002",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "completed"
+    assert "\u7efc\u8ff0" in assistant["content"]
+    assert "2 \u7bc7" in assistant["content"]
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert any(trace.status == "agent_mode_selected" and trace.payload["decision_source"] == "local_fast_path" for trace in traces)
+    assert any(
+        trace.status == "tool_call_log"
+        and trace.payload["tool_name"] == "library.explorer.category_stats"
+        and trace.payload["io_type"] == "read"
+        and trace.payload["write_type"] == "none"
+        for trace in traces
+    )
+    assert any(
+        trace.status == "deterministic_observation"
+        and trace.payload["tool"] == "library.explorer.category_stats"
+        for trace in traces
+    )
+    assert all(trace.status != "react_action_planned" for trace in traces)
+
+
+def test_category_membership_fast_path_records_find_documents_trace(client, monkeypatch):
+    document = _create_ready_document("doc-fast-path-baseline", "BaselinePaper.pdf", title="Baseline Paper")
+    tag = get_repository().category.create_category("baseline", "#047c71")
+    get_repository().category.replace_document_categories(document.id, [tag.id])
+
+    def fail_select_mode(self, payload):
+        _ = self, payload
+        raise AssertionError("router should be skipped for pure category membership read")
+
+    monkeypatch.setattr(AgentOrchestrator, "select_mode", fail_select_mode)
+    session = client.post("/api/chat/sessions", json={"title": "category membership fast path"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "baseline \u6807\u7b7e\u4e0b\u6709\u54ea\u4e9b\u8bba\u6587\uff1f",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "completed"
+    assert "BaselinePaper.pdf" in assistant["content"]
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert any(
+        trace.status == "tool_call_log"
+        and trace.payload["tool_name"] == "library.explorer.find_documents"
+        and trace.payload["io_type"] == "read"
+        and trace.payload["write_type"] == "none"
+        for trace in traces
+    )
+    assert all(trace.status != "react_action_planned" for trace in traces)
+
+
+def test_category_read_then_explain_is_not_deterministic_fast_path(client, monkeypatch):
+    document = _create_ready_document("doc-mixed-baseline", "MixedBaseline.pdf", title="Mixed Baseline")
+    tag = get_repository().category.create_category("baseline", "#047c71")
+    get_repository().category.replace_document_categories(document.id, [tag.id])
+    called = {"router": False}
+
+    def fake_select_mode(self, payload):
+        called["router"] = True
+        trace_id = self._begin_trace(payload)
+        return AgentModeDecision(
+            mode=AgentRunMode.REACT,
+            route=KnowledgeRoute.TOOL_ACTION,
+            intent=KnowledgeIntent.PAPER_QA,
+            reason="mixed category read and explanation must use agent chain",
+            confidence=0.9,
+            target_runtime="KnowledgeAgentRuntime",
+            requires_tools=True,
+            risk_level=KnowledgeRiskLevel.LOW,
+            trace_id=trace_id,
+        )
+
+    def fake_execute_agent_mode(self, **kwargs):
+        return KnowledgeAgentResult(
+            content="category list plus baseline explanation",
+            action_status="completed",
+            retrieval_status="skipped",
+            used_document_ids=[document.id],
+            agent_trace_id=kwargs["decision"].trace_id,
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "select_mode", fake_select_mode)
+    monkeypatch.setattr(type(get_chat_service()), "_execute_agent_mode", fake_execute_agent_mode)
+    session = client.post("/api/chat/sessions", json={"title": "mixed category explain"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "\u5217\u51fa baseline \u6807\u7b7e\u4e0b\u8bba\u6587\u6807\u9898\uff0c\u7136\u540e\u89e3\u91ca baseline \u662f\u4ec0\u4e48\u610f\u601d\u3002",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert called["router"] is True
+    assert assistant["content"] == "category list plus baseline explanation"
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert all(trace.status != "deterministic_observation" for trace in traces)
+
+
+def test_metadata_read_then_explain_is_not_deterministic_fast_path(client, monkeypatch):
+    document = _create_ready_document("doc-mixed-meta", "MixedMeta.pdf", title="Mixed Meta")
+    called = {"router": False}
+
+    def fake_select_mode(self, payload):
+        called["router"] = True
+        trace_id = self._begin_trace(payload)
+        return AgentModeDecision(
+            mode=AgentRunMode.REACT,
+            route=KnowledgeRoute.TOOL_ACTION,
+            intent=KnowledgeIntent.PAPER_QA,
+            reason="mixed metadata read and explanation must use agent chain",
+            confidence=0.9,
+            target_runtime="KnowledgeAgentRuntime",
+            requires_tools=True,
+            risk_level=KnowledgeRiskLevel.LOW,
+            trace_id=trace_id,
+        )
+
+    def fake_execute_agent_mode(self, **kwargs):
+        return KnowledgeAgentResult(
+            content="page count plus super-resolution explanation",
+            action_status="completed",
+            retrieval_status="skipped",
+            used_document_ids=[document.id],
+            agent_trace_id=kwargs["decision"].trace_id,
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "select_mode", fake_select_mode)
+    monkeypatch.setattr(type(get_chat_service()), "_execute_agent_mode", fake_execute_agent_mode)
+    session = client.post("/api/chat/sessions", json={"title": "mixed metadata explain"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "\u5148\u7ed9\u51fa\u6240\u9009\u8bba\u6587\u9875\u6570\uff0c\u518d\u89e3\u91ca\u4ec0\u4e48\u662f super-resolution\u3002",
+            "attachments": [],
+            "selected_document_ids": [document.id],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert called["router"] is True
+    assert assistant["content"] == "page count plus super-resolution explanation"
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert all(trace.status != "deterministic_observation" for trace in traces)
+
+
+def test_library_count_then_general_abstract_is_not_deterministic_fast_path(client, monkeypatch):
+    _create_ready_document("doc-mixed-count", "MixedCount.pdf")
+    called = {"router": False}
+
+    def fake_select_mode(self, payload):
+        called["router"] = True
+        trace_id = self._begin_trace(payload)
+        return AgentModeDecision(
+            mode=AgentRunMode.REACT,
+            route=KnowledgeRoute.TOOL_ACTION,
+            intent=KnowledgeIntent.PAPER_QA,
+            reason="mixed library count and abstract explanation must use agent chain",
+            confidence=0.9,
+            target_runtime="KnowledgeAgentRuntime",
+            requires_tools=True,
+            risk_level=KnowledgeRiskLevel.LOW,
+            trace_id=trace_id,
+        )
+
+    def fake_execute_agent_mode(self, **kwargs):
+        return KnowledgeAgentResult(
+            content="library count plus abstract explanation",
+            action_status="completed",
+            retrieval_status="skipped",
+            agent_trace_id=kwargs["decision"].trace_id,
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "select_mode", fake_select_mode)
+    monkeypatch.setattr(type(get_chat_service()), "_execute_agent_mode", fake_execute_agent_mode)
+    session = client.post("/api/chat/sessions", json={"title": "mixed count abstract"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "\u5148\u56de\u7b54\uff1a\u8bba\u6587\u5e93\u91cc\u6709\u51e0\u7bc7\u8bba\u6587\uff1f\u518d\u8865\u5145\u4e00\u53e5\uff1a\u4ec0\u4e48\u662f\u8bba\u6587\u6458\u8981\uff1f",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert called["router"] is True
+    assert assistant["content"] == "library count plus abstract explanation"
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert all(trace.status != "deterministic_observation" for trace in traces)
+
+
+def test_report_request_with_metadata_words_is_not_deterministic_fast_path(client, monkeypatch):
+    document = _create_ready_document("doc-report-meta-guard", "ReportMeta.pdf", title="Report Meta")
+    called = {"router": False}
+
+    def fake_select_mode(self, payload):
+        called["router"] = True
+        trace_id = self._begin_trace(payload)
+        return AgentModeDecision(
+            mode=AgentRunMode.REACT,
+            route=KnowledgeRoute.TOOL_ACTION,
+            intent=KnowledgeIntent.PAPER_QA,
+            reason="report request must stay on agent/report chain",
+            confidence=0.9,
+            target_runtime="KnowledgeAgentRuntime",
+            requires_tools=True,
+            requires_rag=True,
+            risk_level=KnowledgeRiskLevel.LOW,
+            trace_id=trace_id,
+        )
+
+    def fake_execute_agent_mode(self, **kwargs):
+        return KnowledgeAgentResult(
+            content="report chain answer",
+            action_status="completed",
+            retrieval_status="ready",
+            used_document_ids=[document.id],
+            agent_trace_id=kwargs["decision"].trace_id,
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "select_mode", fake_select_mode)
+    monkeypatch.setattr(type(get_chat_service()), "_execute_agent_mode", fake_execute_agent_mode)
+    session = client.post("/api/chat/sessions", json={"title": "report metadata guard"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "\u4e3a\u6240\u9009\u8bba\u6587\u5199\u4e00\u6bb5\u7b80\u77ed\u62a5\u544a\uff0c\u5305\u542b\u6807\u9898\u3001\u6838\u5fc3\u4efb\u52a1\u548c\u4e00\u53e5\u8bc1\u636e\u4f9d\u636e\u3002",
+            "attachments": [],
+            "selected_document_ids": [document.id],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert called["router"] is True
+    assert assistant["content"] == "report chain answer"
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert all(trace.status != "deterministic_observation" for trace in traces)
+
+
+def test_read_then_write_request_is_not_collapsed_to_read_only_fast_path(client, monkeypatch):
+    _create_ready_document("doc-fast-path-untagged-a", "UntaggedA.pdf", title="Untagged A")
+    called = {"router": False}
+
+    def fake_select_mode(self, payload):
+        called["router"] = True
+        trace_id = self._begin_trace(payload)
+        return AgentModeDecision(
+            mode=AgentRunMode.REACT,
+            route=KnowledgeRoute.CONFIRMED_WRITE,
+            intent=KnowledgeIntent.TAG_WRITE,
+            reason="read-then-write must use the knowledge write path",
+            confidence=0.9,
+            target_runtime="KnowledgeAgentRuntime",
+            requires_tools=True,
+            requires_confirmation=True,
+            risk_level=KnowledgeRiskLevel.HIGH,
+            trace_id=trace_id,
+        )
+
+    def fake_execute_agent_mode(self, **kwargs):
+        return KnowledgeAgentResult(
+            content="read result and write preview required",
+            action_status="confirmation_required",
+            retrieval_status="skipped",
+            agent_trace_id=kwargs["decision"].trace_id,
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "select_mode", fake_select_mode)
+    monkeypatch.setattr(type(get_chat_service()), "_execute_agent_mode", fake_execute_agent_mode)
+    session = client.post("/api/chat/sessions", json={"title": "read then write guard"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "\u6211\u6709\u51e0\u7bc7\u4e0d\u5e26\u6807\u7b7e\u7684\u8bba\u6587\uff1f\u5e2e\u6211\u628a\u8fd9\u4e9b\u8bba\u6587\u90fd\u52a0\u4e0a\u7efc\u8ff0\u6807\u7b7e\u3002",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert called["router"] is True
+    assert assistant["action_status"] == "confirmation_required"
+    assert assistant["content"] == "read result and write preview required"
+    assert all(category.name != "\u7efc\u8ff0" for category in get_repository().category.list_categories())
+
+
+def test_read_only_safety_request_does_not_enter_write_tool(client):
+    get_repository().category.create_category("\u7a7a\u6807\u7b7e", "#0f5fb8")
+    session = client.post("/api/chat/sessions", json={"title": "readonly safety"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "\u8bf7\u544a\u8bc9\u6211\u5f53\u524d\u7a7a\u6807\u7b7e\u5206\u7c7b\u6709\u54ea\u4e9b\uff0c\u4f46\u4e0d\u8981\u5220\u9664\u4efb\u4f55\u4e1c\u897f\u3002",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert assistant["action_status"] == "completed"
+    traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert all(
+        not (
+            trace.status == "react_observation"
+            and str(trace.payload.get("tool", "")).startswith("library.operator.")
+        )
+        for trace in traces
+    )
+
+
+def test_write_request_is_not_general_chat_fast_path(client, monkeypatch):
+    called = {"router": False}
+
+    def fake_select_mode(self, payload):
+        called["router"] = True
+        trace_id = self._begin_trace(payload)
+        return AgentModeDecision(
+            mode=AgentRunMode.REACT,
+            route=KnowledgeRoute.CONFIRMED_WRITE,
+            intent=KnowledgeIntent.TAG_WRITE,
+            reason="write request must use knowledge runtime",
+            confidence=0.9,
+            target_runtime="KnowledgeAgentRuntime",
+            requires_tools=True,
+            requires_confirmation=True,
+            risk_level=KnowledgeRiskLevel.HIGH,
+            trace_id=trace_id,
+        )
+
+    def fake_execute_agent_mode(self, **kwargs):
+        return KnowledgeAgentResult(
+            content="write preview required",
+            action_status="confirmation_required",
+            retrieval_status="skipped",
+            agent_trace_id=kwargs["decision"].trace_id,
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "select_mode", fake_select_mode)
+    monkeypatch.setattr(type(get_chat_service()), "_execute_agent_mode", fake_execute_agent_mode)
+    session = client.post("/api/chat/sessions", json={"title": "write guard"}).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={
+            "content": "\u7ed9\u6240\u6709\u8bba\u6587\u52a0\u4e0a\u7efc\u8ff0\u6807\u7b7e\u3002",
+            "attachments": [],
+            "selected_document_ids": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assistant = response.json()["assistant_message"]
+    assert called["router"] is True
+    assert assistant["action_status"] == "confirmation_required"
+    assert assistant["content"] == "write preview required"
 
 
 def test_direct_answer_general_history_question_does_not_claim_library_limit(client, monkeypatch):
@@ -1067,11 +1668,12 @@ def test_chat_agent_answers_library_count_from_sqlite(client):
     assert assistant["agent_trace_id"]
     traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
     mode_trace = next(trace for trace in traces if trace.status == "agent_mode_selected")
-    assert mode_trace.payload["mode"] == "REACT"
+    assert mode_trace.payload["mode"] == "DIRECT"
     assert mode_trace.payload["route"] == "ToolAction"
     assert mode_trace.payload["intent"] in {"paper_qa", "tag_query"}
     assert mode_trace.payload["requires_tools"] is True
-    assert any(trace.status == "react_action_planned" for trace in traces)
+    assert mode_trace.payload["decision_source"] == "local_fast_path"
+    assert all(trace.status != "react_action_planned" for trace in traces)
     assert all(trace.status != "reflection_result_created" for trace in traces)
 
 
@@ -1635,7 +2237,7 @@ def test_chat_routes_user_correction_to_reflection_runtime(client):
     assert any(trace.status == "reflection_result_created" for trace in traces)
 
 
-def test_low_score_reflection_runs_one_improvement_and_records_lesson(client, monkeypatch):
+def test_library_count_fast_path_does_not_trigger_low_score_reflection(client, monkeypatch):
     calls = {"count": 0}
 
     def fake_run_react(self, **kwargs):
@@ -1672,9 +2274,14 @@ def test_low_score_reflection_runs_one_improvement_and_records_lesson(client, mo
     assert response.status_code == 200
     payload = response.json()
     assistant = payload["assistant_message"]
-    assert calls["count"] == 1
-    assert "我猜测论文库里有很多论文" in assistant["content"]
+    assert calls["count"] == 0
+    assert "共有" in assistant["content"]
     traces = get_repository().runtime.list_traces(assistant["agent_trace_id"])
+    assert any(
+        trace.status == "agent_mode_selected" and trace.payload.get("decision_source") == "local_fast_path"
+        for trace in traces
+    )
+    assert all(trace.status != "react_action_planned" for trace in traces)
     assert all(trace.status != "reflection_improvement_started" for trace in traces)
     assert all(trace.status != "reflection_result_created" for trace in traces)
     assert not any("反思经验" in item["summary"] for item in payload["memory_snapshot"]["items"])
