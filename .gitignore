@@ -12,6 +12,7 @@ backend/pytest-cache-files-*/
 backend/paperdesk_backend.egg-info/
 backend/data/
 backend/data/*.db
+backend/tests/
 backend/workspace/
 backend/runtime/
 backend/.debug-sandbox-*/
@@ -26,5 +27,4 @@ __pycache__/
 .claude/runtime/
 .claude/sessions/
 
-judge/eval_run_*/
-judge/__pycache__/
+judge/
