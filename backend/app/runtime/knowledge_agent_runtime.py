@@ -501,6 +501,37 @@ class KnowledgeAgentRuntime:
         if clarification is not None:
             return clarification
 
+        all_library_assign_result = self._try_all_library_assign_preview(
+            session=session,
+            content=content,
+            selected_document_ids=selected_document_ids,
+            attachments=attachments,
+            trace_id=trace_id,
+        )
+        if all_library_assign_result is not None:
+            return all_library_assign_result
+
+        read_then_write_result = self._try_read_then_write_preview(
+            session=session,
+            content=content,
+            selected_document_ids=selected_document_ids,
+            attachments=attachments,
+            trace_id=trace_id,
+        )
+        if read_then_write_result is not None:
+            return read_then_write_result
+
+        relation_scope_clarification = self._ambiguous_relation_write_scope_clarification(
+            session=session,
+            content=content,
+            selected_document_ids=selected_document_ids,
+            attachments=attachments,
+            observations=[],
+            trace_id=trace_id,
+        )
+        if relation_scope_clarification is not None:
+            return relation_scope_clarification
+
         if self._is_destructive_intent(content) and not self._should_plan_before_destructive_confirmation(
             content,
             selected_document_ids,
@@ -510,6 +541,16 @@ class KnowledgeAgentRuntime:
 
         if not self._should_handle_with_react(content, selected_document_ids, attachments):
             return None
+
+        lightweight_result = self._try_paper_qa_lightweight(
+            session=session,
+            request=request,
+            attachments=attachments,
+            selected_document_ids=selected_document_ids,
+            trace_id=trace_id,
+        )
+        if lightweight_result is not None:
+            return lightweight_result
 
         return self._run_react_agent(
             session=session,
@@ -538,12 +579,52 @@ class KnowledgeAgentRuntime:
         clarification = self._ambiguous_write_clarification(content, trace_id=trace_id)
         if clarification is not None:
             return clarification
+        all_library_assign_result = self._try_all_library_assign_preview(
+            session=session,
+            content=content,
+            selected_document_ids=selected_document_ids,
+            attachments=attachments,
+            trace_id=trace_id,
+        )
+        if all_library_assign_result is not None:
+            return all_library_assign_result
+        read_then_write_result = self._try_read_then_write_preview(
+            session=session,
+            content=content,
+            selected_document_ids=selected_document_ids,
+            attachments=attachments,
+            trace_id=trace_id,
+        )
+        if read_then_write_result is not None:
+            return read_then_write_result
+        relation_scope_clarification = self._ambiguous_relation_write_scope_clarification(
+            session=session,
+            content=content,
+            selected_document_ids=selected_document_ids,
+            attachments=attachments,
+            observations=[],
+            trace_id=trace_id,
+        )
+        if relation_scope_clarification is not None:
+            return relation_scope_clarification
         if self._is_destructive_intent(content) and not self._should_plan_before_destructive_confirmation(
             content,
             selected_document_ids,
             attachments,
         ):
             return self._request_confirmation(session, content, trace_id=trace_id)
+
+        lightweight_result = self._try_paper_qa_lightweight(
+            session=session,
+            request=request,
+            attachments=attachments,
+            selected_document_ids=selected_document_ids,
+            trace_id=trace_id,
+            runtime_label=runtime_label,
+        )
+        if lightweight_result is not None:
+            return lightweight_result
+
         return self._run_react_agent(
             session=session,
             request=request,
@@ -552,6 +633,517 @@ class KnowledgeAgentRuntime:
             trace_id=trace_id,
             runtime_label=runtime_label,
         )
+
+    def _try_paper_qa_lightweight(
+        self,
+        *,
+        session: ChatSession,
+        request: ChatMessageRequest,
+        attachments: list[ChatAttachment],
+        selected_document_ids: list[str],
+        trace_id: str | None = None,
+        runtime_label: str = "knowledge_react_execution",
+    ) -> KnowledgeAgentResult | None:
+        content = request.content.strip()
+        scope = self._paper_qa_lightweight_scope(
+            session=session,
+            content=content,
+            selected_document_ids=selected_document_ids,
+            attachments=attachments,
+        )
+        if scope is None:
+            return None
+        scope_type, document = scope
+        run_id = trace_id or self._begin_run(session, content)
+        owns_run = trace_id is None
+        if not owns_run:
+            self._append_react_trace(
+                run_id=run_id,
+                status=f"{runtime_label}_started",
+                payload={"session_id": session.id, "topic": content, "runtime_variant": "paper_qa_lightweight"},
+            )
+        self._append_react_trace(
+            run_id=run_id,
+            status="paper_qa_lightweight_started",
+            payload={
+                "session_id": session.id,
+                "scope_type": scope_type,
+                "document_id": document.id,
+                "used_document_ids": [document.id],
+                "question": content[:240],
+            },
+        )
+        if document.status != "ready" or (
+            document.parser_status and document.parser_status not in {"indexed", "completed", "ready"}
+        ):
+            answer = (
+                f"这篇论文当前状态是 {document.status}"
+                f"{f'/{document.parser_status}' if document.parser_status else ''}，还没有可用于正文问答的 ready/indexed 证据。"
+            )
+            self._append_react_trace(
+                run_id=run_id,
+                status="paper_qa_lightweight_answer",
+                payload={
+                    "used_document_ids": [document.id],
+                    "evidence_count": 0,
+                    "llm_called": False,
+                    "answer_length": len(answer),
+                    "fallback_used": True,
+                    "action_status": "needs_clarification",
+                },
+            )
+            if owns_run:
+                self._finish_run(run_id)
+            else:
+                self._append_react_trace(
+                    run_id=run_id,
+                    status=f"{runtime_label}_finished",
+                    payload={"final_status": "needs_clarification", "evidence_count": 0, "final_content_length": len(answer)},
+                )
+            return KnowledgeAgentResult(
+                content=answer,
+                retrieval_status="skipped",
+                used_document_ids=[document.id],
+                action_status="needs_clarification",
+                agent_trace_id=run_id,
+            )
+
+        action = _ReactAction(
+            "evidence.retriever.search",
+            {"question": content, "document_ids": [document.id]},
+            "轻量论文问答先检索单篇论文证据。",
+        )
+        self._append_react_trace(
+            run_id=run_id,
+            status="retrieval_tool_started",
+            payload={"step": 1, "tool": action.tool, "arguments": action.arguments, "runtime_variant": "paper_qa_lightweight"},
+        )
+        started_at = time.perf_counter()
+        observation = self._finalize_tool_observation(
+            self._tool_retrieve_evidence(
+                run_id,
+                session,
+                content,
+                action.arguments,
+                [],
+            )
+        )
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        payload_view = self._react_observation_payload(observation)
+        evidence_items = self._merge_evidence_items([], payload_view)[:6]
+        evidence_count = len(evidence_items)
+        self._append_react_trace(
+            run_id=run_id,
+            status="retrieval_tool_finished",
+            payload={
+                "step": 1,
+                "tool": observation.tool,
+                "status": observation.status,
+                "evidence_count": evidence_count,
+                "used_document_count": 1,
+                "duration_ms": duration_ms,
+                "runtime_variant": "paper_qa_lightweight",
+            },
+        )
+        tool_spec = self._spec_for_tool(observation.tool)
+        verification = observation.observation.get("verification") if isinstance(observation.observation, dict) else None
+        self._append_react_trace(
+            run_id=run_id,
+            status="tool_call_log",
+            payload={
+                "route_id": "paper_qa_lightweight",
+                "tool_name": observation.tool,
+                "operation_level": tool_spec.operation_level if tool_spec else "query-level",
+                "io_type": tool_spec.io_type if tool_spec else "read",
+                "write_type": tool_spec.write_type if tool_spec else "none",
+                "target_objects": observation.observation.get("target_objects") if isinstance(observation.observation, dict) else [],
+                "requires_confirmation": False,
+                "success": observation.status == "completed",
+                "verification_success": verification.get("success") if isinstance(verification, dict) else None,
+                "duration_ms": duration_ms,
+                "used_document_ids": [document.id],
+                "evidence_count": evidence_count,
+            },
+        )
+        self._append_react_trace(
+            run_id=run_id,
+            status="react_observation",
+            payload={
+                "step": 1,
+                "tool": observation.tool,
+                "status": observation.status,
+                "summary": observation.summary,
+                "payload": self._safe_trace_payload(observation.payload),
+                "observation": self._safe_trace_payload(observation.observation),
+                "runtime_variant": "paper_qa_lightweight",
+            },
+        )
+        observations = [observation]
+        if observation.status in {"needs_clarification", "validation_failed", "failed"}:
+            final_status = observation.status
+            answer = observation.summary
+            retrieval_status = "degraded" if observation.status == "failed" else "skipped"
+            warning = observation.summary if observation.status == "failed" else None
+            fallback_used = True
+            llm_called = False
+        elif not evidence_items:
+            final_status = "needs_clarification"
+            retrieval_status = "skipped"
+            warning = "没有检索到足够正文片段，本轮未生成基于论文内容的回答。"
+            answer = (
+                "本轮没有检索到可引用的论文正文证据，因此我不能只根据文件名、标题或元数据回答这篇论文内容。"
+                "请确认所选论文已完成入库、正文 chunk 与向量/关键词索引可用后，再重新发送问题。"
+            )
+            fallback_used = True
+            llm_called = False
+        else:
+            draft = self._draft_paper_qa_short_answer(content, document, evidence_items)
+            answer = draft.answer
+            fallback_used = draft.fallback_used
+            llm_called = bool(self.api_key)
+            final_status = "completed" if draft.llm_draft_success else "degraded"
+            retrieval_status = "ready" if draft.llm_draft_success else "degraded"
+            warning = draft.drafting_error if draft.fallback_used else None
+        self._append_react_trace(
+            run_id=run_id,
+            status="paper_qa_lightweight_answer",
+            payload={
+                "used_document_ids": [document.id],
+                "evidence_count": evidence_count,
+                "llm_called": llm_called,
+                "answer_length": len(answer),
+                "fallback_used": fallback_used,
+                "action_status": final_status,
+                "retrieval_status": retrieval_status,
+            },
+        )
+        self._record_react_reflection(session=session, user_goal=content, observations=observations, status=final_status)
+        self._update_react_state(session=session, user_goal=content, observations=observations, status=final_status)
+        if owns_run:
+            self._finish_run(run_id, ResearchRunStatus.COMPLETED if final_status != "failed" else ResearchRunStatus.FAILED)
+        else:
+            self._append_react_trace(
+                run_id=run_id,
+                status=f"{runtime_label}_finished",
+                payload={
+                    "final_status": final_status,
+                    "observation_count": 1,
+                    "evidence_count": evidence_count,
+                    "final_content_length": len(answer),
+                    "runtime_variant": "paper_qa_lightweight",
+                },
+            )
+        return KnowledgeAgentResult(
+            content=answer.strip(),
+            retrieval_status=retrieval_status,
+            warning=warning,
+            citations=self._collect_citations(evidence_items),
+            used_document_ids=[document.id],
+            evidence_items=evidence_items,
+            action_status=final_status,
+            agent_trace_id=run_id,
+            library_mutated=False,
+        )
+
+    def _paper_qa_lightweight_scope(
+        self,
+        *,
+        session: ChatSession,
+        content: str,
+        selected_document_ids: list[str],
+        attachments: list[ChatAttachment],
+    ) -> tuple[str, LibraryDocument] | None:
+        if not self._is_lightweight_paper_qa_request(content):
+            return None
+        if self._is_report_like_request(content):
+            return None
+        if self._is_compare_like_request(content):
+            return None
+        if self._mentions_all_library(content):
+            return None
+        if self._is_staged_mixed_request(content):
+            return None
+        if self._looks_like_read_then_write_assignment(content):
+            return None
+        if (
+            self._is_assignment_intent(content)
+            or self._is_create_category_intent(content)
+            or self._is_clear_categories_intent(content)
+            or self._is_destructive_intent(content)
+            or self._is_document_label_relation_assignment(content)
+        ):
+            return None
+        if self._is_grouped_category_summary_request(content):
+            return None
+        if self._is_labeled_document_collection_request(content):
+            return None
+        if self._is_metadata_query(content, selected_document_ids, attachments) or self._is_document_category_query(content):
+            return None
+
+        selected_ids = self._real_document_ids(selected_document_ids)
+        attachment_ids = self._real_document_ids([attachment.document_id for attachment in attachments if attachment.document_id])
+        if len(selected_ids) > 1 or len(attachment_ids) > 1:
+            return None
+        explicit_ids = list(dict.fromkeys([*selected_ids, *attachment_ids]))
+        if len(explicit_ids) > 1:
+            return None
+        scope_type = "current_selection"
+        if not explicit_ids:
+            if not self._mentions_lightweight_recent_single(content):
+                return None
+            explicit_ids = self._recent_scope_document_ids(session.id, singular=True)
+            if len(explicit_ids) != 1:
+                return None
+            scope_type = "recent_selection"
+        document_id = explicit_ids[0] if explicit_ids else ""
+        document = next((item for item in self.document_library_service.list_documents() if item.id == document_id), None)
+        if document is None:
+            return None
+        return scope_type, document
+
+    @staticmethod
+    def _mentions_lightweight_recent_single(content: str) -> bool:
+        return KnowledgeAgentRuntime._mentions_single_current_document(content) or any(
+            marker in content
+            for marker in (
+                "刚才那篇",
+                "刚刚那篇",
+                "上次那篇",
+                "前面那篇",
+                "那篇论文",
+                "那篇文章",
+                "上一篇论文",
+                "上篇论文",
+            )
+        )
+
+    @staticmethod
+    def _is_lightweight_paper_qa_request(content: str) -> bool:
+        normalized = content.casefold()
+        markers = (
+            "讲什么",
+            "讲了什么",
+            "主要讲",
+            "大致研究什么",
+            "研究方向",
+            "主要面向",
+            "面向",
+            "核心任务",
+            "关注",
+            "方法",
+            "解决",
+            "关系",
+            "创新",
+            "贡献",
+            "实验",
+            "结论",
+            "结果",
+            "局限",
+            "不足",
+            "优缺点",
+            "优点",
+            "缺点",
+            "是什么意思",
+            "说明",
+            "解释",
+            "概括",
+            "概览",
+            "总结",
+            "一句话",
+            "一段话",
+            "两句话",
+            "摘要一下",
+            "what",
+            "method",
+            "problem",
+            "contribution",
+            "novelty",
+            "experiment",
+            "result",
+            "conclusion",
+            "summarize",
+        )
+        return any(marker in normalized for marker in markers)
+
+    @staticmethod
+    def _is_report_like_request(content: str) -> bool:
+        normalized = content.casefold()
+        if re.search(r"(?:[12]000|one thousand|two thousand)\s*(?:字|词|word|words)", normalized):
+            return True
+        return any(
+            marker in normalized
+            for marker in (
+                "写报告",
+                "写一份报告",
+                "写一篇报告",
+                "生成报告",
+                "分析报告",
+                "阅读报告",
+                "完整报告",
+                "完整阅读报告",
+                "报告生成",
+                "写综述",
+                "写一份综述",
+                "生成综述",
+                "系统综述",
+                "综述报告",
+                "生成 markdown",
+                "生成markdown",
+                "保存 markdown",
+                "保存markdown",
+                "保存报告",
+                "导出报告",
+                "可导出",
+                "按章节",
+                "分章节",
+                "章节写",
+                "三点式阅读摘要",
+                "write a report",
+                "review report",
+                "reading report",
+                "save report",
+                "export report",
+                "markdown",
+                "systematic review",
+                "survey",
+            )
+        )
+
+    @staticmethod
+    def _is_compare_like_request(content: str) -> bool:
+        normalized = content.casefold()
+        return any(
+            marker in normalized
+            for marker in (
+                "对比",
+                "比较",
+                "相同点",
+                "不同点",
+                "区别",
+                "分别",
+                "各自",
+                "compare",
+                "comparison",
+                "versus",
+                " vs ",
+            )
+        )
+
+    @staticmethod
+    def _is_staged_mixed_request(content: str) -> bool:
+        normalized = content.casefold()
+        if re.search(r"先.+(?:再|然后|接着|并且)", content):
+            return True
+        return any(
+            marker in normalized
+            for marker in (
+                "顺便",
+                "再补充",
+                "再用一句话",
+                "then explain",
+                "and explain",
+            )
+        )
+
+    def _draft_paper_qa_short_answer(
+        self,
+        question: str,
+        document: LibraryDocument,
+        evidence_items: list[EvidenceItem],
+    ) -> _DraftResult:
+        fallback = self._draft_paper_qa_short_fallback(question, document, evidence_items)
+        if not evidence_items:
+            return _DraftResult(answer=fallback, llm_draft_success=False, fallback_used=True, drafting_error="insufficient_evidence")
+        if not self.api_key:
+            return _DraftResult(answer=fallback, llm_draft_success=False, fallback_used=True, drafting_error="llm_not_configured")
+        evidence_block = "\n\n".join(
+            "\n".join(
+                [
+                    f"[{index}] 来源：{item.citation_label}",
+                    f"页码：{item.page_number if item.page_number is not None else '未知'}",
+                    f"证据：{self._compact_evidence_text(item.quote or item.snippet)}",
+                ]
+            )
+            for index, item in enumerate(evidence_items[:6], start=1)
+        )
+        length_rule = "如果用户要求一句话，只输出一句话；如果要求两句话，只输出两句话；其他情况控制在 1-3 段。"
+        try:
+            client = OpenAI(api_key=self.api_key, base_url=self.base_url or None, timeout=self.timeout)
+            response = client.chat.completions.create(
+                model=self.model,
+                temperature=0.2,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是 PaperDesk 的论文短答助手。只基于给定证据回答，证据不足时说明边界。"
+                            "用中文自然表达，保留论文标题、简称和关键术语，避免长报告结构。"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": "\n\n".join(
+                            [
+                                f"用户问题：{question}",
+                                (
+                                    "论文元数据："
+                                    f"标题={document.title or document.display_name or document.filename}；"
+                                    f"文件名={document.display_name or document.filename}；页数={document.page_count}"
+                                ),
+                                "证据：\n" + evidence_block,
+                                length_rule,
+                            ]
+                        ),
+                    },
+                ],
+            )
+        except Exception as exc:
+            return _DraftResult(
+                answer=fallback,
+                llm_draft_success=False,
+                fallback_used=True,
+                drafting_error=f"{type(exc).__name__}: {str(exc)[:400]}",
+            )
+        answer = self._extract_message_text(response)
+        if not answer:
+            return _DraftResult(answer=fallback, llm_draft_success=False, fallback_used=True, drafting_error="empty_llm_response")
+        return _DraftResult(answer=self._ensure_short_answer_title(answer, document), llm_draft_success=True)
+
+    @staticmethod
+    def _compact_evidence_text(text: str, *, limit: int = 700) -> str:
+        compact = re.sub(r"\s+", " ", text or "").strip()
+        return compact if len(compact) <= limit else compact[:limit].rstrip() + "..."
+
+    @staticmethod
+    def _ensure_short_answer_title(answer: str, document: LibraryDocument) -> str:
+        text = answer.strip()
+        title = (document.title or document.display_name or document.filename or "").strip()
+        if not title:
+            return text
+        lowered = text.casefold()
+        if title.casefold() in lowered:
+            return text
+        return f"《{title}》：{text}"
+
+    def _draft_paper_qa_short_fallback(
+        self,
+        question: str,
+        document: LibraryDocument,
+        evidence_items: list[EvidenceItem],
+    ) -> str:
+        title = document.title or document.display_name or document.filename
+        snippets = [self._compact_evidence_text(item.quote or item.snippet, limit=220) for item in evidence_items[:3]]
+        if not snippets:
+            return (
+                "本轮没有检索到可引用的论文正文证据，因此我不能只根据文件名、标题或元数据回答这篇论文内容。"
+                "请确认所选论文已完成入库、正文 chunk 与向量/关键词索引可用后，再重新发送问题。"
+            )
+        if "一句话" in question:
+            return f"根据检索到的正文证据，{title} 主要涉及：{snippets[0]}"
+        lines = [f"根据检索到的正文证据，{title} 可以简要概括如下："]
+        lines.extend(f"- {snippet}" for snippet in snippets)
+        lines.append("上述内容只覆盖本轮检索到的证据片段。")
+        return "\n".join(lines)
 
     def _ambiguous_write_clarification(
         self,
@@ -572,6 +1164,535 @@ class KnowledgeAgentRuntime:
             agent_trace_id=trace_id,
             library_mutated=False,
         )
+
+    def _try_all_library_assign_preview(
+        self,
+        *,
+        session: ChatSession,
+        content: str,
+        selected_document_ids: list[str],
+        attachments: list[ChatAttachment],
+        trace_id: str | None = None,
+    ) -> KnowledgeAgentResult | None:
+        if selected_document_ids or any(attachment.document_id for attachment in attachments):
+            return None
+        if not self._is_assignment_intent(content) or not self._mentions_all_library(content):
+            return None
+        if self._needs_untagged_assignment(content) or self._has_downstream_report_generation_request(content):
+            return None
+        category_names = self._extract_category_names_from_request(content)
+        category_name = category_names[0] if category_names else self._extract_category_name_from_request(content)
+        if not category_name:
+            return KnowledgeAgentResult(
+                content="我识别到你想给所有论文打标签，但没有可靠识别出目标标签名。请明确要添加哪个标签。",
+                action_status="needs_clarification",
+                agent_trace_id=trace_id,
+                library_mutated=False,
+            )
+        ready_document_ids = [
+            document.id
+            for document in self.document_library_service.list_documents()
+            if document.status == "ready"
+        ]
+        if not ready_document_ids:
+            return KnowledgeAgentResult(
+                content="当前没有 ready 状态的论文，因此没有生成全库打标签预览，也没有改动论文库。",
+                action_status="completed",
+                used_document_ids=[],
+                agent_trace_id=trace_id,
+                library_mutated=False,
+            )
+        run_id = trace_id or self._begin_run(session, content)
+        owns_run = trace_id is None
+        preview = self._preview_assign_category_from_documents(
+            category_name=category_name,
+            document_ids=ready_document_ids,
+            source_goal=content,
+            risk_level="batch_write",
+            expected_scope="all_library",
+        )
+        self._write_pending_tool_action(session.id, preview, source_goal=content)
+        self._append_react_trace(
+            run_id=run_id,
+            status="write_preview_created",
+            payload={
+                "tool": "library.operator.assign_category",
+                "operation": preview.operation,
+                "operation_level": "relation-level",
+                "write_type": "append",
+                "target_type": "paper-category relation",
+                "risk_level": preview.risk_level,
+                "affected_count": preview.affected_count,
+                "target_count": preview.affected_count,
+                "targets": preview.affected_entities[:12],
+                "expected_scope": preview.expected_scope,
+                "requires_confirmation": True,
+                "confirmation_phrase": preview.confirmation_phrase,
+                "library_mutated": False,
+            },
+        )
+        if owns_run:
+            self._finish_run(run_id)
+        return KnowledgeAgentResult(
+            content=self._preview_confirmation_text(preview),
+            action_status="confirmation_required",
+            used_document_ids=ready_document_ids,
+            agent_trace_id=run_id,
+            library_mutated=False,
+        )
+
+    def _try_read_then_write_preview(
+        self,
+        *,
+        session: ChatSession,
+        content: str,
+        selected_document_ids: list[str],
+        attachments: list[ChatAttachment],
+        trace_id: str | None = None,
+    ) -> KnowledgeAgentResult | None:
+        if selected_document_ids or any(attachment.document_id for attachment in attachments):
+            return None
+        if self._state_document_ids(self._read_react_state(session.id)):
+            return None
+        plan = self._build_read_then_write_plan(content)
+        if plan is None:
+            return None
+        run_id = trace_id or self._begin_run(session, content)
+        owns_run = trace_id is None
+        self._append_react_trace(
+            run_id=run_id,
+            status="read_then_write_plan_created",
+            payload=self._safe_trace_payload(plan),
+        )
+        if plan["kind"] == "clarify":
+            if owns_run:
+                self._finish_run(run_id)
+            return KnowledgeAgentResult(
+                content=str(plan["message"]),
+                action_status="needs_clarification",
+                agent_trace_id=run_id,
+                library_mutated=False,
+            )
+
+        read_step = plan["steps"][0]
+        write_step = plan["steps"][1]
+        read_result = self._execute_read_then_write_read_step(read_step)
+        self._append_react_trace(
+            run_id=run_id,
+            status="read_then_write_read_completed",
+            payload=self._safe_trace_payload(read_result),
+        )
+        if read_result["status"] == "needs_clarification":
+            if owns_run:
+                self._finish_run(run_id)
+            return KnowledgeAgentResult(
+                content=str(read_result["message"]),
+                action_status="needs_clarification",
+                agent_trace_id=run_id,
+                library_mutated=False,
+            )
+
+        document_ids = [str(item) for item in read_result.get("document_ids") or [] if item]
+        documents = [item for item in read_result.get("documents") or [] if isinstance(item, dict)]
+        if not document_ids:
+            if owns_run:
+                self._finish_run(run_id)
+            return KnowledgeAgentResult(
+                content="没有符合条件的论文，因此没有生成写入预览，也没有改动论文库。",
+                action_status="completed",
+                used_document_ids=[],
+                agent_trace_id=run_id,
+                library_mutated=False,
+            )
+
+        category_name = str(write_step.get("category_name") or "").strip()
+        preview = self._preview_assign_category_from_documents(
+            category_name=category_name,
+            document_ids=document_ids,
+            source_goal=content,
+        )
+        self._write_pending_tool_action(
+            session.id,
+            preview,
+            source_goal=content,
+            plan_state=None,
+            step_state=None,
+        )
+        self._append_react_trace(
+            run_id=run_id,
+            status="write_preview_created",
+            payload={
+                "tool": "library.operator.assign_category",
+                "operation": preview.operation,
+                "operation_level": "relation-level",
+                "write_type": "append",
+                "target_type": "paper-category relation",
+                "risk_level": preview.risk_level,
+                "affected_count": preview.affected_count,
+                "target_count": preview.affected_count,
+                "targets": preview.affected_entities[:12],
+                "expected_scope": preview.expected_scope,
+                "requires_confirmation": True,
+                "confirmation_phrase": preview.confirmation_phrase,
+                "read_step": read_step,
+                "write_step": {**write_step, "document_ids": document_ids},
+            },
+        )
+        if owns_run:
+            self._finish_run(run_id)
+        names = "、".join(str(item.get("name") or item.get("filename") or item.get("id")) for item in documents[:8])
+        suffix = "等" if len(documents) > 8 else ""
+        return KnowledgeAgentResult(
+            content=(
+                f"我先按只读步骤找到 {len(document_ids)} 篇符合条件的论文：{names}{suffix}。\n"
+                f"写入预览：将给这些论文添加标签/分类「{category_name}」。"
+                f"请回复「{preview.confirmation_phrase}」后我再执行；确认前不会改动论文库。"
+            ),
+            action_status="confirmation_required",
+            used_document_ids=document_ids,
+            agent_trace_id=run_id,
+            library_mutated=False,
+        )
+
+    def _build_read_then_write_plan(self, content: str) -> dict[str, Any] | None:
+        if self._has_downstream_report_generation_request(content):
+            return None
+        read_operation = self._read_then_write_read_operation(content)
+        if (
+            read_operation is not None
+            and self._is_assignment_intent(content)
+            and self._has_read_then_write_safety_marker(content)
+        ):
+            return {
+                "kind": "clarify",
+                "message": "我会按你的要求只做只读查询，本轮不会生成写入预览，也不会改动论文库。",
+            }
+        if not self._looks_like_read_then_write_assignment(content):
+            if (
+                self._is_assignment_intent(content)
+                and any(marker in content for marker in ("这些论文", "这些文章"))
+                and not read_operation
+            ):
+                return {
+                    "kind": "clarify",
+                    "message": "我没有找到本轮可绑定的只读结果，不能把“这些论文”默认扩大到全库。请先说明要查哪一批论文。",
+                }
+            return None
+        if read_operation is None:
+            return None
+        if self._has_read_then_write_safety_marker(content):
+            return {
+                "kind": "clarify",
+                "message": "我会按你的要求只做只读查询，本轮不会生成写入预览，也不会改动论文库。",
+            }
+        category_names = self._read_then_write_target_category_names(content)
+        if not category_names:
+            return {
+                "kind": "clarify",
+                "message": "我已经识别到这是读后写请求，但没有可靠识别出要添加的标签/分类名称。请明确要加哪个标签或分类。",
+            }
+        category_name = category_names[0]
+        read_step = {
+            "step_id": "read-1",
+            "kind": "read",
+            "operation": read_operation["operation"],
+            "target_type": read_operation["target_type"],
+            "scope_type": read_operation["scope_type"],
+            "document_ids": [],
+            "category_name": read_operation.get("category_name"),
+            "depends_on": [],
+            "output_binding": "document_ids",
+            "requires_confirmation": False,
+            "risk_level": "read_only",
+            "tool_name": read_operation["tool_name"],
+            "reason": read_operation["reason"],
+        }
+        write_step = {
+            "step_id": "write-1",
+            "kind": "write",
+            "operation": "assign_label",
+            "target_type": "paper-category relation",
+            "scope_type": "read_step_result",
+            "document_ids": [],
+            "category_name": category_name,
+            "depends_on": ["read-1"],
+            "output_binding": "",
+            "requires_confirmation": True,
+            "risk_level": "scoped_write",
+            "tool_name": "library.operator.assign_category",
+            "reason": "把只读步骤返回的 document_ids 作为唯一写入目标。",
+        }
+        return {"kind": "read_then_write", "steps": [read_step, write_step]}
+
+    def _execute_read_then_write_read_step(self, step: dict[str, Any]) -> dict[str, Any]:
+        operation = str(step.get("operation") or "")
+        if operation == "find_untagged_documents":
+            payload = self._category_stats_payload(limit_documents=None)
+            documents = [item for item in payload.get("untagged_documents") or [] if isinstance(item, dict)]
+            return {
+                "status": "completed",
+                "operation": operation,
+                "document_ids": [str(item) for item in payload.get("untagged_document_ids") or [] if item],
+                "documents": documents,
+            }
+        if operation == "find_documents_by_category":
+            category_name = str(step.get("category_name") or "").strip()
+            lookup = self._category_lookup_payload([category_name]) if category_name else {}
+            if lookup.get("missing_names"):
+                candidates = "、".join(str(item) for item in lookup.get("candidate_names") or [])
+                suffix = f"；相近标签/分类：{candidates}" if candidates else ""
+                return {"status": "needs_clarification", "message": f"没有找到标签/分类「{category_name}」{suffix}。"}
+            if lookup.get("ambiguous_names"):
+                candidates = "、".join(str(item) for item in lookup.get("candidate_names") or [])
+                return {"status": "needs_clarification", "message": f"标签/分类「{category_name}」匹配到多个候选，请确认：{candidates}"}
+            matched_names = [str(item) for item in (lookup.get("matched_names") or [category_name]) if str(item).strip()]
+            documents = [
+                self._document_payload(document)
+                for document in self.document_library_service.list_documents()
+                if document.status == "ready"
+                and any(category.name in set(matched_names) for category in document.categories)
+            ]
+            return {
+                "status": "completed",
+                "operation": operation,
+                "category_name": matched_names[0] if matched_names else category_name,
+                "document_ids": [str(item["id"]) for item in documents],
+                "documents": documents,
+            }
+        return {"status": "needs_clarification", "message": "我还不能可靠识别这类读后写请求的只读范围。"}
+
+    def _looks_like_read_then_write_assignment(self, content: str) -> bool:
+        if not self._is_assignment_intent(content):
+            return False
+        if self._read_then_write_read_operation(content) is None:
+            return False
+        read_markers = ("几篇", "哪些", "找出", "列出", "查", "查一下", "看看", "有几篇")
+        bind_markers = ("这些论文", "这些文章", "它们", "这批", "这几篇", "然后", "再帮", "再给", "并且")
+        return any(marker in content for marker in read_markers) and any(marker in content for marker in bind_markers)
+
+    def _read_then_write_read_operation(self, content: str) -> dict[str, Any] | None:
+        read_segment = self._read_then_write_read_segment(content)
+        untagged_markers = ("不带标签", "没有标签", "无标签", "未打标签", "没标签", "没有分类", "未分类")
+        if any(marker in read_segment for marker in untagged_markers):
+            return {
+                "operation": "find_untagged_documents",
+                "target_type": "paper",
+                "scope_type": "untagged",
+                "tool_name": "library.explorer.category_stats",
+                "reason": "确定性读取当前没有标签/分类的论文集合。",
+            }
+        category_name = self._extract_existing_category_mention(read_segment)
+        if category_name and any(marker in read_segment for marker in ("标签", "分类", "标签下", "分类下", "下面", "下的")):
+            return {
+                "operation": "find_documents_by_category",
+                "target_type": "paper",
+                "scope_type": "category",
+                "category_name": category_name,
+                "tool_name": "library.explorer.find_documents",
+                "reason": "确定性读取指定标签/分类下的 ready 论文集合。",
+            }
+        return None
+
+    @staticmethod
+    def _read_then_write_read_segment(content: str) -> str:
+        separators = (
+            "然后",
+            "再帮",
+            "再给",
+            "并且",
+            "同时",
+            "接着",
+            "帮我把这些",
+            "给这些",
+            "把这些",
+            "；",
+            ";",
+        )
+        indexes = [content.find(separator) for separator in separators if content.find(separator) > 0]
+        if not indexes:
+            return content
+        return content[: min(indexes)]
+
+    def _read_then_write_write_segment(self, content: str) -> str:
+        read_segment = self._read_then_write_read_segment(content)
+        return content[len(read_segment) :] if len(read_segment) < len(content) else content
+
+    def _read_then_write_target_category_names(self, content: str) -> list[str]:
+        segment = self._read_then_write_write_segment(content)
+        names: list[str] = []
+
+        def add(value: str) -> None:
+            candidate = self._clean_category_name(value)
+            if not candidate or candidate in {"某个", "某个分类", "某个标签", "这个标签", "该标签", "此标签"}:
+                return
+            if not self._category_name_validation_error(candidate) and candidate not in names:
+                names.append(candidate)
+
+        for value in re.findall(r"[\"'“”‘’「」『』《》]([^\"'“”‘’「」『』《》]{1,40})[\"'“”‘’「」『』《》]", segment):
+            add(value)
+        if names:
+            return names
+        for pattern in (
+            r"(?:加上|打上|添加|补上|归类到|设置成|设为|设成|标为)\s*(?:一个|1个)?\s*([A-Za-z0-9_\-\u4e00-\u9fff]{1,40})\s*(?:标签|分类)",
+            r"(?:标签|分类)\s*[：:]\s*([^，。！？；;\n]{1,40})",
+        ):
+            match = re.search(pattern, segment)
+            if match:
+                add(match.group(1))
+        return names
+
+    @staticmethod
+    def _has_read_then_write_safety_marker(content: str) -> bool:
+        normalized = content.casefold()
+        return any(
+            marker in normalized
+            for marker in (
+                "不要修改",
+                "不要改",
+                "只读",
+                "只读看看",
+                "不要打标签",
+                "不要加标签",
+                "不要添加标签",
+                "不要添加分类",
+                "do not modify",
+                "read only",
+            )
+        )
+
+    @staticmethod
+    def _has_downstream_report_generation_request(content: str) -> bool:
+        normalized = content.casefold()
+        return any(
+            marker in normalized
+            for marker in (
+                "写一份总结",
+                "写个总结",
+                "写总结",
+                "生成总结",
+                "按标签分别写",
+                "分别写一份总结",
+                "写一篇报告",
+                "写报告",
+                "生成报告",
+                "分析报告",
+                "analysis report",
+                "write a report",
+                "summary",
+            )
+        )
+
+    def _ambiguous_relation_write_scope_clarification(
+        self,
+        *,
+        session: ChatSession,
+        content: str,
+        selected_document_ids: list[str],
+        attachments: list[ChatAttachment],
+        observations: list[_ReactObservation],
+        trace_id: str | None = None,
+    ) -> KnowledgeAgentResult | None:
+        if not self._is_relation_level_write_intent(content):
+            return None
+        if self._is_tag_category_semantics_conflict(content):
+            return None
+        if not self._ambiguous_relation_write_scope_without_context(
+            session=session,
+            content=content,
+            action_arguments={},
+            selected_document_ids=selected_document_ids,
+            attachments=attachments,
+            observations=observations,
+        ):
+            return None
+        return KnowledgeAgentResult(
+            content="我还不能确定“这些论文”具体指哪些论文。请先选择论文，或先让我查出一批论文后再执行打标签/移除标签操作。",
+            action_status="needs_clarification",
+            agent_trace_id=trace_id,
+            library_mutated=False,
+        )
+
+    @staticmethod
+    def _is_relation_level_write_intent(content: str) -> bool:
+        return KnowledgeAgentRuntime._is_assignment_intent(content) or KnowledgeAgentRuntime._is_clear_categories_intent(content)
+
+    @staticmethod
+    def _mentions_ambiguous_plural_document_referent(content: str) -> bool:
+        return any(
+            marker in content
+            for marker in (
+                "这些论文",
+                "这些文章",
+                "这些文档",
+                "这几篇",
+                "这批",
+                "它们",
+                "他们",
+                "上面这些",
+                "上述这些",
+                "刚刚这些",
+                "刚才这些",
+                "刚刚这几篇",
+                "刚才这几篇",
+            )
+        )
+
+    @staticmethod
+    def _mentions_explicit_category_document_scope(content: str) -> bool:
+        lowered = content.casefold()
+        if any(
+            marker in content
+            for marker in (
+                "标签下的论文",
+                "分类下的论文",
+                "标签下面的论文",
+                "分类下面的论文",
+                "标签里的论文",
+                "分类里的论文",
+                "标签中的论文",
+                "分类中的论文",
+                "标签下",
+                "分类下",
+            )
+        ):
+            return True
+        return bool(
+            re.search(r"(?:under|in)\s+.+\s+(?:tag|category).*(?:paper|papers|document|documents)", lowered)
+            or re.search(r"(?:paper|papers|document|documents).*(?:under|in)\s+.+\s+(?:tag|category)", lowered)
+        )
+
+    def _ambiguous_relation_write_scope_without_context(
+        self,
+        *,
+        session: ChatSession,
+        content: str,
+        action_arguments: dict[str, Any],
+        selected_document_ids: list[str],
+        attachments: list[ChatAttachment],
+        observations: list[_ReactObservation],
+    ) -> bool:
+        if not self._mentions_ambiguous_plural_document_referent(content):
+            return False
+        if self._needs_untagged_assignment(content) or str(action_arguments.get("scope") or "") == "untagged":
+            return False
+        if self._mentions_all_library(content):
+            return False
+        if self._mentions_explicit_category_document_scope(content):
+            return False
+        if self._real_document_ids(selected_document_ids):
+            return False
+        attachment_ids = self._real_document_ids([attachment.document_id for attachment in attachments if attachment.document_id])
+        if attachment_ids:
+            return False
+        state_ids = self._state_document_ids(self._read_react_state(session.id))
+        if state_ids:
+            return False
+        if self._real_document_ids(self._document_ids_from_observations(observations)):
+            return False
+        category_filter_ids = self._category_filter_document_ids_from_observations(observations)
+        if category_filter_ids is not None:
+            return False
+        return True
 
     def _should_handle_with_react(
         self,
@@ -2148,6 +3269,7 @@ class KnowledgeAgentRuntime:
         validation_error = self._validate_react_action(
             isolated_action,
             observations,
+            content=content,
             plan_step=step_state,
             plan_state=plan_state,
         )
@@ -3501,6 +4623,88 @@ class KnowledgeAgentRuntime:
                 status="validation_failed",
                 summary=f"未知工具：{action.tool}",
             )
+        target_scope = self._report_compare_target_scope(
+            session=session,
+            content=content,
+            action=action,
+            observations=observations,
+            plan_state=plan_state,
+        )
+        if target_scope is not None:
+            self._append_react_trace(
+                run_id=run_id,
+                status="report_compare_target_scope",
+                payload={
+                    "tool": action.tool,
+                    "document_ids": target_scope["document_ids"],
+                    "scope_source": target_scope["scope_source"],
+                    "request_type": target_scope["request_type"],
+                },
+            )
+        if action.tool == "evidence.retriever.search_by_category" and target_scope is not None:
+            if not self._mentions_explicit_category_document_scope(content):
+                target_ids = list(target_scope["document_ids"])
+                self._append_react_trace(
+                    run_id=run_id,
+                    status="target_doc_leak_prevented",
+                    payload={
+                        "tool": action.tool,
+                        "reason": "category_search_constrained_to_report_compare_target_scope",
+                        "target_document_ids": target_ids,
+                        "scope_source": target_scope["scope_source"],
+                    },
+                )
+                action = _ReactAction(
+                    "evidence.retriever.search",
+                    {"question": str(action.arguments.get("question") or content), "document_ids": target_ids},
+                    "Constrain category evidence retrieval to the explicit report/compare target scope.",
+                    task_intent=action.task_intent,
+                    action_plan=action.action_plan,
+                    confidence=action.confidence,
+                )
+                executor = tool_map[action.tool]
+        if action.tool == "evidence.retriever.search" and target_scope is not None:
+            requested_ids = self._real_document_ids(action.arguments.get("document_ids") or [])
+            target_ids = list(target_scope["document_ids"])
+            if requested_ids and set(requested_ids) != set(target_ids):
+                self._append_react_trace(
+                    run_id=run_id,
+                    status="target_doc_leak_prevented",
+                    payload={
+                        "tool": action.tool,
+                        "reason": "evidence_search_scope_constrained_to_report_compare_target_scope",
+                        "requested_document_ids": requested_ids,
+                        "target_document_ids": target_ids,
+                        "scope_source": target_scope["scope_source"],
+                    },
+                )
+                action.arguments["document_ids"] = target_ids
+        if action.tool == "report.drafter.write" and target_scope is not None:
+            requested_ids = self._real_document_ids(action.arguments.get("document_ids") or [])
+            target_ids = list(target_scope["document_ids"])
+            if set(requested_ids) != set(target_ids):
+                self._append_react_trace(
+                    run_id=run_id,
+                    status="target_doc_leak_prevented",
+                    payload={
+                        "tool": action.tool,
+                        "reason": "report_drafter_scope_constrained_to_report_compare_target_scope",
+                        "requested_document_ids": requested_ids,
+                        "target_document_ids": target_ids,
+                        "scope_source": target_scope["scope_source"],
+                    },
+                )
+                action.arguments["document_ids"] = target_ids
+        if action.tool == "evidence.retriever.search":
+            reused = self._evidence_reuse_observation(
+                run_id=run_id,
+                content=content,
+                action=action,
+                observations=observations,
+                target_scope=target_scope,
+            )
+            if reused is not None:
+                return reused
         if action.tool in self._TOOL_RISK_REGISTRY:
             return self._safe_execute_tool(
                 run_id=run_id,
@@ -3810,6 +5014,21 @@ class KnowledgeAgentRuntime:
                 document_ids = [str(item) for item in arguments.get("document_ids") or [] if item]
                 if scope and scope not in {"untagged", "last_referenced", "documents"}:
                     return "打标签操作的 scope 无效，已拒绝执行。"
+                if resolved.get("clarification_needed") or resolved.get("scope_type") == "unknown":
+                    return "我还不能确定“这些论文”具体指哪些论文。请先选择论文，或先让我查出一批论文后再执行打标签操作。"
+                if self._mentions_ambiguous_plural_document_referent(content) and document_ids and not resolved:
+                    return "我还不能确定“这些论文”具体指哪些论文。请先选择论文，或先让我查出一批论文后再执行打标签操作。"
+                if (
+                    self._mentions_ambiguous_plural_document_referent(content)
+                    and document_ids
+                    and resolved.get("scope_type") == "explicit_documents"
+                    and not (
+                        self._needs_untagged_assignment(content)
+                        or self._mentions_all_library(content)
+                        or self._mentions_explicit_category_document_scope(content)
+                    )
+                ):
+                    return "我还不能确定“这些论文”具体指哪些论文。请先选择论文，或先让我查出一批论文后再执行打标签操作。"
                 if resolved.get("scope_type") == "all_library":
                     return "批量给所有论文打标签必须先经过确认或先筛选出明确论文集合，本轮没有改动论文库。"
                 if scope == "documents" and not document_ids and not self._document_ids_from_observations(observations):
@@ -3835,8 +5054,24 @@ class KnowledgeAgentRuntime:
             category_name = self._clean_category_name(str(arguments.get("category_name") or ""))
             document_ids = [str(item) for item in arguments.get("document_ids") or [] if item]
             scope = str(arguments.get("scope") or "")
+            resolved = arguments.get("_resolved_action") if isinstance(arguments.get("_resolved_action"), dict) else {}
             if operation == "remove_single_category_link" and not category_name:
                 return "移除标签关联必须提供明确的 category_name，已拒绝执行。"
+            if resolved.get("clarification_needed") or resolved.get("scope_type") == "unknown":
+                return "我还不能确定“这些论文”具体指哪些论文。请先选择论文，或先让我查出一批论文后再执行移除/清空标签操作。"
+            if self._mentions_ambiguous_plural_document_referent(content) and document_ids and not resolved:
+                return "我还不能确定“这些论文”具体指哪些论文。请先选择论文，或先让我查出一批论文后再执行移除/清空标签操作。"
+            if (
+                self._mentions_ambiguous_plural_document_referent(content)
+                and document_ids
+                and resolved.get("scope_type") == "explicit_documents"
+                and not (
+                    self._mentions_all_library(content)
+                    or self._mentions_all_categories(content)
+                    or self._mentions_explicit_category_document_scope(content)
+                )
+            ):
+                return "我还不能确定“这些论文”具体指哪些论文。请先选择论文，或先让我查出一批论文后再执行移除/清空标签操作。"
             if operation == "remove_single_category_link" and scope not in {"all", "tagged"} and not document_ids:
                 return "移除标签关联缺少明确论文范围，已拒绝执行；模糊指代不会默认扩大到全库。"
             if operation == "clear_document_categories" and not document_ids:
@@ -3851,6 +5086,230 @@ class KnowledgeAgentRuntime:
             if missing:
                 return f"写操作缺少必填参数：{', '.join(missing)}。"
         return None
+
+    def _evidence_reuse_observation(
+        self,
+        *,
+        run_id: str,
+        content: str,
+        action: _ReactAction,
+        observations: list[_ReactObservation],
+        target_scope: dict[str, Any] | None = None,
+    ) -> _ReactObservation | None:
+        requested_document_ids = self._real_document_ids(action.arguments.get("document_ids") or [])
+        if not requested_document_ids or not self._can_reuse_evidence_for_request(content, requested_document_ids):
+            return None
+        target_document_ids = self._real_document_ids((target_scope or {}).get("document_ids") or [])
+        if target_document_ids:
+            requested_set = set(requested_document_ids)
+            target_set = set(target_document_ids)
+            if not requested_set.issubset(target_set):
+                self._append_evidence_reuse_scope_mismatch_trace(
+                    run_id=run_id,
+                    requested_document_ids=requested_document_ids,
+                    target_document_ids=target_document_ids,
+                    source_document_ids=[],
+                    reason="requested_scope_outside_report_compare_target",
+                )
+                return None
+            if self._requires_full_target_evidence(content, target_document_ids) and requested_set != target_set:
+                self._append_evidence_reuse_scope_mismatch_trace(
+                    run_id=run_id,
+                    requested_document_ids=requested_document_ids,
+                    target_document_ids=target_document_ids,
+                    source_document_ids=[],
+                    reason="requested_scope_does_not_cover_full_report_compare_target",
+                )
+                return None
+        source = self._latest_evidence_observation_for_scope(
+            requested_document_ids=requested_document_ids,
+            observations=observations,
+        )
+        if source is None:
+            return None
+        source_index, source_observation, source_payload, evidence_payload = source
+        source_document_ids = self._document_ids_from_evidence_payload(evidence_payload)
+        if target_document_ids:
+            source_set = set(source_document_ids)
+            target_set = set(target_document_ids)
+            if not source_set or not source_set.issubset(target_set):
+                self._append_evidence_reuse_scope_mismatch_trace(
+                    run_id=run_id,
+                    requested_document_ids=requested_document_ids,
+                    target_document_ids=target_document_ids,
+                    source_document_ids=source_document_ids,
+                    reason="source_evidence_outside_report_compare_target",
+                )
+                return None
+            if self._requires_full_target_evidence(content, target_document_ids) and not target_set.issubset(source_set):
+                self._append_evidence_reuse_scope_mismatch_trace(
+                    run_id=run_id,
+                    requested_document_ids=requested_document_ids,
+                    target_document_ids=target_document_ids,
+                    source_document_ids=source_document_ids,
+                    reason="source_evidence_does_not_cover_full_report_compare_target",
+                )
+                return None
+        question = str(action.arguments.get("question") or content)
+        reuse_scope_key = self._evidence_scope_key(requested_document_ids)
+        payload = {
+            "document_ids": requested_document_ids,
+            "evidence_items": evidence_payload,
+            "evidence_quality": source_payload.get("evidence_quality"),
+            "cache_hit": bool(source_payload.get("cache_hit")),
+            "retrieval_strategy": source_payload.get("retrieval_strategy"),
+            "question": question,
+            "evidence_reused": True,
+            "reused_from_observation_index": source_index,
+            "reused_source_tool": source_observation.tool,
+            "reuse_scope_key": reuse_scope_key,
+        }
+        self._append_react_trace(
+            run_id=run_id,
+            status="evidence_reused",
+            payload={
+                "tool": action.tool,
+                "document_ids": requested_document_ids,
+                "evidence_count": len(evidence_payload),
+                "reused_from_observation_index": source_index,
+                "reuse_scope_key": reuse_scope_key,
+            },
+        )
+        return _ReactObservation(
+            tool="evidence.retriever.search",
+            status="completed",
+            summary=f"Reused {len(evidence_payload)} evidence item(s) from an earlier search in this run.",
+            payload=payload,
+        )
+
+    def _append_evidence_reuse_scope_mismatch_trace(
+        self,
+        *,
+        run_id: str,
+        requested_document_ids: list[str],
+        target_document_ids: list[str],
+        source_document_ids: list[str],
+        reason: str,
+    ) -> None:
+        self._append_react_trace(
+            run_id=run_id,
+            status="evidence_reuse_rejected_scope_mismatch",
+            payload={
+                "requested_document_ids": requested_document_ids,
+                "target_document_ids": target_document_ids,
+                "source_document_ids": source_document_ids,
+                "reason": reason,
+            },
+        )
+
+    def _requires_full_target_evidence(self, content: str, target_document_ids: list[str]) -> bool:
+        return len(target_document_ids) > 1 and (
+            self._is_compare_like_request(content) or self._is_report_like_request(content)
+        )
+
+    def _report_compare_target_scope(
+        self,
+        *,
+        session: ChatSession,
+        content: str,
+        action: _ReactAction,
+        observations: list[_ReactObservation],
+        plan_state: _PlanState | None = None,
+    ) -> dict[str, Any] | None:
+        if not (self._is_report_like_request(content) or self._is_compare_like_request(content)):
+            return None
+        request_type = "compare" if self._is_compare_like_request(content) else "report"
+
+        def scope(ids: list[str], source: str) -> dict[str, Any] | None:
+            real_ids = self._real_document_ids(ids)
+            return {"document_ids": real_ids, "scope_source": source, "request_type": request_type} if real_ids else None
+
+        if plan_state is not None:
+            selected_ids = self._selected_document_ids_from_plan(plan_state)
+            if selected_ids:
+                return scope(selected_ids, "selected_document_ids")
+            attachment_ids = [attachment.document_id for attachment in self._attachments_from_plan(plan_state) if attachment.document_id]
+            if attachment_ids:
+                return scope(attachment_ids, "library_document_attachments")
+
+        action_ids = [str(item) for item in action.arguments.get("document_ids") or [] if item]
+        if action_ids:
+            return scope(action_ids, "resolved_action_document_ids")
+
+        if self._mentions_explicit_category_document_scope(content):
+            category_filter_ids = self._category_filter_document_ids_from_observations(observations)
+            if category_filter_ids is not None:
+                return scope(category_filter_ids, "tag_filter_document_ids")
+
+        if self._mentions_plural_current_documents(content) or self._mentions_previous_referent(content):
+            recent_ids = self._recent_scope_document_ids(session.id, singular=False)
+            if recent_ids:
+                return scope(recent_ids, "recent_multi_documents")
+        if self._mentions_single_current_document(content):
+            recent_ids = self._recent_scope_document_ids(session.id, singular=True)
+            if recent_ids:
+                return scope(recent_ids, "recent_single_document")
+        return None
+
+    def _latest_evidence_observation_for_scope(
+        self,
+        *,
+        requested_document_ids: list[str],
+        observations: list[_ReactObservation],
+    ) -> tuple[int, _ReactObservation, dict[str, Any], list[Any]] | None:
+        requested_set = set(requested_document_ids)
+        if not requested_set:
+            return None
+        for index in range(len(observations) - 1, -1, -1):
+            observation = observations[index]
+            if observation.tool != "evidence.retriever.search" or observation.status != "completed":
+                continue
+            payload = self._react_observation_payload(observation)
+            evidence_payload = observation.payload.get("evidence_items")
+            if not isinstance(evidence_payload, list) or not evidence_payload:
+                evidence_payload = self._react_observation_evidence(observation)
+            if not evidence_payload:
+                continue
+            observed_ids = self._real_document_ids(payload.get("document_ids") or [])
+            if not observed_ids:
+                observed_ids = self._document_ids_from_evidence_payload(evidence_payload)
+            if set(observed_ids) != requested_set:
+                continue
+            evidence_document_ids = set(self._document_ids_from_evidence_payload(evidence_payload))
+            if requested_set and not requested_set.issubset(evidence_document_ids):
+                continue
+            return index, observation, payload, evidence_payload
+        return None
+
+    @staticmethod
+    def _evidence_scope_key(document_ids: list[str]) -> str:
+        return ",".join(sorted(str(item) for item in document_ids if item))
+
+    def _document_ids_from_evidence_payload(self, evidence_payload: list[Any]) -> list[str]:
+        document_ids: list[str] = []
+        for item in evidence_payload:
+            if isinstance(item, EvidenceItem):
+                document_id = item.document_id or item.source_id
+            elif isinstance(item, dict):
+                document_id = item.get("document_id") or item.get("source_id")
+            else:
+                document_id = None
+            if isinstance(document_id, str) and document_id not in document_ids:
+                document_ids.append(document_id)
+        return self._real_document_ids(document_ids)
+
+    def _can_reuse_evidence_for_request(self, content: str, document_ids: list[str]) -> bool:
+        if not document_ids:
+            return False
+        return (
+            self._is_report_like_request(content)
+            or self._is_compare_like_request(content)
+            or self._is_summary_request(content, document_ids)
+            or self._is_selected_document_answer_request(content, document_ids, [])
+            or self._mentions_previous_referent(content)
+            or self._mentions_single_current_document(content)
+            or self._mentions_plural_current_documents(content)
+        )
 
     def _resolve_action_intent(
         self,
@@ -3932,6 +5391,33 @@ class KnowledgeAgentRuntime:
                     reason="统一解析无标签论文补标签操作；scope=untagged 不进入文档模糊匹配。",
                     clarification_needed=False,
                 )
+            if self._ambiguous_relation_write_scope_without_context(
+                session=session,
+                content=content,
+                action_arguments=action.arguments,
+                selected_document_ids=selected_document_ids,
+                attachments=attachments,
+                observations=observations,
+            ):
+                action.arguments.pop("document_ids", None)
+                action.arguments["scope"] = "documents"
+                if category_name:
+                    action.arguments.setdefault("category_name", category_name)
+                    action.arguments.setdefault("category_names", category_names or [category_name])
+                return _ResolvedAction(
+                    intent_type="write",
+                    operation="assign_label",
+                    target_type="paper_label_relation",
+                    scope_type="unknown",
+                    document_ids=[],
+                    label_name=category_name,
+                    category_name=category_name,
+                    risk_level="safe_write",
+                    requires_confirmation=False,
+                    tool_name=action.tool,
+                    reason="模糊复数指代缺少 selected/recent/read-result 论文范围，不能使用模型生成的 document_ids。",
+                    clarification_needed=True,
+                )
             scope_type, document_ids = self._resolve_document_scope(
                 session=session,
                 content=content,
@@ -3978,6 +5464,32 @@ class KnowledgeAgentRuntime:
                 or self._mentions_all_categories(content)
                 or any(marker in content for marker in ("带有", "带着", "包含", "含有", "这个标签", "该标签", "标签下"))
             )
+            if self._ambiguous_relation_write_scope_without_context(
+                session=session,
+                content=content,
+                action_arguments=action.arguments,
+                selected_document_ids=selected_document_ids,
+                attachments=attachments,
+                observations=observations,
+            ):
+                action.arguments.pop("document_ids", None)
+                action.arguments["scope"] = "documents"
+                if category_name:
+                    action.arguments["category_name"] = category_name
+                return _ResolvedAction(
+                    intent_type="write",
+                    operation="remove_label" if operation == "remove_single_category_link" else "clear_labels",
+                    target_type="paper_label_relation",
+                    scope_type="unknown",
+                    document_ids=[],
+                    label_name=category_name or None,
+                    category_name=category_name or None,
+                    risk_level="destructive",
+                    requires_confirmation=True,
+                    tool_name=action.tool,
+                    reason="模糊复数指代缺少 selected/recent/read-result 论文范围，不能执行标签关系移除或清空。",
+                    clarification_needed=True,
+                )
             scope_type, document_ids = self._resolve_document_scope(
                 session=session,
                 content=content,
@@ -4060,6 +5572,10 @@ class KnowledgeAgentRuntime:
                 observations=observations,
                 allow_all_library=False,
             )
+            category_filter_ids = self._category_filter_document_ids_from_observations(observations)
+            if category_filter_ids is not None:
+                scope_type = "category_filter"
+                document_ids = category_filter_ids
             if document_ids:
                 action.arguments["document_ids"] = document_ids
             return _ResolvedAction(
@@ -4135,6 +5651,9 @@ class KnowledgeAgentRuntime:
             observation_ids = self._real_document_ids(self._document_ids_from_observations(observations))
             if len(observation_ids) > 1:
                 return "recent_selection", observation_ids
+        category_filter_ids = self._category_filter_document_ids_from_observations(observations)
+        if category_filter_ids is not None:
+            return "category_filter", category_filter_ids
         explicit_documents = self._resolve_documents(content, [], allow_all=False)
         if explicit_documents:
             return "explicit_documents", [document.id for document in explicit_documents]
@@ -4179,11 +5698,21 @@ class KnowledgeAgentRuntime:
     @staticmethod
     def _infer_clear_categories_operation(arguments: dict[str, Any]) -> str:
         operation = str(arguments.get("operation") or "").strip()
-        if operation:
-            return operation
         category_name = str(arguments.get("category_name") or "").strip()
         document_ids = [item for item in arguments.get("document_ids") or [] if item]
         scope = str(arguments.get("scope") or "").strip()
+        normalized_operation = operation.casefold()
+        if normalized_operation in {"remove", "delete", "unlink", "remove_category", "remove_label"} and category_name:
+            return "remove_single_category_link"
+        if normalized_operation in {"clear", "clear_categories", "clear_labels"}:
+            if category_name:
+                return "remove_single_category_link"
+            if document_ids:
+                return "clear_document_categories"
+            if scope in {"all", "tagged"}:
+                return "clear_all_categories"
+        if operation:
+            return operation
         if category_name:
             return "remove_single_category_link"
         if document_ids:
@@ -4402,6 +5931,55 @@ class KnowledgeAgentRuntime:
 
         return "清空/移除标签操作缺少明确 operation，未执行。"
 
+    def _preview_assign_category_from_documents(
+        self,
+        *,
+        category_name: str,
+        document_ids: list[str],
+        source_goal: str,
+        risk_level: str = "scoped_write",
+        expected_scope: str = "read_step_document_ids",
+    ) -> _WritePreview:
+        documents = [
+            document
+            for document in self.document_library_service.list_documents()
+            if document.id in set(document_ids)
+        ]
+        affected_entities = [
+            {
+                "document_id": document.id,
+                "name": document.display_name or document.filename,
+                "title": document.title,
+                "before_categories": [category.name for category in document.categories],
+                "after_categories": list(
+                    dict.fromkeys([*[category.name for category in document.categories], category_name])
+                ),
+            }
+            for document in documents
+        ]
+        return _WritePreview(
+            operation="assign_category",
+            risk_level=risk_level,
+            tool_name="library.operator.assign_category",
+            tool_args={
+                "category_name": category_name,
+                "category_names": [category_name],
+                "document_ids": [document.id for document in documents],
+                "scope": "documents",
+            },
+            target_entity={
+                "type": "paper-category relation",
+                "name": category_name,
+                "operation_level": "relation-level",
+                "source_goal": source_goal[:300],
+            },
+            affected_count=len(documents),
+            affected_entities=affected_entities,
+            expected_scope=expected_scope,
+            before_snapshot=self._category_snapshot(),
+            confirmation_phrase=f"确认给{len(documents)}篇论文添加{category_name}标签",
+        )
+
     def _preview_delete_unused_categories(self, arguments: dict[str, Any]) -> _WritePreview | str:
         selector = str(arguments.get("selector") or "").strip().casefold()
         if selector != "unused":
@@ -4471,22 +6049,24 @@ class KnowledgeAgentRuntime:
         plan_state: _PlanState | None = None,
         step_state: _StepState | None = None,
     ) -> None:
+        is_assign = preview.operation == "assign_category"
+        is_delete_unused = preview.operation == "delete_unused_categories"
         payload = {
             "type": "tool_action",
             "pending_plan_id": plan_state.plan_id if plan_state is not None else None,
             "operation": preview.operation,
             "operation_level": preview.target_entity.get("operation_level")
-            or ("entity-level" if preview.operation == "delete_unused_categories" else "relation-level"),
-            "write_type": "delete"
-            if preview.operation == "delete_unused_categories"
+            or ("entity-level" if is_delete_unused else "relation-level"),
+            "write_type": "append"
+            if is_assign
+            else "delete"
+            if is_delete_unused
             else ("remove" if preview.operation == "remove_single_category_link" else "clear"),
-            "target_type": "category"
-            if preview.operation == "delete_unused_categories"
-            else "paper-category relation",
+            "target_type": "category" if is_delete_unused else "paper-category relation",
             "target_count": preview.affected_count,
             "targets": preview.affected_entities,
-            "will_delete_entities": preview.operation == "delete_unused_categories",
-            "will_modify_relations": preview.operation != "delete_unused_categories",
+            "will_delete_entities": is_delete_unused,
+            "will_modify_relations": not is_delete_unused,
             "requires_confirmation": True,
             "risk_level": preview.risk_level,
             "tool_name": preview.tool_name,
@@ -4527,6 +6107,19 @@ class KnowledgeAgentRuntime:
                 f"需要确认：我找到了 {preview.affected_count} 个 count=0 的空标签/分类实体"
                 f"{'：' + names if names else ''}。"
                 "该操作只会删除这些标签/分类实体，不会修改任何论文的标签关系。"
+                f"请回复「{preview.confirmation_phrase}」后我再执行。"
+            )
+        if preview.operation == "assign_category":
+            names = "、".join(
+                str(item.get("name"))
+                for item in preview.affected_entities[:8]
+                if isinstance(item, dict) and item.get("name")
+            )
+            suffix = "等" if preview.affected_count > 8 else ""
+            target = preview.target_entity.get("name") or "目标标签"
+            return (
+                f"需要确认：我将给 {preview.affected_count} 篇论文添加标签/分类「{target}」"
+                f"{'：' + names + suffix if names else ''}。"
                 f"请回复「{preview.confirmation_phrase}」后我再执行。"
             )
         target = preview.target_entity.get("name") or preview.target_entity.get("scope") or preview.operation
@@ -5784,7 +7377,12 @@ class KnowledgeAgentRuntime:
     ) -> _ReactObservation:
         document_ids = [str(item) for item in arguments.get("document_ids") or [] if item]
         if not document_ids:
-            document_ids = self._document_ids_from_observations(observations)
+            category_filter_ids = self._category_filter_document_ids_from_observations(observations)
+            document_ids = (
+                category_filter_ids
+                if category_filter_ids is not None
+                else self._document_ids_from_observations(observations)
+            )
         if not document_ids:
             category_name = self._category_name_from_request_or_observations(content, observations)
             if category_name and self._category_exists(category_name):
@@ -5809,6 +7407,7 @@ class KnowledgeAgentRuntime:
                     "evidence_quality": self.rag_service.last_evidence_quality.model_dump(mode="json"),
                     "cache_hit": self.rag_service.last_retrieval_cache_hit,
                     "retrieval_strategy": self.rag_service.last_retrieval_strategy,
+                    "question": str(arguments.get("question") or content),
                 },
             )
 
@@ -6037,9 +7636,57 @@ class KnowledgeAgentRuntime:
     ) -> _ReactObservation:
         document_ids = [str(item) for item in arguments.get("document_ids") or [] if item]
         if not document_ids:
-            document_ids = self._document_ids_from_observations(observations)
+            category_filter_ids = self._category_filter_document_ids_from_observations(observations)
+            document_ids = (
+                category_filter_ids
+                if category_filter_ids is not None
+                else self._document_ids_from_observations(observations)
+            )
         documents = [document for document in self.document_library_service.list_documents() if document.id in set(document_ids)]
         evidence_items = self._evidence_items_from_observations(observations)
+        target_scope = self._report_compare_target_scope(
+            session=_session,
+            content=content,
+            action=_ReactAction("report.drafter.write", arguments, "Resolve report target scope."),
+            observations=observations,
+        )
+        target_document_ids = self._real_document_ids((target_scope or {}).get("document_ids") or [])
+        if target_document_ids:
+            target_set = set(target_document_ids)
+            original_evidence_count = len(evidence_items)
+            original_document_ids = [document.id for document in documents]
+            evidence_items = [
+                item
+                for item in evidence_items
+                if (item.document_id or item.source_id) in target_set
+            ]
+            documents = [document for document in documents if document.id in target_set]
+            document_ids = [document.id for document in documents]
+            filtered_document_ids = sorted(set(original_document_ids) - set(document_ids))
+            filtered_evidence_count = original_evidence_count - len(evidence_items)
+            if filtered_document_ids or filtered_evidence_count:
+                self._append_react_trace(
+                    run_id=run_id,
+                    status="evidence_filtered_to_target_scope",
+                    payload={
+                        "tool": "report.drafter.write",
+                        "target_document_ids": target_document_ids,
+                        "filtered_document_ids": filtered_document_ids,
+                        "filtered_evidence_count": filtered_evidence_count,
+                        "remaining_evidence_count": len(evidence_items),
+                    },
+                )
+                self._append_react_trace(
+                    run_id=run_id,
+                    status="target_doc_leak_prevented",
+                    payload={
+                        "tool": "report.drafter.write",
+                        "reason": "report_evidence_filtered_to_target_scope",
+                        "target_document_ids": target_document_ids,
+                        "filtered_document_ids": filtered_document_ids,
+                        "filtered_evidence_count": filtered_evidence_count,
+                    },
+                )
         resolved_from_library_query = any(
             observation.tool == "library.explorer.find_documents" and observation.status == "completed"
             for observation in observations
@@ -6214,6 +7861,7 @@ class KnowledgeAgentRuntime:
         action: _ReactAction,
         observations: list[_ReactObservation],
         *,
+        content: str = "",
         plan_step: _StepState | None = None,
         plan_state: _PlanState | None = None,
     ) -> str | None:
@@ -6237,6 +7885,21 @@ class KnowledgeAgentRuntime:
                 scope = str(action.arguments.get("scope") or "")
                 document_ids = action.arguments.get("document_ids") or []
                 resolved = action.arguments.get("_resolved_action") if isinstance(action.arguments.get("_resolved_action"), dict) else {}
+                if resolved.get("clarification_needed") or resolved.get("scope_type") == "unknown":
+                    return "我还不能确定“这些论文”具体指哪些论文。请先选择论文，或先让我查出一批论文后再执行打标签操作。"
+                if self._mentions_ambiguous_plural_document_referent(content) and document_ids and not resolved:
+                    return "我还不能确定“这些论文”具体指哪些论文。请先选择论文，或先让我查出一批论文后再执行打标签操作。"
+                if (
+                    self._mentions_ambiguous_plural_document_referent(content)
+                    and document_ids
+                    and resolved.get("scope_type") == "explicit_documents"
+                    and not (
+                        self._needs_untagged_assignment(content)
+                        or self._mentions_all_library(content)
+                        or self._mentions_explicit_category_document_scope(content)
+                    )
+                ):
+                    return "我还不能确定“这些论文”具体指哪些论文。请先选择论文，或先让我查出一批论文后再执行打标签操作。"
                 if resolved.get("scope_type") == "all_library":
                     return "批量给所有论文打标签必须先经过确认或先筛选出明确论文集合，本轮没有改动论文库。"
                 if (
@@ -6261,8 +7924,24 @@ class KnowledgeAgentRuntime:
             document_ids = action.arguments.get("document_ids") or []
             category_name = self._clean_category_name(str(action.arguments.get("category_name") or ""))
             operation = self._infer_clear_categories_operation(action.arguments)
+            resolved = action.arguments.get("_resolved_action") if isinstance(action.arguments.get("_resolved_action"), dict) else {}
             if scope not in {"all", "tagged", "last_referenced", "documents", ""}:
                 return "清空分类/标签的范围无效，因此没有改动论文库。"
+            if resolved.get("clarification_needed") or resolved.get("scope_type") == "unknown":
+                return "我还不能确定“这些论文”具体指哪些论文。请先选择论文，或先让我查出一批论文后再执行移除/清空标签操作。"
+            if self._mentions_ambiguous_plural_document_referent(content) and document_ids and not resolved:
+                return "我还不能确定“这些论文”具体指哪些论文。请先选择论文，或先让我查出一批论文后再执行移除/清空标签操作。"
+            if (
+                self._mentions_ambiguous_plural_document_referent(content)
+                and document_ids
+                and resolved.get("scope_type") == "explicit_documents"
+                and not (
+                    self._mentions_all_library(content)
+                    or self._mentions_all_categories(content)
+                    or self._mentions_explicit_category_document_scope(content)
+                )
+            ):
+                return "我还不能确定“这些论文”具体指哪些论文。请先选择论文，或先让我查出一批论文后再执行移除/清空标签操作。"
             if category_name:
                 if not self._category_exists(category_name):
                     return f"没有找到名为「{category_name}」的标签/分类，因此没有改动论文库。"
@@ -7875,6 +9554,36 @@ class KnowledgeAgentRuntime:
         ]
 
     @staticmethod
+    def _category_filter_document_ids_from_observations(observations: list[_ReactObservation]) -> list[str] | None:
+        for observation in reversed(observations):
+            if observation.tool != "library.explorer.find_documents":
+                continue
+            payload = observation.payload or {}
+            category_lookup = payload.get("category_lookup")
+            has_category_filter = bool(
+                payload.get("category_name")
+                or payload.get("category_names")
+                or isinstance(category_lookup, dict)
+            )
+            if not has_category_filter:
+                continue
+            if isinstance(category_lookup, dict) and (
+                category_lookup.get("missing_names") or category_lookup.get("ambiguous_names")
+            ):
+                return []
+            document_ids: list[str] = []
+            for item in payload.get("document_ids") or []:
+                if isinstance(item, str) and item not in document_ids:
+                    document_ids.append(item)
+            for document in payload.get("documents") or []:
+                if isinstance(document, dict):
+                    document_id = document.get("id")
+                    if isinstance(document_id, str) and document_id not in document_ids:
+                        document_ids.append(document_id)
+            return document_ids
+        return None
+
+    @staticmethod
     def _document_ids_from_observations(observations: list[_ReactObservation]) -> list[str]:
         document_ids: list[str] = []
         for observation in observations:
@@ -9416,6 +11125,13 @@ class KnowledgeAgentRuntime:
                 agent_trace_id=run_id,
                 library_mutated=bool(outcome.payload.get("library_mutated")),
             )
+        if pending.get("type") == "tool_action" and pending.get("tool_name") == "library.operator.assign_category":
+            return KnowledgeAgentResult(
+                content=str(outcome.summary),
+                action_status="failed",
+                agent_trace_id=run_id,
+                library_mutated=False,
+            )
         if outcome.payload.get("deleted"):
             verified_state = outcome.payload.get("verified_state")
             state_text = ""
@@ -9524,6 +11240,85 @@ class KnowledgeAgentRuntime:
                         "target_type": "category",
                         "affected_category_count": observation.payload.get("deleted_count", 0),
                         "deleted_category_names": observation.payload.get("deleted_category_names") or [],
+                        "verified_state": self._safe_trace_payload(observation.payload.get("verified_state") or {}),
+                    },
+            )
+            return _TaskOutcome(summary=observation.summary, payload={**observation.payload, "completed": True})
+
+        if tool_name == "library.operator.assign_category":
+            document_ids = [str(item) for item in tool_args.get("document_ids") or [] if item]
+            existing_ids = {
+                document.id
+                for document in self.document_library_service.list_documents()
+                if document.id in set(document_ids)
+            }
+            if len(existing_ids) != expected_count or existing_ids != set(document_ids):
+                return _TaskOutcome(
+                    summary=(
+                        "确认前复核发现目标论文范围已经变化，未执行。"
+                        f"预期 {expected_count} 篇论文，当前可确认 {len(existing_ids)} 篇论文。"
+                    ),
+                    payload={
+                        "completed": False,
+                        "library_mutated": False,
+                        "expected_affected_count": expected_count,
+                        "actual_affected_count": len(existing_ids),
+                        "expected_document_ids": document_ids,
+                        "actual_document_ids": sorted(existing_ids),
+                    },
+                )
+            confirmed_args = {
+                **tool_args,
+                "__confirmed_pending": True,
+                "__before_snapshot": before_snapshot,
+                "__expected_affected_count": expected_count,
+            }
+            observation = self._tool_assign_category(run_id, session, content, confirmed_args, [])
+            if observation.status != "completed":
+                return _TaskOutcome(
+                    summary=observation.summary,
+                    payload={**observation.payload, "completed": False, "library_mutated": False},
+                )
+            actual_count = len(observation.payload.get("document_ids") or [])
+            if actual_count != expected_count:
+                self._rollback_category_snapshot(before_snapshot, set(document_ids))
+                return _TaskOutcome(
+                    summary=(
+                        "写入后复核发现影响范围与预览不一致，已尝试回滚。"
+                        f"预期 {expected_count} 篇论文，实际 {actual_count} 篇论文。"
+                    ),
+                    payload={
+                        **observation.payload,
+                        "completed": False,
+                        "library_mutated": False,
+                        "rollback_attempted": True,
+                    },
+                )
+            self._append_react_trace(
+                run_id=run_id,
+                status="pending_write_executed",
+                payload={
+                    "tool": tool_name,
+                    "operation": pending.get("operation"),
+                    "operation_level": "relation-level",
+                    "write_type": "append",
+                    "target_type": "paper-category relation",
+                    "expected_affected_count": expected_count,
+                    "library_mutated": bool(observation.payload.get("library_mutated")),
+                },
+            )
+            if observation.payload.get("library_mutated"):
+                self._append_react_trace(
+                    run_id=run_id,
+                    status="library_write_verified",
+                    payload={
+                        "tool": tool_name,
+                        "risk_level": pending.get("risk_level"),
+                        "operation_level": "relation-level",
+                        "write_type": "append",
+                        "target_type": "paper-category relation",
+                        "affected_document_count": actual_count,
+                        "category_names": observation.payload.get("category_names") or [],
                         "verified_state": self._safe_trace_payload(observation.payload.get("verified_state") or {}),
                     },
                 )
