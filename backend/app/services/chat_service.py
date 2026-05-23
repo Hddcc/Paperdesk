@@ -275,6 +275,13 @@ class ChatService:
                     memory_snapshot=memory_snapshot,
                 )
         agent_trace_id = mode_decision.trace_id if mode_decision is not None else None
+        self._append_workbench_hint_trace(mode_decision, request)
+        self._append_slash_command_hint_trace(
+            mode_decision,
+            request,
+            selected_document_ids=document_ids,
+            attachments=normalized_attachments,
+        )
 
         agent_result = None
         if fast_path_response is not None:
@@ -585,6 +592,56 @@ class ChatService:
             status="direct_llm_call_finished",
             message="Direct answer LLM call finished.",
             payload=self.last_llm_diagnostic.as_trace_payload(),
+        )
+
+    def _append_workbench_hint_trace(
+        self,
+        decision: AgentModeDecision | None,
+        request: ChatMessageRequest,
+    ) -> None:
+        if decision is None or self.agent_orchestrator is None:
+            return
+        payload = self._workbench_hint_payload(request)
+        if not payload:
+            return
+        self.agent_orchestrator.append_trace(
+            decision.trace_id,
+            status="workbench_hint_recorded",
+            message="Workbench profile and model hints recorded without changing routing.",
+            payload=payload,
+        )
+
+    @staticmethod
+    def _workbench_hint_payload(request: ChatMessageRequest) -> dict[str, str]:
+        payload: dict[str, str] = {}
+        if request.agent_profile_id:
+            payload["agent_profile_id"] = request.agent_profile_id
+        if request.model_id:
+            payload["model_id"] = request.model_id
+        return payload
+
+    def _append_slash_command_hint_trace(
+        self,
+        decision: AgentModeDecision | None,
+        request: ChatMessageRequest,
+        *,
+        selected_document_ids: list[str],
+        attachments: list[ChatAttachment],
+    ) -> None:
+        if decision is None or self.agent_orchestrator is None:
+            return
+        if not request.command and not request.intent_hint:
+            return
+        self.agent_orchestrator.append_trace(
+            decision.trace_id,
+            status="slash_command_hint_recorded",
+            message="Slash command hint recorded without changing runtime routing.",
+            payload={
+                "command": request.command,
+                "intent_hint": request.intent_hint,
+                "selected_document_count": len(selected_document_ids),
+                "has_attachments": bool(attachments),
+            },
         )
 
     def _assemble_context_state(

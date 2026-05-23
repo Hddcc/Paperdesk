@@ -114,6 +114,137 @@ export interface LibraryDocument {
   categories: DocumentCategory[];
 }
 
+export interface WorkbenchFileItem {
+  id: string;
+  filename: string;
+  display_name: string;
+  title?: string | null;
+  file_path?: string;
+  sha256?: string;
+  page_count?: number;
+  status: string;
+  parser_status?: string;
+  failure_reason?: string | null;
+  indexed_at?: string | null;
+  version?: number;
+  created_at?: string;
+  uploaded_at?: string;
+  categories?: DocumentCategory[];
+}
+
+export interface WorkbenchFileContextResponse {
+  session_id: string;
+  library_documents: WorkbenchFileItem[];
+  selected_document_ids: string[];
+  attachment_document_ids: string[];
+  recent_document_ids: string[];
+  used_document_ids: string[];
+  report_referenced_document_ids: string[];
+  referents: Record<string, unknown>;
+}
+
+export interface WorkbenchModelOption {
+  id: string;
+  label: string;
+  is_current: boolean;
+}
+
+export interface WorkbenchAgentProfile {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export interface WorkbenchConfigResponse {
+  current_model: string;
+  masked_base_url?: string | null;
+  available_models: WorkbenchModelOption[];
+  agent_profiles: WorkbenchAgentProfile[];
+}
+
+export interface WorkbenchCapability {
+  id: string;
+  name: string;
+  description: string;
+  group: string;
+  scope: string;
+  maturity: string;
+  source: string;
+  operation_level: string;
+  io_type: string;
+  write_type: string;
+  destructive: boolean;
+  requires_confirmation: boolean;
+  available_by_default: boolean;
+  current_available: boolean;
+  slash_command?: SlashCommandId | null;
+  user_hint: string;
+}
+
+export interface WorkbenchExperimentalCapability {
+  id: string;
+  name: string;
+  description: string;
+  scope: string;
+  maturity: string;
+  available_by_default: boolean;
+  current_available: boolean;
+  feature_flag?: string | null;
+  user_hint: string;
+}
+
+export interface WorkbenchSlashCommand {
+  id: SlashCommandId;
+  label: string;
+  description: string;
+}
+
+export interface WorkbenchCapabilitiesResponse {
+  stable_capabilities: WorkbenchCapability[];
+  confirmation_required: WorkbenchCapability[];
+  experimental_capabilities: WorkbenchExperimentalCapability[];
+  slash_commands: WorkbenchSlashCommand[];
+}
+
+export interface WorkbenchTraceArtifactStatus {
+  report_saved: boolean;
+  can_save_report: boolean;
+  report_id?: string | null;
+}
+
+export interface WorkbenchTraceToolStep {
+  tool_name: string;
+  display_name: string;
+  status: string;
+  summary: string;
+  evidence_count: number;
+  risk_level: string;
+}
+
+export interface WorkbenchCompactTraceStep {
+  kind: string;
+  label: string;
+  status: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface WorkbenchMessageTraceSummary {
+  message_id: string;
+  trace_id?: string | null;
+  route?: string | null;
+  action_status?: string | null;
+  retrieval_status?: string | null;
+  used_document_ids: string[];
+  evidence_count: number;
+  tool_steps: WorkbenchTraceToolStep[];
+  risk_level: "read_only" | "safe_write" | "scoped_write" | "destructive" | "unknown" | string;
+  confirmation_status: "none" | "required" | "executed" | "failed" | string;
+  saved_report_id?: string | null;
+  artifact_status: WorkbenchTraceArtifactStatus;
+  compact_steps: WorkbenchCompactTraceStep[];
+}
+
 export interface DocumentCategory {
   id: string;
   name: string;
@@ -515,10 +646,28 @@ export interface ChatSessionCreateRequest {
   title?: string | null;
 }
 
+export type SlashCommandId = "summary" | "compare" | "tag" | "library" | "help";
+
+export interface SlashCommandOption {
+  id: SlashCommandId;
+  label: string;
+  group: string;
+  description: string;
+  intent_hint: string;
+  min_documents?: number;
+  default_prompt: string;
+  warning?: string;
+  local_only?: boolean;
+}
+
 export interface ChatMessageRequest {
   content: string;
   attachments?: ChatAttachment[];
   selected_document_ids?: string[];
+  agent_profile_id?: string | null;
+  model_id?: string | null;
+  command?: string | null;
+  intent_hint?: string | null;
 }
 
 export interface ChatSendResponse {

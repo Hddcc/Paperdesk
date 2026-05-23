@@ -23,7 +23,11 @@ import type {
   ResearchRuntimeState,
   ResearchRunDetail,
   ResearchRequest,
-  ResearchStreamEvent
+  ResearchStreamEvent,
+  WorkbenchCapabilitiesResponse,
+  WorkbenchConfigResponse,
+  WorkbenchFileContextResponse,
+  WorkbenchMessageTraceSummary
 } from "../types/models";
 
 const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
@@ -154,6 +158,58 @@ export async function assignDocumentCategories(
     return parseJson<LibraryDocument>(response);
   } catch (err) {
     throw normalizeFetchError(err, "保存论文分类失败");
+  }
+}
+
+export async function getWorkbenchConfig(): Promise<WorkbenchConfigResponse> {
+  try {
+    const response = await fetch(`${baseUrl}/api/workbench/config`, {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" }
+    });
+    return parseJson<WorkbenchConfigResponse>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "加载 Workbench 配置失败");
+  }
+}
+
+export async function getWorkbenchCapabilities(): Promise<WorkbenchCapabilitiesResponse> {
+  try {
+    const response = await fetch(`${baseUrl}/api/workbench/capabilities`, {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" }
+    });
+    return parseJson<WorkbenchCapabilitiesResponse>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "鍔犺浇 Workbench 鑳藉姏澶辫触");
+  }
+}
+
+export async function getWorkbenchSessionFiles(
+  sessionId: string
+): Promise<WorkbenchFileContextResponse> {
+  try {
+    const response = await fetch(`${baseUrl}/api/workbench/sessions/${sessionId}/files`, {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" }
+    });
+    return parseJson<WorkbenchFileContextResponse>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "加载 Workbench 文件上下文失败");
+  }
+}
+
+export async function getWorkbenchMessageTrace(
+  messageId: string
+): Promise<WorkbenchMessageTraceSummary> {
+  try {
+    const response = await fetch(`${baseUrl}/api/workbench/messages/${messageId}/trace`, {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" }
+    });
+    return parseJson<WorkbenchMessageTraceSummary>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "鍔犺浇 Trace 鎽樿澶辫触");
   }
 }
 

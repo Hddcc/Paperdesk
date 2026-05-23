@@ -46,6 +46,7 @@ from app.services import (
     ReportLifecycleService,
     ResearchWorkspaceService,
     TextChunker,
+    WorkbenchService,
 )
 from app.services.research_orchestrator import ResearchOrchestrator
 from app.runtime import AgentOrchestrator, KnowledgeAgentRuntime, KnowledgePlannerRuntime, ReflectionRuntime
@@ -189,6 +190,18 @@ def get_report_lifecycle_service() -> ReportLifecycleService:
         chat_repository=get_chat_repository(),
         research_repository=get_research_repository(),
         report_repository=get_report_repository(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_workbench_service() -> WorkbenchService:
+    return WorkbenchService(
+        settings=get_settings(),
+        library_repository=get_library_repository(),
+        chat_repository=get_chat_repository(),
+        report_repository=get_report_repository(),
+        runtime_repository=get_runtime_repository(),
+        knowledge_agent_runtime=get_knowledge_agent_runtime(),
     )
 
 
@@ -492,7 +505,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    from app.api.routes import chat, documents, export, papers, rag, reports, research
+    from app.api.routes import chat, documents, export, papers, rag, reports, research, workbench
 
     app.include_router(chat.router, prefix="/api")
     app.include_router(documents.router, prefix="/api")
@@ -502,6 +515,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(rag.router, prefix="/api")
     app.include_router(reports.router, prefix="/api")
     app.include_router(research.router, prefix="/api")
+    app.include_router(workbench.router, prefix="/api")
 
     @app.get("/healthz")
     def healthz() -> dict[str, str | None]:

@@ -5,6 +5,10 @@ import {
   createChatSession,
   deleteChatSession,
   getChatSessionDetail,
+  getWorkbenchCapabilities,
+  getWorkbenchConfig,
+  getWorkbenchMessageTrace,
+  getWorkbenchSessionFiles,
   listChatSessions,
   saveChatMessageAsReport,
   streamChatMessage
@@ -17,10 +21,64 @@ import type {
   ChatStreamEvent,
   ChatSession,
   LibraryDocument,
-  MemorySnapshot
+  MemorySnapshot,
+  SlashCommandOption,
+  WorkbenchCapabilitiesResponse,
+  WorkbenchConfigResponse,
+  WorkbenchFileContextResponse,
+  WorkbenchMessageTraceSummary
 } from "../types/models";
 
+type SelectableLibraryDocument = Pick<LibraryDocument, "id" | "display_name" | "title" | "filename" | "status">;
+
 const STORAGE_KEY = "paperdesk-knowledge-draft-state";
+
+export const SLASH_COMMANDS: SlashCommandOption[] = [
+  {
+    id: "summary",
+    label: "/summary",
+    group: "Paper",
+    description: "Summarize the selected paper.",
+    intent_hint: "paper_summary",
+    min_documents: 1,
+    default_prompt: "请总结所选论文。"
+  },
+  {
+    id: "compare",
+    label: "/compare",
+    group: "Paper",
+    description: "Compare selected papers.",
+    intent_hint: "paper_compare",
+    min_documents: 2,
+    default_prompt: "请对比所选论文。"
+  },
+  {
+    id: "tag",
+    label: "/tag",
+    group: "Library",
+    description: "Query or organize tags and categories.",
+    intent_hint: "tag_query_or_write",
+    default_prompt: "请处理标签或分类相关问题。",
+    warning: "标签修改会进入确认流程。"
+  },
+  {
+    id: "library",
+    label: "/library",
+    group: "Library",
+    description: "Query library counts, status, and tags.",
+    intent_hint: "library_query",
+    default_prompt: "请查询当前论文库状态。"
+  },
+  {
+    id: "help",
+    label: "/help",
+    group: "Help",
+    description: "Show available slash commands.",
+    intent_hint: "help",
+    default_prompt: "显示可用命令说明。",
+    local_only: true
+  }
+];
 
 interface PersistedKnowledgeState {
   currentSessionId?: string;
@@ -70,16 +128,29 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
   const messages = ref<ChatMessage[]>([]);
   const memorySnapshot = ref<MemorySnapshot | null>(null);
   const contextState = ref<ChatContextState | null>(null);
+  const workbenchConfig = ref<WorkbenchConfigResponse | null>(null);
+  const workbenchCapabilities = ref<WorkbenchCapabilitiesResponse | null>(null);
+  const workbenchFileContext = ref<WorkbenchFileContextResponse | null>(null);
   const composerText = ref(persistedState.composerText ?? "");
+  const activeSlashCommand = ref<SlashCommandOption | null>(null);
+  const slashCommandMenuOpen = ref(false);
   const draftAttachments = ref<ChatAttachment[]>(persistableAttachments(persistedState.draftAttachments ?? []));
   const selectedDocumentIds = ref<string[]>(persistedState.selectedDocumentIds ?? []);
   const uploadedTaskDocumentIds = ref<string[]>(persistedState.uploadedTaskDocumentIds ?? []);
+  const selectedAgentProfileId = ref("paper_qa");
+  const selectedModelId = ref("");
   const loading = ref(false);
+  const isWorkbenchLoading = ref(false);
+  const isCapabilitiesLoading = ref(false);
   const sending = ref(false);
   const stopping = ref(false);
   const savingReportMessageId = ref("");
   const error = ref("");
   const retrievalNotice = ref("");
+  const selectedTraceMessageId = ref("");
+  const messageTraceSummary = ref<WorkbenchMessageTraceSummary | null>(null);
+  const isTraceLoading = ref(false);
+  const traceError = ref("");
   const bootstrapped = ref(false);
   const activeChatAbortController = ref<AbortController | null>(null);
 
@@ -94,6 +165,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     loading.value = true;
     error.value = "";
     try {
+      await Promise.all([loadWorkbenchConfig(), loadWorkbenchCapabilities()]);
       sessions.value = await listChatSessions();
       if (!sessions.value.length) {
         const session = await createChatSession({ title: "新对话" });
@@ -138,6 +210,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       contextState.value = null;
       clearComposer();
       retrievalNotice.value = "";
+      clearTraceSelection();
       if (remaining.length) {
         await openSession(remaining[0].id, { preserveComposer: false });
       } else {
@@ -166,6 +239,8 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
         clearComposer();
       }
       retrievalNotice.value = latestRetrievalNotice(detail.messages);
+      await refreshWorkbenchFileContext();
+      await selectLatestAssistantMessageForTrace(detail.messages);
     } catch (err) {
       error.value = err instanceof Error ? err.message : "加载会话失败";
       throw err;
@@ -193,7 +268,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     draftAttachments.value = [...draftAttachments.value, attachment];
   }
 
-  function toggleLibraryDocument(document: LibraryDocument) {
+  function toggleLibraryDocument(document: SelectableLibraryDocument) {
     const exists = selectedDocumentIds.value.includes(document.id);
     if (exists) {
       selectedDocumentIds.value = selectedDocumentIds.value.filter((item) => item !== document.id);
@@ -236,9 +311,85 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     }
   }
 
+  async function loadWorkbenchConfig() {
+    isWorkbenchLoading.value = true;
+    try {
+      const config = await getWorkbenchConfig();
+      workbenchConfig.value = config;
+      selectedAgentProfileId.value = config.agent_profiles[0]?.id ?? "paper_qa";
+      selectedModelId.value = config.current_model;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "加载 Workbench 配置失败";
+    } finally {
+      isWorkbenchLoading.value = false;
+    }
+  }
+
+  async function loadWorkbenchCapabilities() {
+    isCapabilitiesLoading.value = true;
+    try {
+      workbenchCapabilities.value = await getWorkbenchCapabilities();
+    } catch (err) {
+      workbenchCapabilities.value = null;
+      error.value = err instanceof Error ? err.message : "鍔犺浇 Workbench 鑳藉姏澶辫触";
+    } finally {
+      isCapabilitiesLoading.value = false;
+    }
+  }
+
+  async function refreshWorkbenchFileContext() {
+    if (!currentSessionId.value) {
+      workbenchFileContext.value = null;
+      return;
+    }
+    isWorkbenchLoading.value = true;
+    try {
+      workbenchFileContext.value = await getWorkbenchSessionFiles(currentSessionId.value);
+    } catch (err) {
+      workbenchFileContext.value = null;
+      error.value = err instanceof Error ? err.message : "加载 Workbench 文件上下文失败";
+    } finally {
+      isWorkbenchLoading.value = false;
+    }
+  }
+
+  function setAgentProfile(id: string) {
+    selectedAgentProfileId.value = id;
+  }
+
+  function setModel(id: string) {
+    selectedModelId.value = id;
+  }
+
+  function setSlashCommand(command: SlashCommandOption | null) {
+    activeSlashCommand.value = command;
+  }
+
+  function clearSlashCommand() {
+    activeSlashCommand.value = null;
+    slashCommandMenuOpen.value = false;
+  }
+
+  function applySlashCommand(command: SlashCommandOption) {
+    activeSlashCommand.value = command;
+    slashCommandMenuOpen.value = false;
+    composerText.value = composerText.value.replace(/(^|\s)\/[^\s]*$/, "$1").trimEnd();
+    if (command.local_only) {
+      retrievalNotice.value = slashHelpText();
+    }
+  }
+
   async function sendCurrentMessage(): Promise<ChatSendResponse | null> {
-    const content = composerText.value.trim();
+    const command = activeSlashCommand.value;
+    const content = composerText.value.trim() || command?.default_prompt || "";
     if (!content) {
+      return null;
+    }
+
+    if (command?.local_only) {
+      retrievalNotice.value = slashHelpText();
+      composerText.value = "";
+      clearSlashCommand();
       return null;
     }
 
@@ -352,7 +503,11 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       await streamChatMessage(sessionId, {
         content,
         attachments,
-        selected_document_ids: selectedIds
+        selected_document_ids: selectedIds,
+        agent_profile_id: selectedAgentProfileId.value || null,
+        model_id: selectedModelId.value || null,
+        command: command?.id ?? null,
+        intent_hint: command?.intent_hint ?? null
       }, (event: ChatStreamEvent) => {
         if (event.type === "status") {
           updateMessage(tempAssistantId, {
@@ -386,6 +541,8 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       currentSessionId.value = completedResponse.session.id;
       retrievalNotice.value = completedResponse.assistant_message.warning || "";
       await refreshSessions();
+      await refreshWorkbenchFileContext();
+      await selectAssistantMessageForTrace(completedResponse.assistant_message);
       return completedResponse;
     } catch (err) {
       if (isAbortError(err)) {
@@ -440,6 +597,9 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
             }
           : item
       );
+      if (selectedTraceMessageId.value === message.id) {
+        await refreshSelectedMessageTrace();
+      }
       return report;
     } catch (err) {
       error.value = err instanceof Error ? err.message : "保存报告失败";
@@ -451,9 +611,61 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
 
   function clearComposer() {
     composerText.value = "";
+    activeSlashCommand.value = null;
+    slashCommandMenuOpen.value = false;
     draftAttachments.value = [];
     selectedDocumentIds.value = [];
     uploadedTaskDocumentIds.value = [];
+  }
+
+  async function loadMessageTrace(messageId: string) {
+    const message = messages.value.find((item) => item.id === messageId);
+    if (!message || message.role !== "assistant") {
+      return null;
+    }
+    selectedTraceMessageId.value = message.id;
+    isTraceLoading.value = true;
+    traceError.value = "";
+    try {
+      messageTraceSummary.value = await getWorkbenchMessageTrace(message.id);
+      return messageTraceSummary.value;
+    } catch (err) {
+      messageTraceSummary.value = null;
+      traceError.value = err instanceof Error ? err.message : "鍔犺浇 Trace 鎽樿澶辫触";
+      return null;
+    } finally {
+      isTraceLoading.value = false;
+    }
+  }
+
+  async function selectAssistantMessageForTrace(message: ChatMessage) {
+    if (message.role !== "assistant") {
+      return null;
+    }
+    return loadMessageTrace(message.id);
+  }
+
+  async function refreshSelectedMessageTrace() {
+    if (!selectedTraceMessageId.value) {
+      return null;
+    }
+    return loadMessageTrace(selectedTraceMessageId.value);
+  }
+
+  async function selectLatestAssistantMessageForTrace(items: ChatMessage[] = messages.value) {
+    const latestAssistant = [...items].reverse().find((item) => item.role === "assistant");
+    if (!latestAssistant) {
+      clearTraceSelection();
+      return null;
+    }
+    return selectAssistantMessageForTrace(latestAssistant);
+  }
+
+  function clearTraceSelection() {
+    selectedTraceMessageId.value = "";
+    messageTraceSummary.value = null;
+    traceError.value = "";
+    isTraceLoading.value = false;
   }
 
   function persistDraftState() {
@@ -473,7 +685,13 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
   }
 
   watch(
-    [currentSessionId, composerText, selectedDocumentIds, uploadedTaskDocumentIds, draftAttachments],
+    [
+      currentSessionId,
+      composerText,
+      selectedDocumentIds,
+      uploadedTaskDocumentIds,
+      draftAttachments
+    ],
     persistDraftState,
     { deep: true }
   );
@@ -524,6 +742,13 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     return "";
   }
 
+  function slashHelpText() {
+    return SLASH_COMMANDS
+      .filter((command) => command.id !== "help")
+      .map((command) => `${command.label} - ${command.description}`)
+      .join("\n");
+  }
+
   return {
     sessions,
     currentSessionId,
@@ -531,21 +756,45 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     messages,
     memorySnapshot,
     contextState,
+    workbenchConfig,
+    workbenchCapabilities,
+    workbenchFileContext,
+    selectedTraceMessageId,
+    messageTraceSummary,
     composerText,
+    activeSlashCommand,
+    slashCommandMenuOpen,
     draftAttachments,
     selectedDocumentIds,
     uploadedTaskDocumentIds,
+    selectedAgentProfileId,
+    selectedModelId,
     loading,
+    isWorkbenchLoading,
+    isCapabilitiesLoading,
     sending,
     savingReportMessageId,
     error,
     retrievalNotice,
+    isTraceLoading,
+    traceError,
     stopping,
     bootstrap,
     refreshSessions,
+    loadWorkbenchConfig,
+    loadWorkbenchCapabilities,
+    refreshWorkbenchFileContext,
+    loadMessageTrace,
+    selectAssistantMessageForTrace,
+    refreshSelectedMessageTrace,
     createNewSession,
     removeSession,
     openSession,
+    setAgentProfile,
+    setModel,
+    setSlashCommand,
+    clearSlashCommand,
+    applySlashCommand,
     queueImageAttachment,
     queueLocalPdfAttachment,
     toggleLibraryDocument,

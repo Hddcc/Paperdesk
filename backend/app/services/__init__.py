@@ -24,6 +24,7 @@ from .report_lifecycle_service import ReportLifecycleService
 from .research_task_router import ResearchTaskRouter
 from .research_workspace_service import ResearchWorkspaceService
 from .text_chunker import TextChunker
+from .workbench_service import WorkbenchService
 
 __all__ = [
     "ArxivClient",
@@ -50,4 +51,5 @@ __all__ = [
     "ResearchTaskRouter",
     "ResearchWorkspaceService",
     "TextChunker",
+    "WorkbenchService",
 ]

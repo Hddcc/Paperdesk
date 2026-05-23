@@ -13,6 +13,7 @@ ChatAttachmentKind = Literal["image", "uploaded_pdf", "library_document"]
 ChatMessageRole = Literal["user", "assistant", "system"]
 KnowledgeRetrievalStatus = Literal["ready", "skipped", "degraded", "unavailable"]
 ContextStage = Literal["normal", "evidence_compacted", "history_compacted", "truncated"]
+SlashCommandId = Literal["summary", "compare", "tag", "library", "help"]
 
 
 def utc_now() -> datetime:
@@ -76,10 +77,24 @@ class ChatMessageRequest(BaseModel):
     content: str = Field(..., min_length=1)
     attachments: list[ChatAttachment] = Field(default_factory=list)
     selected_document_ids: list[str] = Field(default_factory=list)
+    agent_profile_id: str | None = None
+    model_id: str | None = None
+    command: str | None = None
+    intent_hint: str | None = None
 
     @model_validator(mode="after")
     def normalize_lists(self) -> "ChatMessageRequest":
         self.selected_document_ids = [item for item in self.selected_document_ids if item]
+        if self.agent_profile_id is not None:
+            self.agent_profile_id = self.agent_profile_id.strip() or None
+        if self.model_id is not None:
+            self.model_id = self.model_id.strip() or None
+        if self.command is not None:
+            command = self.command.strip().lstrip("/").casefold()
+            allowed_commands: set[SlashCommandId] = {"summary", "compare", "tag", "library", "help"}
+            self.command = command if command in allowed_commands else None
+        if self.intent_hint is not None:
+            self.intent_hint = self.intent_hint.strip() or None
         return self
 
 

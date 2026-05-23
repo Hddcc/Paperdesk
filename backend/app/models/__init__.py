@@ -111,6 +111,20 @@ from .task_routing import (
     ResearchTaskRoute,
     ResearchTaskType,
 )
+from .workbench import (
+    WorkbenchAgentProfile,
+    WorkbenchCapability,
+    WorkbenchCapabilitiesResponse,
+    WorkbenchCompactTraceStep,
+    WorkbenchConfigResponse,
+    WorkbenchExperimentalCapability,
+    WorkbenchFileContextResponse,
+    WorkbenchMessageTraceSummary,
+    WorkbenchModelOption,
+    WorkbenchSlashCommand,
+    WorkbenchTraceArtifactStatus,
+    WorkbenchTraceToolStep,
+)
 
 __all__ = [
     "AgentTask",
@@ -218,4 +232,16 @@ __all__ = [
     "TraceEventType",
     "TodoTask",
     "TodoTaskStatus",
+    "WorkbenchAgentProfile",
+    "WorkbenchCapability",
+    "WorkbenchCapabilitiesResponse",
+    "WorkbenchCompactTraceStep",
+    "WorkbenchConfigResponse",
+    "WorkbenchExperimentalCapability",
+    "WorkbenchFileContextResponse",
+    "WorkbenchMessageTraceSummary",
+    "WorkbenchModelOption",
+    "WorkbenchSlashCommand",
+    "WorkbenchTraceArtifactStatus",
+    "WorkbenchTraceToolStep",
 ]
