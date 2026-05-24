@@ -134,7 +134,7 @@ export interface WorkbenchFileItem {
   categories?: DocumentCategory[];
 }
 
-export type FileKind = "txt" | "md" | "docx" | "unsupported";
+export type FileKind = "txt" | "md" | "docx" | "pdf" | "unsupported";
 export type FileStatus = "uploaded" | "processing" | "ready" | "failed" | "unsupported" | "skipped";
 export type FileTextExtractionStatus = "pending" | "ready" | "failed" | "skipped";
 
@@ -270,6 +270,14 @@ export interface SkillSelection extends WorkbenchTraceSkill {
   source?: string;
 }
 
+export interface WorkbenchFileContextSummary {
+  file_count?: number;
+  used_file_ids?: string[];
+  total_included_chars?: number;
+  truncated_file_count?: number;
+  rejected_file_count?: number;
+}
+
 export interface WorkbenchMessageTraceSummary {
   message_id: string;
   trace_id?: string | null;
@@ -277,6 +285,8 @@ export interface WorkbenchMessageTraceSummary {
   action_status?: string | null;
   retrieval_status?: string | null;
   used_document_ids: string[];
+  used_file_ids?: string[];
+  file_context_summary?: WorkbenchFileContextSummary | null;
   evidence_count: number;
   tool_steps: WorkbenchTraceToolStep[];
   risk_level: "read_only" | "safe_write" | "scoped_write" | "destructive" | "unknown" | string;
@@ -285,6 +295,7 @@ export interface WorkbenchMessageTraceSummary {
   artifact_status: WorkbenchTraceArtifactStatus;
   compact_steps: WorkbenchCompactTraceStep[];
   used_skills?: WorkbenchTraceSkill[];
+  skill_context_summary?: unknown;
 }
 
 export interface DocumentCategory {

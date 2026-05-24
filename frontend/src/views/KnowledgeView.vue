@@ -131,7 +131,88 @@
                         : "保存为报告"
                   }}
                 </button>
+                <button
+                  v-if="message.role === 'assistant'"
+                  class="button-secondary message-action-button"
+                  :disabled="isMessageProcessing(message) || !message.content.trim() || store.isTraceLoading"
+                  @click="showExecutionSummary(message)"
+                >
+                  <FileText :size="15" />
+                  {{ store.selectedTraceMessageId === message.id && store.isTraceLoading ? "加载中..." : "执行摘要" }}
+                </button>
               </div>
+
+              <section
+                v-if="isExecutionSummaryVisible(message)"
+                class="execution-summary-panel"
+                aria-label="执行摘要"
+              >
+                <p v-if="store.isTraceLoading" class="hint-text">正在加载执行摘要...</p>
+                <p v-else-if="store.traceError" class="error-text">{{ store.traceError }}</p>
+                <template v-else-if="activeTraceSummary(message)">
+                  <div class="execution-summary-grid">
+                    <span>
+                      <strong>状态</strong>
+                      <small>{{ formatExecutionStatus(activeTraceSummary(message)) }}</small>
+                    </span>
+                    <span>
+                      <strong>检索</strong>
+                      <small>{{ formatRetrievalSummary(activeTraceSummary(message)) }}</small>
+                    </span>
+                    <span>
+                      <strong>产物</strong>
+                      <small>{{ formatArtifactSummary(activeTraceSummary(message)) }}</small>
+                    </span>
+                  </div>
+                  <details class="trace-debug-details">
+                    <summary>调试详情</summary>
+                    <div class="trace-debug-content">
+                      <div class="trace-debug-section">
+                        <strong>使用的文件 ID</strong>
+                        <p>{{ formatIdList(activeTraceSummary(message)?.used_file_ids) }}</p>
+                      </div>
+                      <div class="trace-debug-section">
+                        <strong>使用的论文 ID</strong>
+                        <p>{{ formatIdList(activeTraceSummary(message)?.used_document_ids) }}</p>
+                      </div>
+                      <div class="trace-debug-section">
+                        <strong>文件处理摘要</strong>
+                        <p>{{ formatFileContextSummary(activeTraceSummary(message)) }}</p>
+                      </div>
+                      <div class="trace-debug-section">
+                        <strong>工具步骤</strong>
+                        <ul v-if="activeTraceSummary(message)?.tool_steps.length" class="trace-debug-list">
+                          <li v-for="step in activeTraceSummary(message)?.tool_steps" :key="`${step.display_name}-${step.status}`">
+                            <span>{{ step.display_name }}</span>
+                            <small>{{ step.status }}</small>
+                          </li>
+                        </ul>
+                        <p v-else>暂无工具步骤</p>
+                      </div>
+                      <div class="trace-debug-section">
+                        <strong>Skill</strong>
+                        <ul v-if="activeTraceSummary(message)?.used_skills?.length" class="trace-debug-list">
+                          <li v-for="skill in activeTraceSummary(message)?.used_skills" :key="skill.skill_id">
+                            <span>{{ skill.name }}</span>
+                            <small>{{ Math.round(skill.confidence * 100) }}%</small>
+                          </li>
+                        </ul>
+                        <p v-else>暂无 Skill 摘要</p>
+                      </div>
+                      <div class="trace-debug-section">
+                        <strong>执行事件</strong>
+                        <ul v-if="activeTraceSummary(message)?.compact_steps.length" class="trace-debug-list">
+                          <li v-for="step in activeTraceSummary(message)?.compact_steps" :key="`${step.kind}-${step.created_at}`">
+                            <span>{{ step.label }}</span>
+                            <small>{{ step.status }}</small>
+                          </li>
+                        </ul>
+                        <p v-else>暂无执行事件</p>
+                      </div>
+                    </div>
+                  </details>
+                </template>
+              </section>
 
             </div>
           </li>
@@ -243,7 +324,7 @@
           <div v-if="showAttachMenu" class="attach-popover" role="menu" aria-label="添加材料">
             <button type="button" role="menuitem" @click="triggerFileInput">
               <Paperclip :size="16" />
-              <span>添加文件</span>
+              <span>上传文件</span>
             </button>
             <button type="button" role="menuitem" @click="toggleDocumentPicker">
               <FileText :size="16" />
@@ -343,7 +424,8 @@ import type {
   ChatSession,
   SlashCommandOption,
   WorkbenchFileAsset,
-  WorkbenchFileItem
+  WorkbenchFileItem,
+  WorkbenchMessageTraceSummary
 } from "../types/models";
 
 const store = useKnowledgeStore();
@@ -359,8 +441,8 @@ const resizeStartY = ref(0);
 const resizeStartHeight = ref(0);
 const resizingComposer = ref(false);
 const sessionFileMaxBytes = 5 * 1024 * 1024;
-const allowedSessionFileExtensions = new Set(["txt", "md", "docx"]);
-const allowedUploadExtensions = new Set(["pdf", ...allowedSessionFileExtensions]);
+const sessionFileSizeLimitedExtensions = new Set(["txt", "md", "docx"]);
+const allowedUploadExtensions = new Set(["pdf", ...sessionFileSizeLimitedExtensions]);
 
 const slashCommands = SLASH_COMMANDS;
 const slashCommandIndex = ref(0);
@@ -483,30 +565,13 @@ function toggleDocumentPicker() {
   }
 }
 
-async function uploadPdfToLibrary(file: File) {
-  try {
-    const document = await documentStore.addDocument(file);
-    if (document) {
-      store.toggleLibraryDocument(document);
-      store.markUploadedTaskDocument(document.id);
-      await store.refreshWorkbenchFileContext();
-    }
-  } catch {
-    store.queueLocalPdfAttachment(file);
-  }
-}
-
 async function uploadComposerFile(file: File) {
   const extension = file.name.split(".").pop()?.toLowerCase() || "";
   if (!allowedUploadExtensions.has(extension)) {
     store.sessionFileUploadError = "支持上传 PDF、TXT、MD、DOCX 文件。";
     return;
   }
-  if (extension === "pdf") {
-    await uploadPdfToLibrary(file);
-    return;
-  }
-  if (file.size > sessionFileMaxBytes) {
+  if (sessionFileSizeLimitedExtensions.has(extension) && file.size > sessionFileMaxBytes) {
     store.sessionFileUploadError = "文件超过 5MB，请选择更小的 txt、md 或 docx 文件。";
     return;
   }
@@ -660,6 +725,96 @@ function isMessageProcessing(message: ChatMessage) {
   return message.role === "assistant" && (message.status === "processing" || (message.status === "streaming" && !message.content.trim()));
 }
 
+async function showExecutionSummary(message: ChatMessage) {
+  if (message.role !== "assistant" || isMessageProcessing(message)) {
+    return;
+  }
+  await store.loadMessageTrace(message.id);
+}
+
+function isExecutionSummaryVisible(message: ChatMessage) {
+  return (
+    message.role === "assistant" &&
+    store.selectedTraceMessageId === message.id &&
+    (store.isTraceLoading || Boolean(store.traceError) || Boolean(store.messageTraceSummary))
+  );
+}
+
+function activeTraceSummary(message: ChatMessage): WorkbenchMessageTraceSummary | null {
+  if (store.selectedTraceMessageId !== message.id) {
+    return null;
+  }
+  return store.messageTraceSummary;
+}
+
+function formatExecutionStatus(summary: WorkbenchMessageTraceSummary | null) {
+  if (!summary) {
+    return "暂无摘要";
+  }
+  if (summary.confirmation_status === "required" || summary.action_status === "confirmation_required") {
+    return "需要确认";
+  }
+  if (summary.confirmation_status === "failed" || summary.action_status === "failed") {
+    return "执行失败";
+  }
+  if (summary.artifact_status.report_saved || summary.action_status === "report_saved") {
+    return "已保存报告";
+  }
+  if (summary.confirmation_status === "executed") {
+    return "已执行确认操作";
+  }
+  return "回答已完成";
+}
+
+function formatRetrievalSummary(summary: WorkbenchMessageTraceSummary | null) {
+  if (!summary) {
+    return "暂无摘要";
+  }
+  if (summary.retrieval_status === "ready" || summary.evidence_count > 0) {
+    return summary.evidence_count > 0 ? `已检索 ${summary.evidence_count} 条证据` : "已检索";
+  }
+  if (summary.retrieval_status === "degraded") {
+    return "检索受限";
+  }
+  if (summary.retrieval_status === "unavailable") {
+    return "检索不可用";
+  }
+  return "未检索";
+}
+
+function formatArtifactSummary(summary: WorkbenchMessageTraceSummary | null) {
+  if (!summary) {
+    return "暂无产物";
+  }
+  if (summary.artifact_status.report_saved || summary.saved_report_id) {
+    return "已保存报告";
+  }
+  if (summary.artifact_status.can_save_report) {
+    return "可保存";
+  }
+  return "暂无产物";
+}
+
+function formatIdList(values?: string[] | null) {
+  if (!values?.length) {
+    return "无";
+  }
+  return values.join(", ");
+}
+
+function formatFileContextSummary(summary: WorkbenchMessageTraceSummary | null) {
+  const fileSummary = summary?.file_context_summary;
+  if (!fileSummary) {
+    return "暂无文件处理摘要";
+  }
+  return [
+    `文件数 ${fileSummary.file_count ?? 0}`,
+    `纳入字符数 ${fileSummary.total_included_chars ?? 0}`,
+    `截断文件数 ${fileSummary.truncated_file_count ?? 0}`,
+    `未使用文件数 ${fileSummary.rejected_file_count ?? 0}`
+  ].join("，");
+}
+
 async function copyMessage(message: ChatMessage) {
   await navigator.clipboard.writeText(message.content);
   copiedMessageId.value = message.id;
@@ -723,6 +878,8 @@ function formatFileKind(kind: string) {
       return "MD";
     case "docx":
       return "DOCX";
+    case "pdf":
+      return "PDF";
     default:
       return "FILE";
   }

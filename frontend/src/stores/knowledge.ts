@@ -258,21 +258,6 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     draftAttachments.value = [...draftAttachments.value, attachment];
   }
 
-  function queueLocalPdfAttachment(file: File) {
-    const attachment: ChatAttachment = {
-      id: crypto.randomUUID(),
-      kind: "uploaded_pdf",
-      display_name: file.name,
-      mime_type: file.type || "application/pdf",
-      status: "ready",
-      metadata: {
-        filename: file.name,
-        size: file.size
-      }
-    };
-    draftAttachments.value = [...draftAttachments.value, attachment];
-  }
-
   function toggleLibraryDocument(document: SelectableLibraryDocument) {
     const exists = selectedDocumentIds.value.includes(document.id);
     if (exists) {
@@ -876,7 +861,6 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     clearSlashCommand,
     applySlashCommand,
     queueImageAttachment,
-    queueLocalPdfAttachment,
     toggleLibraryDocument,
     toggleSessionFile,
     addSelectedSessionFile,
