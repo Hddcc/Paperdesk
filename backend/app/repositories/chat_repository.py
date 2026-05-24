@@ -115,13 +115,14 @@ class ChatRepository(BaseRepository):
                     warning,
                     citations_json,
                     used_document_ids_json,
+                    used_file_ids_json,
                     memory_hits_json,
                     saved_report_id,
                     agent_trace_id,
                     action_status,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message.id,
@@ -133,6 +134,7 @@ class ChatRepository(BaseRepository):
                     message.warning,
                     json.dumps(message.citations, ensure_ascii=False),
                     json.dumps(message.used_document_ids, ensure_ascii=False),
+                    json.dumps(message.used_file_ids, ensure_ascii=False),
                     json.dumps([item.model_dump(mode="json") for item in message.memory_hits], ensure_ascii=False),
                     message.saved_report_id,
                     message.agent_trace_id,
@@ -229,6 +231,7 @@ class ChatRepository(BaseRepository):
                         display_name,
                         mime_type,
                         document_id,
+                        file_asset_id,
                         data_url,
                         file_path,
                         status,
@@ -236,7 +239,7 @@ class ChatRepository(BaseRepository):
                         sort_order,
                         created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         attachment.id,
@@ -245,6 +248,7 @@ class ChatRepository(BaseRepository):
                         attachment.display_name,
                         attachment.mime_type,
                         attachment.document_id,
+                        attachment.file_asset_id,
                         attachment.data_url,
                         attachment.file_path,
                         attachment.status,
@@ -455,6 +459,11 @@ class ChatRepository(BaseRepository):
             warning=row["warning"],
             citations=json.loads(row["citations_json"]),
             used_document_ids=json.loads(row["used_document_ids_json"]),
+            used_file_ids=(
+                json.loads(row["used_file_ids_json"])
+                if "used_file_ids_json" in row.keys() and row["used_file_ids_json"]
+                else []
+            ),
             memory_hits=memory_hits,
             saved_report_id=row["saved_report_id"] if "saved_report_id" in row.keys() else None,
             agent_trace_id=row["agent_trace_id"] if "agent_trace_id" in row.keys() else None,
@@ -471,6 +480,7 @@ class ChatRepository(BaseRepository):
             display_name=row["display_name"],
             mime_type=row["mime_type"],
             document_id=row["document_id"],
+            file_asset_id=row["file_asset_id"] if "file_asset_id" in row.keys() else None,
             data_url=row["data_url"],
             file_path=row["file_path"],
             status=row["status"],

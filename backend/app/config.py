@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     docker_desktop_path: str = "C:/Program Files/Docker/Docker/Docker Desktop.exe"
     workspace_dir: str = "./workspace"
     upload_dir: str = "./workspace/uploads"
+    file_asset_dir: str = "./workspace/files"
+    file_asset_max_upload_bytes: int = 5 * 1024 * 1024
     report_dir: str = "./workspace/reports"
     runtime_context_dir: str | None = "./runtime/context"
     claude_dir: str | None = None
@@ -68,6 +70,8 @@ class Settings(BaseSettings):
     enable_mcp_in_knowledge: bool = False
     enable_subagent_execution: bool = False
     enable_auto_reflection: bool = False
+    enable_skill_context_prompt_injection: bool = True
+    enable_skill_context_paper_qa_lightweight_only: bool = True
 
     @field_validator(
         "llm_base_url",
@@ -110,6 +114,10 @@ class Settings(BaseSettings):
     @property
     def report_path(self) -> Path:
         return self.resolve_path(self.report_dir)
+
+    @property
+    def file_asset_path(self) -> Path:
+        return self.resolve_path(self.file_asset_dir)
 
     @property
     def claude_path(self) -> Path:
@@ -203,6 +211,7 @@ class Settings(BaseSettings):
             self.milvus_runtime_path,
             self.workspace_path,
             self.upload_path,
+            self.file_asset_path,
             self.report_path,
             self.runtime_context_path,
             self.runtime_context_path / "runtime",

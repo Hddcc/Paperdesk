@@ -6,7 +6,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .file_asset import FileAsset
 from .library import LibraryDocument
+from .skills import SkillContextSummary
 
 
 class WorkbenchModelOption(BaseModel):
@@ -39,10 +41,14 @@ class WorkbenchFileContextResponse(BaseModel):
 
     session_id: str
     library_documents: list[LibraryDocument] = Field(default_factory=list)
+    session_files: list[FileAsset] = Field(default_factory=list)
+    workspace_files: list[FileAsset] = Field(default_factory=list)
     selected_document_ids: list[str] = Field(default_factory=list)
+    selected_file_ids: list[str] = Field(default_factory=list)
     attachment_document_ids: list[str] = Field(default_factory=list)
     recent_document_ids: list[str] = Field(default_factory=list)
     used_document_ids: list[str] = Field(default_factory=list)
+    used_file_ids: list[str] = Field(default_factory=list)
     report_referenced_document_ids: list[str] = Field(default_factory=list)
     referents: dict[str, Any] = Field(default_factory=dict)
 
@@ -76,6 +82,17 @@ class WorkbenchCompactTraceStep(BaseModel):
     created_at: str
 
 
+class WorkbenchTraceSkill(BaseModel):
+    """Safe skill selection row for Workbench trace display."""
+
+    skill_id: str
+    name: str
+    confidence: float = 0.0
+    trigger_reason: str = ""
+    triggered_by: list[str] = Field(default_factory=list)
+    is_primary: bool = True
+
+
 class WorkbenchMessageTraceSummary(BaseModel):
     """Read-only compact execution summary for one chat assistant message."""
 
@@ -85,6 +102,8 @@ class WorkbenchMessageTraceSummary(BaseModel):
     action_status: str | None = None
     retrieval_status: str | None = None
     used_document_ids: list[str] = Field(default_factory=list)
+    used_file_ids: list[str] = Field(default_factory=list)
+    file_context_summary: dict[str, Any] = Field(default_factory=dict)
     evidence_count: int = 0
     tool_steps: list[WorkbenchTraceToolStep] = Field(default_factory=list)
     risk_level: str = "unknown"
@@ -92,6 +111,8 @@ class WorkbenchMessageTraceSummary(BaseModel):
     saved_report_id: str | None = None
     artifact_status: WorkbenchTraceArtifactStatus = Field(default_factory=WorkbenchTraceArtifactStatus)
     compact_steps: list[WorkbenchCompactTraceStep] = Field(default_factory=list)
+    used_skills: list[WorkbenchTraceSkill] = Field(default_factory=list)
+    skill_context_summary: SkillContextSummary | None = None
 
 
 class WorkbenchCapability(BaseModel):

@@ -243,6 +243,7 @@ class SQLiteDatabase:
                     warning TEXT,
                     citations_json TEXT NOT NULL DEFAULT '[]',
                     used_document_ids_json TEXT NOT NULL DEFAULT '[]',
+                    used_file_ids_json TEXT NOT NULL DEFAULT '[]',
                     memory_hits_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (session_id) REFERENCES chat_sessions (id) ON DELETE CASCADE
@@ -255,6 +256,7 @@ class SQLiteDatabase:
                     display_name TEXT NOT NULL,
                     mime_type TEXT,
                     document_id TEXT,
+                    file_asset_id TEXT,
                     data_url TEXT,
                     file_path TEXT,
                     status TEXT,
@@ -262,6 +264,28 @@ class SQLiteDatabase:
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (message_id) REFERENCES chat_messages (id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS file_assets (
+                    id TEXT PRIMARY KEY,
+                    filename TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    mime_type TEXT,
+                    extension TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    storage_path TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    text_extract_status TEXT NOT NULL,
+                    preview_text TEXT,
+                    text_char_count INTEGER NOT NULL DEFAULT 0,
+                    failure_reason TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions (id) ON DELETE CASCADE
                 );
 
                 CREATE TABLE IF NOT EXISTS memory_records (
@@ -301,6 +325,7 @@ class SQLiteDatabase:
             self._ensure_todo_task_columns(conn)
             self._ensure_library_document_columns(conn)
             self._ensure_chat_message_columns(conn)
+            self._ensure_chat_attachment_columns(conn)
             self._ensure_report_columns(conn)
             self._ensure_research_run_columns(conn)
             self._migrate_legacy_documents(conn)
@@ -406,6 +431,13 @@ class SQLiteDatabase:
         self._ensure_column(conn, "chat_messages", "saved_report_id", "TEXT")
         self._ensure_column(conn, "chat_messages", "agent_trace_id", "TEXT")
         self._ensure_column(conn, "chat_messages", "action_status", "TEXT")
+        self._ensure_column(conn, "chat_messages", "used_file_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+
+    def _ensure_chat_attachment_columns(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists(conn, "chat_attachments"):
+            return
+
+        self._ensure_column(conn, "chat_attachments", "file_asset_id", "TEXT")
 
     def _ensure_report_columns(self, conn: sqlite3.Connection) -> None:
         if not self._table_exists(conn, "report_records"):

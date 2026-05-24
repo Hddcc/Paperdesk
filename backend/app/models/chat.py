@@ -9,7 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 MemoryRecordType = Literal["user", "feedback", "project", "reference"]
-ChatAttachmentKind = Literal["image", "uploaded_pdf", "library_document"]
+ChatAttachmentKind = Literal["image", "uploaded_pdf", "library_document", "session_file"]
 ChatMessageRole = Literal["user", "assistant", "system"]
 KnowledgeRetrievalStatus = Literal["ready", "skipped", "degraded", "unavailable"]
 ContextStage = Literal["normal", "evidence_compacted", "history_compacted", "truncated"]
@@ -26,6 +26,7 @@ class ChatAttachment(BaseModel):
     display_name: str
     mime_type: str | None = None
     document_id: str | None = None
+    file_asset_id: str | None = None
     data_url: str | None = None
     file_path: str | None = None
     status: str | None = None
@@ -53,6 +54,7 @@ class ChatMessage(BaseModel):
     warning: str | None = None
     citations: list[str] = Field(default_factory=list)
     used_document_ids: list[str] = Field(default_factory=list)
+    used_file_ids: list[str] = Field(default_factory=list)
     memory_hits: list[MemoryHit] = Field(default_factory=list)
     attachments: list[ChatAttachment] = Field(default_factory=list)
     saved_report_id: str | None = None
@@ -77,6 +79,7 @@ class ChatMessageRequest(BaseModel):
     content: str = Field(..., min_length=1)
     attachments: list[ChatAttachment] = Field(default_factory=list)
     selected_document_ids: list[str] = Field(default_factory=list)
+    selected_file_ids: list[str] = Field(default_factory=list)
     agent_profile_id: str | None = None
     model_id: str | None = None
     command: str | None = None
@@ -84,7 +87,8 @@ class ChatMessageRequest(BaseModel):
 
     @model_validator(mode="after")
     def normalize_lists(self) -> "ChatMessageRequest":
-        self.selected_document_ids = [item for item in self.selected_document_ids if item]
+        self.selected_document_ids = self._dedupe_ids(self.selected_document_ids)
+        self.selected_file_ids = self._dedupe_ids(self.selected_file_ids)
         if self.agent_profile_id is not None:
             self.agent_profile_id = self.agent_profile_id.strip() or None
         if self.model_id is not None:
@@ -96,6 +100,18 @@ class ChatMessageRequest(BaseModel):
         if self.intent_hint is not None:
             self.intent_hint = self.intent_hint.strip() or None
         return self
+
+    @staticmethod
+    def _dedupe_ids(values: list[str]) -> list[str]:
+        results: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            item = str(value).strip() if value is not None else ""
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            results.append(item)
+        return results
 
 
 class MemoryRecord(BaseModel):

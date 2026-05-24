@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
-from app.api.main import get_workbench_service
+from app.api.main import get_file_asset_service, get_workbench_service
 from app.models import (
     WorkbenchCapabilitiesResponse,
     WorkbenchConfigResponse,
     WorkbenchFileContextResponse,
     WorkbenchMessageTraceSummary,
 )
-from app.services import WorkbenchService
+from app.services import FileAssetService, WorkbenchService
 
 router = APIRouter(prefix="/workbench", tags=["workbench"])
 
@@ -36,6 +36,15 @@ def get_workbench_session_files(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return WorkbenchFileContextResponse.model_validate(context).model_dump(mode="json")
+
+
+@router.post("/sessions/{session_id}/files/upload")
+async def upload_workbench_session_file(
+    session_id: str,
+    file: UploadFile = File(...),
+    service: FileAssetService = Depends(get_file_asset_service),
+) -> dict:
+    return (await service.upload_session_file(session_id, file)).model_dump(mode="json")
 
 
 @router.get("/messages/{message_id}/trace")

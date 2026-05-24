@@ -33,6 +33,8 @@ from app.services import (
     DocumentLibraryService,
     EmbeddingService,
     ExportService,
+    FileAssetService,
+    FileTextExtractor,
     KnowledgeIngestionService,
     MilvusBootstrapService,
     OpenAlexClient,
@@ -184,6 +186,10 @@ def get_chat_repository():
     return get_repository().chat
 
 
+def get_file_asset_repository():
+    return get_repository().file_asset
+
+
 @lru_cache(maxsize=1)
 def get_report_lifecycle_service() -> ReportLifecycleService:
     return ReportLifecycleService(
@@ -199,9 +205,22 @@ def get_workbench_service() -> WorkbenchService:
         settings=get_settings(),
         library_repository=get_library_repository(),
         chat_repository=get_chat_repository(),
+        file_repository=get_file_asset_repository(),
         report_repository=get_report_repository(),
         runtime_repository=get_runtime_repository(),
         knowledge_agent_runtime=get_knowledge_agent_runtime(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_file_asset_service() -> FileAssetService:
+    settings = get_settings()
+    return FileAssetService(
+        file_repository=get_file_asset_repository(),
+        chat_repository=get_chat_repository(),
+        storage_dir=settings.file_asset_path,
+        max_upload_bytes=settings.file_asset_max_upload_bytes,
+        text_extractor=FileTextExtractor(),
     )
 
 
@@ -341,6 +360,8 @@ def get_chat_service() -> ChatService:
     return ChatService(
         chat_repository=get_chat_repository(),
         library_repository=get_library_repository(),
+        file_repository=get_file_asset_repository(),
+        file_asset_base_dir=settings.file_asset_path,
         category_repository=get_category_repository(),
         rag_service=get_rag_service(),
         memory_service=get_chat_memory_service(),
@@ -372,6 +393,8 @@ def get_knowledge_agent_runtime() -> KnowledgeAgentRuntime:
         api_key=settings.effective_llm_api_key,
         base_url=settings.effective_llm_base_url,
         enable_subagent_execution=settings.enable_subagent_execution,
+        enable_skill_context_prompt_injection=settings.enable_skill_context_prompt_injection,
+        enable_skill_context_paper_qa_lightweight_only=settings.enable_skill_context_paper_qa_lightweight_only,
     )
 
 
@@ -457,6 +480,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        get_repository()
         app.state.vectorstore_status = "starting"
         app.state.vectorstore_uri = runtime_settings.effective_milvus_uri
         app.state.vectorstore_error = None

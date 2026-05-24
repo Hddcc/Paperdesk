@@ -4,6 +4,7 @@ from .base import SQLiteDatabase
 from .category_repository import CategoryRepository
 from .chat_repository import ChatRepository
 from .chunk_repository import ChunkRepository
+from .file_asset_repository import FileAssetRepository
 from .library_repository import LibraryRepository
 from .paper_repository import PaperRepository
 from .report_repository import ReportRepository
@@ -15,6 +16,7 @@ __all__ = [
     "ChatRepository",
     "CategoryRepository",
     "ChunkRepository",
+    "FileAssetRepository",
     "LibraryRepository",
     "PaperRepository",
     "ReportRepository",

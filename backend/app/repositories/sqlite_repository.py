@@ -11,6 +11,7 @@ from .base import SQLiteDatabase
 from .category_repository import CategoryRepository
 from .chat_repository import ChatRepository
 from .chunk_repository import ChunkRepository
+from .file_asset_repository import FileAssetRepository
 from .library_repository import LibraryRepository
 from .paper_repository import PaperRepository
 from .report_repository import ReportRepository
@@ -26,6 +27,7 @@ class SQLiteRepository:
         self.database = SQLiteDatabase(database_path)
         self.category = CategoryRepository(self.database)
         self.chunk = ChunkRepository(self.database)
+        self.file_asset = FileAssetRepository(self.database)
         self.library = LibraryRepository(self.database)
         self.research = ResearchRepository(self.database)
         self.paper = PaperRepository(self.database)

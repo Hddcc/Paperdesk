@@ -21,9 +21,11 @@ from app.models import (
     WorkbenchModelOption,
     WorkbenchSlashCommand,
     WorkbenchTraceArtifactStatus,
+    WorkbenchTraceSkill,
     WorkbenchTraceToolStep,
+    SkillContextSummary,
 )
-from app.repositories import ChatRepository, LibraryRepository, ReportRepository, RuntimeRepository
+from app.repositories import ChatRepository, FileAssetRepository, LibraryRepository, ReportRepository, RuntimeRepository
 
 
 DEFAULT_AGENT_PROFILES = [
@@ -59,6 +61,7 @@ class WorkbenchService:
         settings: Settings,
         library_repository: LibraryRepository,
         chat_repository: ChatRepository,
+        file_repository: FileAssetRepository,
         report_repository: ReportRepository,
         runtime_repository: RuntimeRepository,
         knowledge_agent_runtime=None,
@@ -66,6 +69,7 @@ class WorkbenchService:
         self.settings = settings
         self.library_repository = library_repository
         self.chat_repository = chat_repository
+        self.file_repository = file_repository
         self.report_repository = report_repository
         self.runtime_repository = runtime_repository
         self.knowledge_agent_runtime = knowledge_agent_runtime
@@ -118,6 +122,8 @@ class WorkbenchService:
         referents = self._safe_conversation_referents(session_id)
         attachment_document_ids = self._collect_attachment_document_ids(messages)
         used_document_ids = self._collect_used_document_ids(messages)
+        selected_file_ids = self._latest_user_attachment_file_ids(messages)
+        used_file_ids = self._collect_used_file_ids(messages)
         selected_document_ids = self._latest_user_attachment_document_ids(messages)
         recent_document_ids = self._collect_recent_document_ids(messages, referents)
         report_referenced_document_ids = self._collect_report_referenced_document_ids(messages)
@@ -125,10 +131,14 @@ class WorkbenchService:
         return WorkbenchFileContextResponse(
             session_id=session.id,
             library_documents=self._safe_list_library_documents(),
+            session_files=self._safe_list_session_files(session.id),
+            workspace_files=self._safe_list_session_files(session.id),
             selected_document_ids=selected_document_ids,
+            selected_file_ids=selected_file_ids,
             attachment_document_ids=attachment_document_ids,
             recent_document_ids=recent_document_ids,
             used_document_ids=used_document_ids,
+            used_file_ids=used_file_ids,
             report_referenced_document_ids=report_referenced_document_ids,
             referents=referents,
         )
@@ -145,12 +155,19 @@ class WorkbenchService:
         confirmation_status = self._initial_confirmation_status(message.action_status)
         compact_steps: list[WorkbenchCompactTraceStep] = []
         tool_steps: list[WorkbenchTraceToolStep] = []
+        used_skills: list[WorkbenchTraceSkill] = []
+        skill_context_summary: SkillContextSummary | None = None
 
         for trace in traces:
             payload = trace.payload if isinstance(trace.payload, dict) else {}
             if trace.status == "agent_mode_selected":
                 route = self._string_value(payload.get("route")) or route
                 risk_level = self._normalize_risk_level(payload.get("risk_level"), fallback=risk_level)
+                used_skills = self._safe_used_skills(payload.get("used_skills")) or used_skills
+                skill_context_summary = (
+                    self._safe_skill_context_summary(payload.get("skill_context_summary"))
+                    or skill_context_summary
+                )
             if trace.status in {"retrieval_tool_finished", "tool_call_log", "react_observation"}:
                 evidence_count = max(evidence_count, self._int_value(payload.get("evidence_count")))
             if trace.status == "agent_orchestrator_finished":
@@ -206,6 +223,8 @@ class WorkbenchService:
             action_status=message.action_status,
             retrieval_status=message.retrieval_status,
             used_document_ids=list(message.used_document_ids),
+            used_file_ids=list(message.used_file_ids),
+            file_context_summary=self._file_context_summary(traces),
             evidence_count=evidence_count,
             tool_steps=tool_steps,
             risk_level=self._normalize_risk_level(risk_level),
@@ -217,6 +236,8 @@ class WorkbenchService:
                 report_id=message.saved_report_id,
             ),
             compact_steps=compact_steps,
+            used_skills=used_skills,
+            skill_context_summary=skill_context_summary,
         )
 
     def _capability_from_tool(self, tool) -> WorkbenchCapability:
@@ -333,6 +354,12 @@ class WorkbenchService:
         except Exception:
             return []
 
+    def _safe_list_session_files(self, session_id: str):
+        try:
+            return self.file_repository.list_by_session(session_id)
+        except Exception:
+            return []
+
     def _safe_list_messages(self, session_id: str) -> list[ChatMessage]:
         try:
             return self.chat_repository.list_messages(session_id)
@@ -346,6 +373,21 @@ class WorkbenchService:
             return self.runtime_repository.list_traces(trace_id)
         except Exception:
             return []
+
+    @classmethod
+    def _file_context_summary(cls, traces) -> dict[str, Any]:
+        for trace in traces:
+            if trace.status != "session_file_context_injected":
+                continue
+            payload = trace.payload if isinstance(trace.payload, dict) else {}
+            return {
+                "file_count": cls._int_value(payload.get("file_count")),
+                "used_file_ids": cls._string_list(payload.get("used_file_ids")),
+                "total_included_chars": cls._int_value(payload.get("total_included_chars")),
+                "truncated_file_count": cls._int_value(payload.get("truncated_file_count")),
+                "rejected_file_count": cls._int_value(payload.get("rejected_file_count")),
+            }
+        return {}
 
     def _safe_conversation_referents(self, session_id: str) -> dict[str, Any]:
         if self.knowledge_agent_runtime is None:
@@ -375,6 +417,15 @@ class WorkbenchService:
         )
 
     @classmethod
+    def _collect_used_file_ids(cls, messages: list[ChatMessage]) -> list[str]:
+        return cls._dedupe(
+            file_id
+            for message in messages
+            for file_id in message.used_file_ids
+            if file_id
+        )
+
+    @classmethod
     def _latest_user_attachment_document_ids(cls, messages: list[ChatMessage]) -> list[str]:
         for message in reversed(messages):
             if message.role != "user":
@@ -386,6 +437,20 @@ class WorkbenchService:
             ]
             if document_ids:
                 return cls._dedupe(document_ids)
+        return []
+
+    @classmethod
+    def _latest_user_attachment_file_ids(cls, messages: list[ChatMessage]) -> list[str]:
+        for message in reversed(messages):
+            if message.role != "user":
+                continue
+            file_ids = [
+                attachment.file_asset_id
+                for attachment in message.attachments
+                if attachment.file_asset_id and attachment.kind == "session_file"
+            ]
+            if file_ids:
+                return cls._dedupe(file_ids)
         return []
 
     @classmethod
@@ -527,6 +592,133 @@ class WorkbenchService:
             risk_level=cls._normalize_risk_level(payload.get("risk_level")),
         )
 
+    @classmethod
+    def _safe_used_skills(cls, value: object) -> list[WorkbenchTraceSkill]:
+        if not isinstance(value, list):
+            return []
+        results: list[WorkbenchTraceSkill] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            skill_id = cls._string_value(item.get("skill_id"))
+            name = cls._string_value(item.get("name"))
+            if not skill_id or not name:
+                continue
+            triggered_by = item.get("triggered_by")
+            if not isinstance(triggered_by, list):
+                triggered_by = []
+            results.append(
+                WorkbenchTraceSkill(
+                    skill_id=skill_id,
+                    name=name,
+                    confidence=cls._float_value(item.get("confidence")),
+                    trigger_reason=cls._short_summary(item.get("trigger_reason"), limit=160),
+                    triggered_by=[
+                        cls._safe_signal_value(entry)
+                        for entry in triggered_by[:8]
+                        if cls._safe_signal_value(entry)
+                    ],
+                    is_primary=bool(item.get("is_primary", True)),
+                )
+            )
+        return results
+
+    @classmethod
+    def _safe_skill_context_summary(cls, value: object) -> SkillContextSummary | None:
+        if not isinstance(value, dict):
+            return None
+        skill_id = cls._safe_skill_text(value.get("skill_id"), limit=80, pattern=r"[A-Za-z0-9_.\-/]+")
+        name = cls._safe_skill_text(value.get("name"), limit=120)
+        if not skill_id or not name:
+            return None
+        artifact_protocol = value.get("artifact_protocol")
+        if not isinstance(artifact_protocol, dict):
+            artifact_protocol = {}
+        safe_protocol = {
+            "protocol_type": cls._safe_skill_text(artifact_protocol.get("protocol_type"), limit=80, pattern=r"[A-Za-z0-9_.\-/]+"),
+            "title": cls._safe_skill_text(artifact_protocol.get("title"), limit=120),
+            "required_sections": [
+                section
+                for section in (
+                    cls._safe_skill_text(item, limit=80)
+                    for item in cls._list_value(artifact_protocol.get("required_sections"))[:8]
+                )
+                if section
+            ],
+            "citation_required": bool(artifact_protocol.get("citation_required", False)),
+        }
+        summary = SkillContextSummary(
+            skill_id=skill_id,
+            name=name,
+            short_description=cls._safe_skill_text(value.get("short_description"), limit=240),
+            artifact_protocol={key: item for key, item in safe_protocol.items() if item != "" and item != []},
+            available_tools=[
+                tool_id
+                for tool_id in (
+                    cls._safe_skill_text(item, limit=120, pattern=r"[A-Za-z0-9_.\-/]+")
+                    for item in cls._list_value(value.get("available_tools"))[:12]
+                )
+                if tool_id
+            ],
+            output_expectations=[
+                item
+                for item in (
+                    cls._safe_skill_text(entry, limit=220)
+                    for entry in cls._list_value(value.get("output_expectations"))[:6]
+                )
+                if item
+            ],
+            safety_constraints=[
+                item
+                for item in (
+                    cls._safe_skill_text(entry, limit=220)
+                    for entry in cls._list_value(value.get("safety_constraints"))[:6]
+                )
+                if item
+            ],
+            trigger_reason=cls._safe_skill_text(value.get("trigger_reason"), limit=180),
+            char_count=cls._int_value(value.get("char_count")),
+        )
+        if summary.char_count <= 0:
+            summary.char_count = len(str(summary.model_dump(mode="json", exclude={"char_count"})))
+        if summary.char_count > 1200:
+            return None
+        return summary
+
+    @staticmethod
+    def _list_value(value: object) -> list:
+        return value if isinstance(value, list) else []
+
+    @classmethod
+    def _safe_skill_text(cls, value: object, *, limit: int, pattern: str | None = None) -> str:
+        text = cls._short_summary(value, limit=limit)
+        if not text:
+            return ""
+        if pattern is not None and re.fullmatch(pattern, text) is None:
+            return ""
+        forbidden = (
+            "prompt",
+            "input_schema",
+            "output_schema",
+            "mcp",
+            "api_key",
+            "authorization",
+            "bearer",
+            "base_url",
+            "pending_action",
+            "system prompt",
+            "local command",
+            "environment variable",
+        )
+        lowered = text.casefold()
+        if any(fragment in lowered for fragment in forbidden):
+            return ""
+        if re.search(r"([A-Za-z]:[\\/]|/home/|/Users/|\\\\)", text):
+            return ""
+        if re.search(r"\$[A-Za-z_][A-Za-z0-9_]*|%[A-Za-z_][A-Za-z0-9_]*%", text):
+            return ""
+        return text
+
     @staticmethod
     def _initial_confirmation_status(action_status: str | None) -> str:
         if action_status == "confirmation_required":
@@ -580,11 +772,31 @@ class WorkbenchService:
         return WorkbenchService._redact_display_text(cleaned) if cleaned else ""
 
     @staticmethod
+    def _safe_signal_value(value: object) -> str:
+        if value is None:
+            return ""
+        cleaned = re.sub(r"[^A-Za-z0-9_\-]", "", str(value).strip())[:64]
+        return cleaned
+
+    @staticmethod
     def _int_value(value: object) -> int:
         try:
             return max(0, int(value or 0))
         except (TypeError, ValueError):
             return 0
+
+    @staticmethod
+    def _string_list(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value if item]
+
+    @staticmethod
+    def _float_value(value: object) -> float:
+        try:
+            return max(0.0, min(1.0, float(value or 0.0)))
+        except (TypeError, ValueError):
+            return 0.0
 
     @staticmethod
     def _short_summary(value: object, *, limit: int = 180) -> str:
