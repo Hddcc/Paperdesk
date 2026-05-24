@@ -15,6 +15,29 @@ class SkillSelector:
     _COMPARE_KEYWORDS = ("对比", "比较", "区别", "差异", "compare", "comparison")
     _METHOD_KEYWORDS = ("方法", "解释", "讲解", "原理", "method", "explain")
     _BRIEF_KEYWORDS = ("研究路线", "路线图", "研究方向", "brief", "roadmap")
+    _FILE_READ_KEYWORDS = (
+        "总结",
+        "概括",
+        "summary",
+        "summarize",
+        "translate",
+        "翻译",
+        "polish",
+        "润色",
+        "keywords",
+        "关键词",
+        "标签建议",
+        "建议标签",
+        "推荐标签",
+        "候选标签",
+        "tag suggestion",
+        "suggest tags",
+        "recommend tags",
+        "method",
+        "explain",
+        "方法",
+        "解释",
+    )
     _STRONG_KEYWORD_GROUPS = {
         "paper_summary": _SUMMARY_KEYWORDS,
         "multi_paper_review": _REVIEW_KEYWORDS,
@@ -51,12 +74,19 @@ class SkillSelector:
         normalized_route = (route or "").strip().casefold()
         attachments = attachments or []
         library_attachment_count = sum(1 for item in attachments if item.kind == "library_document")
+        session_file_attachment_count = sum(1 for item in attachments if item.kind == "session_file")
         effective_document_count = max(
             selected_document_count,
             sum(1 for item in attachments if item.kind in {"library_document", "uploaded_pdf"}),
         )
 
-        selected_id, triggered_by, reason, confidence, keywords = self._select_skill_id_from_manifest(
+        selected_id, triggered_by, reason, confidence, keywords = self._select_session_file_skill_id(
+            prompt=normalized_prompt,
+            command=normalized_command,
+            selected_document_count=selected_document_count,
+            session_file_attachment_count=session_file_attachment_count,
+            skills=skills,
+        ) or self._select_skill_id_from_manifest(
             prompt=normalized_prompt,
             command=normalized_command,
             intent_hint=normalized_intent,
@@ -90,6 +120,8 @@ class SkillSelector:
             "intent_hint": normalized_intent or None,
             "selected_document_count": effective_document_count,
             "library_attachment_count": library_attachment_count,
+            "selected_file_count": session_file_attachment_count,
+            "attachment_kind": "session_file" if session_file_attachment_count else None,
             "keywords": keywords,
             "task_type": normalized_task_type or None,
             "route": normalized_route or None,
@@ -110,6 +142,47 @@ class SkillSelector:
             is_primary=True,
         )
         return SkillSelectionResult(primary_skill=selection, used_skills=[selection])
+
+    def _select_session_file_skill_id(
+        self,
+        *,
+        prompt: str,
+        command: str,
+        selected_document_count: int,
+        session_file_attachment_count: int,
+        skills: dict[str, SkillManifest],
+    ) -> tuple[str, list[str], str, float, list[str]] | None:
+        if session_file_attachment_count <= 0 or selected_document_count > 0 or "file_read" not in skills:
+            return None
+
+        if command == "summary":
+            return (
+                "file_read",
+                ["session_file_attachment", "slash_command"],
+                "Session file attachment selected with /summary; using read-only file skill.",
+                0.92,
+                ["summary"],
+            )
+
+        keywords = self._manifest_matched_keywords(prompt, "file_read", skills)
+        if not keywords:
+            keywords = self._matched_keywords(prompt, self._FILE_READ_KEYWORDS)
+        if keywords:
+            return (
+                "file_read",
+                ["session_file_attachment", "prompt_keyword"],
+                "Session file attachment and read-only file task intent matched.",
+                0.9,
+                keywords,
+            )
+
+        return (
+            "file_read",
+            ["session_file_attachment"],
+            "Session file attachment selected; using read-only file skill.",
+            0.78,
+            [],
+        )
 
     def _select_skill_id(
         self,

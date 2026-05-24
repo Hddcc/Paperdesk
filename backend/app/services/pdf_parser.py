@@ -24,6 +24,7 @@ class ParsedPdfDocument:
     title: str | None
     page_count: int
     pages: list[ParsedPdfPage]
+    image_page_count: int = 0
 
 
 class PdfParser:
@@ -38,7 +39,10 @@ class PdfParser:
         try:
             title = self._clean_title(document.metadata.get("title"))
             pages: list[ParsedPdfPage] = []
+            image_page_count = 0
             for page_index, page in enumerate(document, start=1):
+                if page.get_images(full=True):
+                    image_page_count += 1
                 text = self._normalize_page_text(page.get_text("text"))
                 if not text:
                     continue
@@ -48,6 +52,7 @@ class PdfParser:
                 title=title,
                 page_count=document.page_count,
                 pages=pages,
+                image_page_count=image_page_count,
             )
         finally:
             document.close()

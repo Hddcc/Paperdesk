@@ -102,7 +102,7 @@ class _SessionFileContextResolution:
 class ChatService:
     """Persist chat sessions while mixing model replies with optional RAG context."""
 
-    SESSION_FILE_SUPPORTED_KINDS = {"txt", "md", "docx"}
+    SESSION_FILE_SUPPORTED_KINDS = {"txt", "md", "docx", "pdf"}
     SESSION_FILE_MAX_CHARS_PER_FILE = 4000
     SESSION_FILE_MAX_CHARS_TOTAL = 12000
 
@@ -277,6 +277,11 @@ class ChatService:
             or request.command in {"tag", "library"}
         )
         session_file_direct_answer = bool(request.selected_file_ids) and not document_ids and not session_file_write_unsupported
+        session_file_all_rejected = (
+            session_file_direct_answer
+            and not file_resolution.items
+            and file_resolution.rejected_count > 0
+        )
         if mixed_file_and_document_selection:
             mode_decision = self._build_fast_path_decision(
                 session=session,
@@ -402,7 +407,32 @@ class ChatService:
                 evidence_count=0,
             )
         elif session_file_write_unsupported:
-            assistant_text = "普通会话文件当前只支持只读问答、总结、翻译和润色，不支持写入论文库、标签、删除、清空或确认类操作。"
+            assistant_text = (
+                "普通会话文件当前只支持只读问答、总结、翻译、润色和标签建议；"
+                "不支持写入论文库、真实打标签、创建分类关系、生成 chunks、写入向量库或保存为论文。"
+                "如果要管理论文库，请到 Library 页面使用论文库功能。"
+            )
+            retrieval_status = "skipped"
+            action_status = "needs_clarification"
+            warning = self._join_warnings(file_resolution.warnings)
+            context_state = self._assemble_context_state(
+                session=session,
+                history=history_before_current,
+                current_request=request,
+                attachments=normalized_attachments,
+                evidence_items=[],
+                session_file_context_lines=[],
+            )
+            self._record_session_file_context_trace(mode_decision, file_resolution)
+            self._finish_agent_trace(
+                mode_decision,
+                action_status=action_status,
+                retrieval_status=retrieval_status,
+                used_document_count=0,
+                evidence_count=0,
+            )
+        elif session_file_all_rejected:
+            assistant_text = self._selected_session_files_unavailable_message()
             retrieval_status = "skipped"
             action_status = "needs_clarification"
             warning = self._join_warnings(file_resolution.warnings)
@@ -534,6 +564,7 @@ class ChatService:
             fast_path_response is None
             and not mixed_file_and_document_selection
             and not session_file_write_unsupported
+            and not session_file_all_rejected
             and mode_decision is not None
             and mode_decision.mode == AgentRunMode.DIRECT
         ):
@@ -547,6 +578,12 @@ class ChatService:
                 session_file_context_lines=session_file_context_lines,
                 delta_sink=delta_sink,
             )
+            rejection_notice = self._session_file_rejection_notice(file_resolution)
+            if rejection_notice:
+                suffix = f"\n\n{rejection_notice}"
+                assistant_text = f"{assistant_text.rstrip()}{suffix}"
+                if delta_sink is not None:
+                    delta_sink(suffix)
             citations = []
             action_status = "direct_completed"
             warning = self._join_warnings(file_resolution.warnings) or warning
@@ -908,8 +945,10 @@ class ChatService:
         if asset.session_id != session_id:
             return "不属于当前会话，已跳过。"
         if asset.kind not in self.SESSION_FILE_SUPPORTED_KINDS:
-            return "不是受支持的 txt/md/docx 普通文件，已跳过。"
+            return "不是受支持的 txt/md/docx/pdf 普通文件，已跳过。"
         if asset.status != "ready" or asset.text_extract_status != "ready":
+            if getattr(asset, "failure_reason", None):
+                return f"{asset.failure_reason} Skipped."
             return "尚未完成文本提取或提取失败，已跳过。"
         try:
             resolved_path = Path(asset.storage_path).resolve()
@@ -923,6 +962,25 @@ class ChatService:
         if not resolved_path.exists() or not resolved_path.is_file():
             return "存储文件不存在，已跳过。"
         return None
+
+    @staticmethod
+    def _selected_session_files_unavailable_message() -> str:
+        return (
+            "The selected file could not be used because text extraction failed or produced too little usable text. "
+            "If it is a scanned or image-based PDF, OCR is not enabled in the current workflow."
+        )
+
+    @staticmethod
+    def _session_file_rejection_notice(resolution: _SessionFileContextResolution) -> str | None:
+        if not resolution.items or resolution.rejected_count <= 0 or not resolution.warnings:
+            return None
+        lines = [f"另外，有 {resolution.rejected_count} 个文件未能读取："]
+        for warning in resolution.warnings[:5]:
+            lines.append(f"- {warning}")
+        remaining = len(resolution.warnings) - 5
+        if remaining > 0:
+            lines.append(f"- 还有 {remaining} 个文件未列出。")
+        return "\n".join(lines)
 
     @staticmethod
     def _build_session_file_context_block(items: list[_SessionFileContextItem]) -> list[str]:
@@ -1587,6 +1645,7 @@ class ChatService:
     def _has_active_write_intent(self, content: str) -> bool:
         normalized = content.casefold()
         read_only_safety = self._has_read_only_safety_marker(normalized)
+        read_only_tag_suggestion = self._has_read_only_tag_suggestion_intent(normalized)
         destructive_markers = (
             "delete",
             "remove",
@@ -1598,20 +1657,54 @@ class ChatService:
         write_markers = (
             "add tag",
             "assign tag",
+            "apply tag",
+            "apply these tags",
+            "write tag",
             "tag these",
             "tag this",
             "rename",
             "modify",
             "update",
             "save report",
+            "import to library",
+            "add to library",
+            "save to library",
+            "vectorstore",
+            "vector index",
+            "upsert",
+            "category relation",
+            "paper_ids",
+            "chunks",
             "\u6253\u6807\u7b7e",
             "\u52a0\u6807\u7b7e",
             "\u6dfb\u52a0\u6807\u7b7e",
+            "\u5e94\u7528\u6807\u7b7e",
+            "\u6807\u7b7e\u5e94\u7528",
+            "\u5206\u914d\u6807\u7b7e",
+            "\u5199\u5165\u6807\u7b7e",
             "\u91cd\u547d\u540d",
             "\u4fee\u6539",
             "\u4fdd\u5b58\u62a5\u544a",
+            "\u52a0\u5165\u8bba\u6587\u5e93",
+            "\u5bfc\u5165\u8bba\u6587\u5e93",
+            "\u4fdd\u5b58\u5230\u8bba\u6587\u5e93",
+            "\u5199\u5165\u8bba\u6587\u5e93",
+            "\u52a0\u5230\u8bba\u6587\u5e93",
+            "\u4fdd\u5b58\u4e3a\u8bba\u6587",
+            "\u751f\u6210 chunks",
+            "\u751f\u6210 chunk",
+            "\u5efa\u7d22\u5f15",
+            "\u5411\u91cf\u5e93",
+            "\u5411\u91cf\u5316",
+            "\u5411\u91cf\u7d22\u5f15",
+            "\u5199\u5165 paper_ids",
+            "\u521b\u5efa\u5206\u7c7b\u5173\u7cfb",
         )
         if any(marker in normalized for marker in write_markers):
+            return True
+        if "\u5165\u5e93" in normalized and self._contains_any(normalized, ("\u8bba\u6587", "\u6587\u732e", "pdf", "\u9644\u4ef6", "\u6587\u4ef6")):
+            return True
+        if "index" in normalized and self._contains_any(normalized, ("library", "paper", "document", "vector", "chunk", "file")):
             return True
         if self._contains_any(
             normalized,
@@ -1620,6 +1713,8 @@ class ChatService:
             normalized,
             ("\u52a0\u4e0a", "\u90fd\u52a0", "\u52a0\u4e00\u4e2a", "\u6253\u4e0a", "\u65b0\u589e", "\u65b0\u5efa", "\u521b\u5efa", "\u8865\u4e0a", "\u6539\u6210", "\u6362\u6210"),
         ):
+            if read_only_tag_suggestion:
+                return False
             return True
         if any(marker in normalized for marker in destructive_markers):
             return not read_only_safety
@@ -1642,6 +1737,25 @@ class ChatService:
                 "\u4e0d\u6267\u884c",
                 "\u4e0d\u4fee\u6539",
                 "\u4e0d\u5220\u9664",
+            )
+        )
+
+    @staticmethod
+    def _has_read_only_tag_suggestion_intent(normalized_content: str) -> bool:
+        return any(
+            marker in normalized_content
+            for marker in (
+                "\u5efa\u8bae\u6807\u7b7e",
+                "\u63a8\u8350\u6807\u7b7e",
+                "\u63d0\u53d6\u6807\u7b7e",
+                "\u5019\u9009\u6807\u7b7e",
+                "\u6807\u7b7e\u5efa\u8bae",
+                "tag suggestion",
+                "tag suggestions",
+                "suggest tags",
+                "recommend tags",
+                "extract tags",
+                "candidate tags",
             )
         )
 

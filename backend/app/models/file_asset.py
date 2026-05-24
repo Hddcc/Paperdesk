@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 
-FileKind = Literal["txt", "md", "docx", "unsupported"]
+FileKind = Literal["txt", "md", "docx", "pdf", "unsupported"]
 FileSource = Literal["upload"]
 FileScope = Literal["session"]
 FileStatus = Literal["uploaded", "processing", "ready", "failed", "unsupported"]

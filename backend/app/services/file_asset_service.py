@@ -18,7 +18,7 @@ from .file_text_extractor import FileTextExtractor
 class FileAssetService:
     """Handle non-library file uploads for Workbench sessions."""
 
-    ALLOWED_EXTENSIONS = {".txt": "txt", ".md": "md", ".docx": "docx"}
+    ALLOWED_EXTENSIONS = {".txt": "txt", ".md": "md", ".docx": "docx", ".pdf": "pdf"}
     ALLOWED_MIME_TYPES = {
         ".txt": {"text/plain", "application/octet-stream"},
         ".md": {"text/markdown", "text/plain", "application/octet-stream"},
@@ -26,6 +26,7 @@ class FileAssetService:
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "application/octet-stream",
         },
+        ".pdf": {"application/pdf", "application/octet-stream"},
     }
     PREVIEW_LIMIT = 1500
 
@@ -123,6 +124,6 @@ class FileAssetService:
             status="failed",
             text_extract_status="failed",
             preview_text=None,
-            text_char_count=0,
+            text_char_count=len(result.text),
             failure_reason=result.failure_reason or "Text extraction failed",
         ) or asset

@@ -1,0 +1,53 @@
+{
+  "skill_id": "file_read",
+  "name": "附件只读处理",
+  "enabled": true,
+  "supported_task_types": [],
+  "default_execution_mode": "lightweight",
+  "description": "面向普通聊天附件的只读问答、总结、翻译、润色、关键词提取、标签建议和方法解释。附件只作为本轮上下文，不写入论文库，不创建标签关系、chunks、vectorstore 记录或 report paper_ids。",
+  "artifact_protocol": {
+    "protocol_type": "qa",
+    "title": "附件只读回答",
+    "required_sections": ["直接回答", "依据的附件范围", "必要边界", "只读标签建议"],
+    "citation_required": false
+  },
+  "version": "1.0.0",
+  "priority": 9,
+  "skill_file": "SKILL.md",
+  "scope": "shared",
+  "source": "builtin",
+  "maturity": "stable",
+  "available_by_default": true,
+  "trigger": {
+    "keywords": [
+      "总结",
+      "概括",
+      "summary",
+      "summarize",
+      "translate",
+      "翻译",
+      "polish",
+      "润色",
+      "keywords",
+      "关键词",
+      "标签建议",
+      "建议标签",
+      "推荐标签",
+      "候选标签",
+      "tag suggestion",
+      "suggest tags",
+      "recommend tags",
+      "method",
+      "explain",
+      "方法",
+      "解释"
+    ],
+    "commands": [],
+    "intent_hints": ["file_read", "session_file_read"],
+    "routes": ["direct_file_read"],
+    "task_types": [],
+    "attachment_kinds": ["session_file"],
+    "fallback": false,
+    "confidence": 0.88
+  }
+}
