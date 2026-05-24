@@ -187,7 +187,7 @@ export async function getWorkbenchConfig(): Promise<WorkbenchConfigResponse> {
     });
     return parseJson<WorkbenchConfigResponse>(response);
   } catch (err) {
-    throw normalizeFetchError(err, "加载 Workbench 配置失败");
+    throw normalizeFetchError(err, "加载助手配置失败");
   }
 }
 
@@ -199,7 +199,7 @@ export async function getWorkbenchCapabilities(): Promise<WorkbenchCapabilitiesR
     });
     return parseJson<WorkbenchCapabilitiesResponse>(response);
   } catch (err) {
-    throw normalizeFetchError(err, "鍔犺浇 Workbench 鑳藉姏澶辫触");
+    throw normalizeFetchError(err, "加载助手能力失败");
   }
 }
 
@@ -213,7 +213,7 @@ export async function getWorkbenchSessionFiles(
     });
     return parseJson<WorkbenchFileContextResponse>(response);
   } catch (err) {
-    throw normalizeFetchError(err, "加载 Workbench 文件上下文失败");
+    throw normalizeFetchError(err, "加载论文库与文件状态失败");
   }
 }
 

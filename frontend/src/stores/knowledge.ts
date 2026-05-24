@@ -170,7 +170,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     loading.value = true;
     error.value = "";
     try {
-      await Promise.all([loadWorkbenchConfig(), loadWorkbenchCapabilities()]);
+      await loadWorkbenchConfig();
       sessions.value = await listChatSessions();
       if (!sessions.value.length) {
         const session = await createChatSession({ title: "新对话" });
@@ -245,7 +245,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       }
       retrievalNotice.value = latestRetrievalNotice(detail.messages);
       await refreshWorkbenchFileContext();
-      await selectLatestAssistantMessageForTrace(detail.messages);
+      clearTraceSelection();
     } catch (err) {
       error.value = err instanceof Error ? err.message : "加载会话失败";
       throw err;
@@ -324,6 +324,16 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     selectedFileIds.value = [...selectedFileIds.value, normalizedFileId];
   }
 
+  function addSelectedSessionFile(file: WorkbenchFileAsset) {
+    if (!isSelectableSessionFile(file)) {
+      return;
+    }
+    const fileId = getWorkbenchFileId(file);
+    if (!selectedFileIds.value.includes(fileId)) {
+      selectedFileIds.value = [...selectedFileIds.value, fileId];
+    }
+  }
+
   function clearSelectedFiles() {
     selectedFileIds.value = [];
   }
@@ -346,7 +356,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       selectedAgentProfileId.value = config.agent_profiles[0]?.id ?? "paper_qa";
       selectedModelId.value = config.current_model;
     } catch (err) {
-      error.value = err instanceof Error ? err.message : "加载 Workbench 配置失败";
+      error.value = err instanceof Error ? err.message : "加载助手配置失败";
     } finally {
       isWorkbenchLoading.value = false;
     }
@@ -358,7 +368,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       workbenchCapabilities.value = await getWorkbenchCapabilities();
     } catch (err) {
       workbenchCapabilities.value = null;
-      error.value = err instanceof Error ? err.message : "鍔犺浇 Workbench 鑳藉姏澶辫触";
+      error.value = err instanceof Error ? err.message : "加载助手能力失败";
     } finally {
       isCapabilitiesLoading.value = false;
     }
@@ -374,7 +384,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       workbenchFileContext.value = await getWorkbenchSessionFiles(currentSessionId.value);
     } catch (err) {
       workbenchFileContext.value = null;
-      error.value = err instanceof Error ? err.message : "加载 Workbench 文件上下文失败";
+      error.value = err instanceof Error ? err.message : "加载论文库与文件状态失败";
     } finally {
       isWorkbenchLoading.value = false;
     }
@@ -591,7 +601,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       retrievalNotice.value = completedResponse.assistant_message.warning || "";
       await refreshSessions();
       await refreshWorkbenchFileContext();
-      await selectAssistantMessageForTrace(completedResponse.assistant_message);
+      clearTraceSelection();
       return completedResponse;
     } catch (err) {
       if (isAbortError(err)) {
@@ -869,6 +879,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     queueLocalPdfAttachment,
     toggleLibraryDocument,
     toggleSessionFile,
+    addSelectedSessionFile,
     clearSelectedFiles,
     isSessionFileSelected,
     markUploadedTaskDocument,
