@@ -63,6 +63,8 @@ export interface ResearchTaskRoute {
   needs_online_search: boolean;
   use_main_agent_loop: boolean;
   allow_single_pass: boolean;
+  active_skill_id?: string | null;
+  used_skills?: SkillSelection[];
   rationale: string;
 }
 
@@ -132,13 +134,38 @@ export interface WorkbenchFileItem {
   categories?: DocumentCategory[];
 }
 
+export type FileKind = "txt" | "md" | "docx" | "unsupported";
+export type FileStatus = "uploaded" | "processing" | "ready" | "failed" | "unsupported" | "skipped";
+export type FileTextExtractionStatus = "pending" | "ready" | "failed" | "skipped";
+
+export interface WorkbenchFileAsset {
+  id: string;
+  file_id?: string;
+  filename: string;
+  display_name: string;
+  mime_type?: string | null;
+  extension: string;
+  size_bytes: number;
+  kind: FileKind;
+  status: FileStatus;
+  text_extract_status: FileTextExtractionStatus;
+  preview_text?: string | null;
+  text_char_count: number;
+  failure_reason?: string | null;
+  created_at: string;
+}
+
 export interface WorkbenchFileContextResponse {
   session_id: string;
   library_documents: WorkbenchFileItem[];
+  session_files: WorkbenchFileAsset[];
+  workspace_files: WorkbenchFileAsset[];
   selected_document_ids: string[];
+  selected_file_ids: string[];
   attachment_document_ids: string[];
   recent_document_ids: string[];
   used_document_ids: string[];
+  used_file_ids: string[];
   report_referenced_document_ids: string[];
   referents: Record<string, unknown>;
 }
@@ -229,6 +256,20 @@ export interface WorkbenchCompactTraceStep {
   created_at: string;
 }
 
+export interface WorkbenchTraceSkill {
+  skill_id: string;
+  name: string;
+  confidence: number;
+  trigger_reason: string;
+  triggered_by: string[];
+  is_primary: boolean;
+}
+
+export interface SkillSelection extends WorkbenchTraceSkill {
+  matched_signals?: Record<string, unknown>;
+  source?: string;
+}
+
 export interface WorkbenchMessageTraceSummary {
   message_id: string;
   trace_id?: string | null;
@@ -243,6 +284,7 @@ export interface WorkbenchMessageTraceSummary {
   saved_report_id?: string | null;
   artifact_status: WorkbenchTraceArtifactStatus;
   compact_steps: WorkbenchCompactTraceStep[];
+  used_skills?: WorkbenchTraceSkill[];
 }
 
 export interface DocumentCategory {
@@ -619,6 +661,8 @@ export interface ChatMessage {
   warning?: string | null;
   citations: string[];
   used_document_ids: string[];
+  used_file_ids?: string[];
+  selected_file_ids?: string[];
   memory_hits: MemoryHit[];
   attachments: ChatAttachment[];
   saved_report_id?: string | null;
@@ -664,6 +708,7 @@ export interface ChatMessageRequest {
   content: string;
   attachments?: ChatAttachment[];
   selected_document_ids?: string[];
+  selected_file_ids?: string[];
   agent_profile_id?: string | null;
   model_id?: string | null;
   command?: string | null;

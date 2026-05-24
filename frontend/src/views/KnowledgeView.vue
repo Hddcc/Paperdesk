@@ -40,7 +40,7 @@
           <header class="workbench-file-head">
             <div>
               <p class="eyebrow">Workbench</p>
-              <h3>会话论文</h3>
+              <h3>文件上下文</h3>
             </div>
             <button
               class="icon-button"
@@ -54,49 +54,129 @@
             </button>
           </header>
 
-          <button
-            class="button-secondary workbench-upload-button"
-            type="button"
-            :disabled="documentStore.submittingUpload"
-            @click="triggerPdfInput"
-          >
-            <UploadCloud :size="15" />
-            {{ documentStore.submittingUpload ? "上传中..." : "上传 PDF" }}
-          </button>
-
-          <div v-if="store.isWorkbenchLoading && !workbenchDocuments.length" class="empty-state">
+          <div v-if="store.isWorkbenchLoading && !workbenchDocuments.length && !workbenchSessionFiles.length" class="empty-state">
             正在加载文件上下文...
           </div>
-          <ul v-else class="workbench-file-list">
-            <li v-for="document in workbenchDocuments" :key="document.id">
+
+          <section class="workbench-file-section workbench-library-section" aria-label="论文库文件">
+            <div class="workbench-section-head">
+              <div>
+                <h4>论文库文件</h4>
+                <p>PDF 论文可勾选后用于论文问答。</p>
+              </div>
               <button
-                class="workbench-file-row"
+                class="button-secondary workbench-upload-button"
                 type="button"
-                :class="{ 'workbench-file-selected': isWorkbenchDocumentSelected(document.id) }"
-                :disabled="document.status !== 'ready'"
-                :title="document.display_name"
-                @click="toggleWorkbenchDocument(document)"
+                :disabled="documentStore.submittingUpload"
+                @click="triggerPdfInput"
               >
-                <span class="workbench-file-check" aria-hidden="true">
-                  {{ isWorkbenchDocumentSelected(document.id) ? "✓" : "" }}
-                </span>
-                <span class="workbench-file-copy">
-                  <strong>{{ document.display_name }}</strong>
-                  <small>{{ document.title || document.filename }}</small>
-                  <span class="workbench-file-badges">
-                    <span class="status-badge" :data-status="document.status">
-                      {{ formatDocumentStatus(document.status) }}
-                    </span>
-                    <span v-if="isWorkbenchDocumentUsed(document.id)" class="workbench-mini-badge">已用</span>
-                    <span v-if="isWorkbenchDocumentRecent(document.id)" class="workbench-mini-badge">最近</span>
-                  </span>
-                </span>
+                <UploadCloud :size="15" />
+                {{ documentStore.submittingUpload ? "上传中..." : "上传 PDF" }}
               </button>
-            </li>
-          </ul>
-          <p v-if="!workbenchDocuments.length && !store.isWorkbenchLoading" class="empty-state">
-            暂无库内论文。
-          </p>
+            </div>
+
+            <ul v-if="workbenchDocuments.length" class="workbench-file-list">
+              <li v-for="document in workbenchDocuments" :key="document.id">
+                <button
+                  class="workbench-file-row"
+                  type="button"
+                  :class="{ 'workbench-file-selected': isWorkbenchDocumentSelected(document.id) }"
+                  :disabled="document.status !== 'ready'"
+                  :title="document.display_name"
+                  @click="toggleWorkbenchDocument(document)"
+                >
+                  <span class="workbench-file-check" aria-hidden="true">
+                    {{ isWorkbenchDocumentSelected(document.id) ? "✓" : "" }}
+                  </span>
+                  <span class="workbench-file-copy">
+                    <strong>{{ document.display_name }}</strong>
+                    <small>{{ document.title || document.filename }}</small>
+                    <span class="workbench-file-badges">
+                      <span class="status-badge" :data-status="document.status">
+                        {{ formatDocumentStatus(document.status) }}
+                      </span>
+                      <span v-if="isWorkbenchDocumentUsed(document.id)" class="workbench-mini-badge">已用</span>
+                      <span v-if="isWorkbenchDocumentRecent(document.id)" class="workbench-mini-badge">最近</span>
+                    </span>
+                  </span>
+                </button>
+              </li>
+            </ul>
+            <p v-else-if="!store.isWorkbenchLoading" class="empty-state">
+              暂无库内论文。
+            </p>
+          </section>
+
+          <section class="workbench-file-section workbench-session-section" aria-label="会话文件">
+            <div class="workbench-section-head">
+              <div>
+                <h4>会话文件</h4>
+                <p>仅展示，暂未接入 Chat。支持 txt、md、docx，单个文件最大 5MB。</p>
+              </div>
+              <button
+                class="button-secondary workbench-upload-button"
+                type="button"
+                :disabled="store.isUploadingSessionFile"
+                @click="triggerSessionFileInput"
+              >
+                <UploadCloud :size="15" />
+                {{ store.isUploadingSessionFile ? "上传中..." : "上传文件" }}
+              </button>
+            </div>
+
+            <p v-if="store.sessionFileUploadError" class="error-text">
+              {{ store.sessionFileUploadError }}
+            </p>
+
+            <ul v-if="workbenchSessionFiles.length" class="workbench-session-file-list">
+              <li v-for="file in workbenchSessionFiles" :key="file.id">
+                <button
+                  class="workbench-session-file-card"
+                  type="button"
+                  :class="{
+                    'workbench-session-file-selected': isWorkbenchSessionFileSelected(file),
+                    'workbench-session-file-disabled': !isSessionFileSelectable(file)
+                  }"
+                  :disabled="!isSessionFileSelectable(file)"
+                  :title="file.display_name || file.filename"
+                  @click="toggleWorkbenchSessionFile(file)"
+                >
+                  <div class="session-file-main">
+                    <span class="session-file-icon" aria-hidden="true">{{ formatFileKind(file.kind) }}</span>
+                    <span class="workbench-file-copy">
+                      <strong>{{ file.display_name || file.filename }}</strong>
+                      <small>
+                        {{ formatFileMeta(file) }}
+                      </small>
+                    </span>
+                  </div>
+                  <span class="workbench-file-badges">
+                    <span class="status-badge" :data-status="file.status">
+                      {{ formatSessionFileStatus(file.status) }}
+                    </span>
+                    <span class="status-badge" :data-status="file.text_extract_status">
+                      文本{{ formatTextExtractionStatus(file.text_extract_status) }}
+                    </span>
+                    <span v-if="isWorkbenchSessionFileSelected(file)" class="workbench-mini-badge">已选</span>
+                    <span v-if="isWorkbenchSessionFileUsed(file)" class="workbench-mini-badge">已用</span>
+                    <span v-if="!isSessionFileSelectable(file)" class="workbench-mini-badge workbench-mini-badge-muted">不可用</span>
+                  </span>
+                  <p v-if="file.status === 'ready' && file.preview_text" class="session-file-preview">
+                    {{ file.preview_text }}
+                  </p>
+                  <p v-if="sessionFileReason(file)" class="session-file-reason">
+                    {{ sessionFileReason(file) }}
+                  </p>
+                  <p class="session-file-note">
+                    {{ isSessionFileSelectable(file) ? "用于本轮 Chat" : "普通文件只读上下文" }}
+                  </p>
+                </button>
+              </li>
+            </ul>
+            <p v-else-if="!store.isWorkbenchLoading" class="empty-state">
+              暂无会话文件。
+            </p>
+          </section>
         </section>
       </div>
     </aside>
@@ -308,6 +388,31 @@
                 type="button"
                 :aria-label="`移除 ${attachment.display_name}`"
                 @click="store.removeDraftAttachment(attachment.id)"
+              >
+                <X :size="14" />
+              </button>
+            </article>
+          </div>
+          <p v-if="mixedSelectionHint" class="mixed-selection-hint">{{ mixedSelectionHint }}</p>
+          <div v-if="selectedSessionFileChips.length" class="selected-document-strip selected-file-strip" aria-label="已选普通文件">
+            <article
+              v-for="file in selectedSessionFileChips"
+              :key="getSessionFileId(file)"
+              class="selected-document-chip selected-file-chip"
+              :title="file.display_name || file.filename"
+            >
+              <span class="selected-document-icon selected-file-icon" aria-hidden="true">
+                {{ formatFileKind(file.kind) }}
+              </span>
+              <span class="selected-document-copy">
+                <strong>{{ file.display_name || file.filename }}</strong>
+                <small>{{ formatFileKind(file.kind) }} · {{ formatBytes(file.size_bytes) }}</small>
+              </span>
+              <button
+                class="selected-document-remove"
+                type="button"
+                :aria-label="`移除 ${file.display_name || file.filename}`"
+                @click="store.toggleSessionFile(getSessionFileId(file))"
               >
                 <X :size="14" />
               </button>
@@ -542,6 +647,29 @@
             </section>
 
             <section class="trace-section">
+              <h4>自动使用的 Skill</h4>
+              <div v-if="traceUsedSkills.length" class="trace-skill-list">
+                <article v-for="skill in traceUsedSkills" :key="skill.skill_id" class="trace-skill-card">
+                  <div class="trace-skill-head">
+                    <strong>{{ skill.name }}</strong>
+                    <span v-if="skill.is_primary">主要 Skill</span>
+                  </div>
+                  <div class="trace-skill-meta">
+                    <small>置信度 {{ formatConfidence(skill.confidence) }}</small>
+                    <small v-for="trigger in skill.triggered_by" :key="`${skill.skill_id}-${trigger}`">
+                      {{ trigger }}
+                    </small>
+                  </div>
+                  <p v-if="skill.trigger_reason">
+                    <span>触发原因</span>
+                    {{ skill.trigger_reason }}
+                  </p>
+                </article>
+              </div>
+              <p v-else class="empty-state">本轮未识别到专用 Skill</p>
+            </section>
+
+            <section class="trace-section">
               <h4>Artifacts</h4>
               <div class="trace-artifact-card">
                 <strong>
@@ -631,6 +759,13 @@
       accept=".pdf"
       @change="handlePdfSelected"
     />
+    <input
+      ref="sessionFileInputRef"
+      hidden
+      type="file"
+      accept=".txt,.md,.docx"
+      @change="handleSessionFileSelected"
+    />
   </section>
 </template>
 
@@ -649,6 +784,7 @@ import type {
   SlashCommandId,
   SlashCommandOption,
   WorkbenchCapability,
+  WorkbenchFileAsset,
   WorkbenchFileItem
 } from "../types/models";
 
@@ -658,6 +794,7 @@ const documentStore = useDocumentStore();
 const messagePanelRef = ref<HTMLElement | null>(null);
 const imageInputRef = ref<HTMLInputElement | null>(null);
 const pdfInputRef = ref<HTMLInputElement | null>(null);
+const sessionFileInputRef = ref<HTMLInputElement | null>(null);
 const showAttachMenu = ref(false);
 const showDocumentPicker = ref(false);
 const copiedMessageId = ref("");
@@ -666,6 +803,8 @@ const resizeStartY = ref(0);
 const resizeStartHeight = ref(0);
 const resizingComposer = ref(false);
 const rightPanelTab = ref<"capabilities" | "trace">("capabilities");
+const sessionFileMaxBytes = 5 * 1024 * 1024;
+const allowedSessionFileExtensions = new Set(["txt", "md", "docx"]);
 
 const readyDocuments = computed(() =>
   documentStore.documents.filter((document) => document.status === "ready")
@@ -707,6 +846,30 @@ const workbenchDocuments = computed<WorkbenchFileItem[]>(() =>
 );
 const workbenchUsedDocumentIds = computed(() => new Set(store.workbenchFileContext?.used_document_ids ?? []));
 const workbenchRecentDocumentIds = computed(() => new Set(store.workbenchFileContext?.recent_document_ids ?? []));
+const workbenchSessionFiles = computed<WorkbenchFileAsset[]>(() => {
+  const files = store.workbenchFileContext?.session_files ?? [];
+  const workspaceFiles = store.workbenchFileContext?.workspace_files ?? [];
+  const seen = new Set<string>();
+  return [...files, ...workspaceFiles].filter((file) => {
+    const id = file.file_id || file.id;
+    if (seen.has(id)) {
+      return false;
+    }
+    seen.add(id);
+    return true;
+  });
+});
+const workbenchUsedFileIds = computed(() => new Set(store.workbenchFileContext?.used_file_ids ?? []));
+const selectedSessionFileChips = computed(() =>
+  store.selectedFileIds
+    .map((fileId) => workbenchSessionFiles.value.find((file) => getSessionFileId(file) === fileId))
+    .filter((file): file is WorkbenchFileAsset => Boolean(file))
+);
+const mixedSelectionHint = computed(() =>
+  store.selectedDocumentIds.length && store.selectedFileIds.length
+    ? "当前后端建议普通文件和论文库文件分开提问。"
+    : ""
+);
 const visibleDraftAttachments = computed(() =>
   store.draftAttachments.filter((attachment) => attachment.kind !== "library_document")
 );
@@ -767,6 +930,7 @@ const traceUsedDocuments = computed(() => {
     };
   });
 });
+const traceUsedSkills = computed(() => traceSummary.value?.used_skills ?? []);
 
 onMounted(async () => {
   await Promise.all([documentStore.refreshDocuments(), store.bootstrap()]);
@@ -791,6 +955,11 @@ function triggerImageInput() {
 function triggerPdfInput() {
   showAttachMenu.value = false;
   pdfInputRef.value?.click();
+}
+
+function triggerSessionFileInput() {
+  showAttachMenu.value = false;
+  sessionFileInputRef.value?.click();
 }
 
 function toggleDocumentPicker() {
@@ -837,6 +1006,32 @@ async function handlePdfSelected(event: Event) {
     store.queueLocalPdfAttachment(file);
   }
   input.value = "";
+}
+
+async function handleSessionFileSelected(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) {
+    return;
+  }
+  const extension = file.name.split(".").pop()?.toLowerCase() || "";
+  if (!allowedSessionFileExtensions.has(extension)) {
+    store.sessionFileUploadError = "仅支持上传 .txt、.md、.docx 文件。";
+    input.value = "";
+    return;
+  }
+  if (file.size > sessionFileMaxBytes) {
+    store.sessionFileUploadError = "文件超过 5MB，请选择更小的 txt、md 或 docx 文件。";
+    input.value = "";
+    return;
+  }
+  try {
+    await store.uploadSessionFile(file);
+  } catch {
+    // Store owns the visible upload error.
+  } finally {
+    input.value = "";
+  }
 }
 
 async function readFileAsDataUrl(file: File): Promise<string> {
@@ -1013,6 +1208,29 @@ function isWorkbenchDocumentRecent(documentId: string) {
   return workbenchRecentDocumentIds.value.has(documentId);
 }
 
+function getSessionFileId(file: WorkbenchFileAsset) {
+  return file.file_id || file.id;
+}
+
+function isSessionFileSelectable(file: WorkbenchFileAsset) {
+  return file.status === "ready" && file.text_extract_status === "ready";
+}
+
+function toggleWorkbenchSessionFile(file: WorkbenchFileAsset) {
+  if (!isSessionFileSelectable(file)) {
+    return;
+  }
+  store.toggleSessionFile(getSessionFileId(file));
+}
+
+function isWorkbenchSessionFileSelected(file: WorkbenchFileAsset) {
+  return store.isSessionFileSelected(getSessionFileId(file));
+}
+
+function isWorkbenchSessionFileUsed(file: WorkbenchFileAsset) {
+  return workbenchUsedFileIds.value.has(getSessionFileId(file)) || workbenchUsedFileIds.value.has(file.id);
+}
+
 function isMessageProcessing(message: ChatMessage) {
   return message.role === "assistant" && (message.status === "processing" || (message.status === "streaming" && !message.content.trim()));
 }
@@ -1040,6 +1258,13 @@ function formatTraceValue(value?: string | null) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function formatConfidence(value?: number | null) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "0%";
+  }
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
 }
 
 function formatRiskLevel(value?: string | null) {
@@ -1105,6 +1330,84 @@ function formatDocumentStatus(status: string) {
     default:
       return status;
   }
+}
+
+function formatSessionFileStatus(status: string) {
+  switch (status) {
+    case "uploaded":
+      return "已上传";
+    case "ready":
+      return "可预览";
+    case "processing":
+      return "处理中";
+    case "failed":
+      return "失败";
+    case "unsupported":
+      return "暂不支持";
+    case "skipped":
+      return "已跳过";
+    default:
+      return status;
+  }
+}
+
+function formatTextExtractionStatus(status: string) {
+  switch (status) {
+    case "pending":
+      return "待提取";
+    case "ready":
+      return "已提取";
+    case "failed":
+      return "失败";
+    case "skipped":
+      return "已跳过";
+    default:
+      return status;
+  }
+}
+
+function formatFileKind(kind: string) {
+  switch (kind) {
+    case "txt":
+      return "TXT";
+    case "md":
+      return "MD";
+    case "docx":
+      return "DOCX";
+    default:
+      return "FILE";
+  }
+}
+
+function formatFileMeta(file: WorkbenchFileAsset) {
+  const extension = file.extension ? file.extension.toUpperCase() : formatFileKind(file.kind);
+  return `${extension} · ${formatBytes(file.size_bytes)} · ${formatTime(file.created_at)}`;
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0 B";
+  }
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KB`;
+  }
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function sessionFileReason(file: WorkbenchFileAsset) {
+  if (file.failure_reason) {
+    return file.failure_reason;
+  }
+  if (file.status === "unsupported" || file.text_extract_status === "skipped") {
+    return "该文件当前仅保存展示，文本提取已跳过。";
+  }
+  if (file.status === "failed" || file.text_extract_status === "failed") {
+    return "文件处理失败，请查看后端返回原因。";
+  }
+  return "";
 }
 
 function formatCapabilityIoType(value: string) {

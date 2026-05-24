@@ -26,6 +26,7 @@ import type {
   ResearchStreamEvent,
   WorkbenchCapabilitiesResponse,
   WorkbenchConfigResponse,
+  WorkbenchFileAsset,
   WorkbenchFileContextResponse,
   WorkbenchMessageTraceSummary
 } from "../types/models";
@@ -73,6 +74,23 @@ export async function uploadDocument(file: File): Promise<LibraryDocument> {
     return parseJson<LibraryDocument>(response);
   } catch (err) {
     throw normalizeFetchError(err, "上传文档失败");
+  }
+}
+
+export async function uploadWorkbenchSessionFile(
+  sessionId: string,
+  file: File
+): Promise<WorkbenchFileAsset> {
+  const formData = new FormData();
+  formData.append("file", file);
+  try {
+    const response = await fetch(`${baseUrl}/api/workbench/sessions/${sessionId}/files/upload`, {
+      method: "POST",
+      body: formData
+    });
+    return parseJson<WorkbenchFileAsset>(response);
+  } catch (err) {
+    throw normalizeFetchError(err, "上传会话文件失败");
   }
 }
 

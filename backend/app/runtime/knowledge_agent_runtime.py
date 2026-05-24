@@ -33,6 +33,7 @@ from app.models import (
     TraceEventType,
 )
 from app.repositories import CategoryRepository, ResearchRepository, RuntimeRepository
+from app.services.skill_context_builder import SkillContextBuilder
 from app.services.context_file_store import ContextFileStore
 from app.services.document_library_service import DocumentLibraryService
 from app.services.rag_service import RagService
@@ -426,6 +427,8 @@ class KnowledgeAgentRuntime:
         api_key: str | None,
         base_url: str | None,
         enable_subagent_execution: bool = False,
+        enable_skill_context_prompt_injection: bool = True,
+        enable_skill_context_paper_qa_lightweight_only: bool = True,
         timeout: float = 30.0,
     ) -> None:
         self.document_library_service = document_library_service
@@ -440,6 +443,8 @@ class KnowledgeAgentRuntime:
         self.api_key = api_key
         self.base_url = base_url
         self.enable_subagent_execution = enable_subagent_execution
+        self.enable_skill_context_prompt_injection = enable_skill_context_prompt_injection
+        self.enable_skill_context_paper_qa_lightweight_only = enable_skill_context_paper_qa_lightweight_only
         self.timeout = timeout
         self.message_bus = MessageBus(runtime_repository)
 
@@ -797,7 +802,13 @@ class KnowledgeAgentRuntime:
             fallback_used = True
             llm_called = False
         else:
-            draft = self._draft_paper_qa_short_answer(content, document, evidence_items)
+            active_skill_context = self._active_skill_context_for_paper_qa_lightweight(run_id, evidence_items=evidence_items)
+            draft = self._draft_paper_qa_short_answer(
+                content,
+                document,
+                evidence_items,
+                active_skill_context=active_skill_context,
+            )
             answer = draft.answer
             fallback_used = draft.fallback_used
             llm_called = bool(self.api_key)
@@ -1050,6 +1061,8 @@ class KnowledgeAgentRuntime:
         question: str,
         document: LibraryDocument,
         evidence_items: list[EvidenceItem],
+        *,
+        active_skill_context: str = "",
     ) -> _DraftResult:
         fallback = self._draft_paper_qa_short_fallback(question, document, evidence_items)
         if not evidence_items:
@@ -1067,6 +1080,18 @@ class KnowledgeAgentRuntime:
             for index, item in enumerate(evidence_items[:6], start=1)
         )
         length_rule = "如果用户要求一句话，只输出一句话；如果要求两句话，只输出两句话；其他情况控制在 1-3 段。"
+        user_sections = [
+            f"用户问题：{question}",
+            (
+                "论文元数据："
+                f"标题={document.title or document.display_name or document.filename}；"
+                f"文件名={document.display_name or document.filename}；页数={document.page_count}"
+            ),
+            "证据：\n" + evidence_block,
+            length_rule,
+        ]
+        if active_skill_context:
+            user_sections.insert(0, active_skill_context)
         try:
             client = OpenAI(api_key=self.api_key, base_url=self.base_url or None, timeout=self.timeout)
             response = client.chat.completions.create(
@@ -1082,18 +1107,7 @@ class KnowledgeAgentRuntime:
                     },
                     {
                         "role": "user",
-                        "content": "\n\n".join(
-                            [
-                                f"用户问题：{question}",
-                                (
-                                    "论文元数据："
-                                    f"标题={document.title or document.display_name or document.filename}；"
-                                    f"文件名={document.display_name or document.filename}；页数={document.page_count}"
-                                ),
-                                "证据：\n" + evidence_block,
-                                length_rule,
-                            ]
-                        ),
+                        "content": "\n\n".join(user_sections),
                     },
                 ],
             )
@@ -1108,6 +1122,72 @@ class KnowledgeAgentRuntime:
         if not answer:
             return _DraftResult(answer=fallback, llm_draft_success=False, fallback_used=True, drafting_error="empty_llm_response")
         return _DraftResult(answer=self._ensure_short_answer_title(answer, document), llm_draft_success=True)
+
+    def _active_skill_context_for_paper_qa_lightweight(
+        self,
+        run_id: str,
+        *,
+        evidence_items: list[EvidenceItem],
+    ) -> str:
+        if not self.enable_skill_context_prompt_injection:
+            self._record_skill_context_injection_skip(run_id, reason="disabled")
+            return ""
+        if not self.enable_skill_context_paper_qa_lightweight_only:
+            self._record_skill_context_injection_skip(run_id, reason="paper_qa_lightweight_disabled")
+            return ""
+        if not evidence_items:
+            self._record_skill_context_injection_skip(run_id, reason="no_evidence")
+            return ""
+        if not self.api_key:
+            self._record_skill_context_injection_skip(run_id, reason="llm_not_configured")
+            return ""
+        summary = self._skill_context_summary_from_trace(run_id)
+        if not summary:
+            self._record_skill_context_injection_skip(run_id, reason="no_summary")
+            return ""
+        if summary.get("skill_id") not in {"paper_summary", "qa", "method_explainer"}:
+            self._record_skill_context_injection_skip(run_id, reason="unsupported_skill")
+            return ""
+        rendered = SkillContextBuilder.render_active_skill_context(summary)
+        if not rendered:
+            self._record_skill_context_injection_skip(run_id, reason="empty_context")
+            return ""
+        self._append_react_trace(
+            run_id=run_id,
+            status="skill_context_injected",
+            payload={
+                "skill_id": summary.get("skill_id"),
+                "path": "paper_qa_lightweight",
+                "char_count": len(rendered),
+                "injected": True,
+                "reason": "paper_qa_lightweight_short_answer_llm_draft",
+            },
+        )
+        return rendered
+
+    def _skill_context_summary_from_trace(self, run_id: str) -> dict[str, Any] | None:
+        try:
+            traces = self.runtime_repository.list_traces(run_id)
+        except Exception:
+            return None
+        for trace in traces:
+            if trace.status != "agent_mode_selected" or not isinstance(trace.payload, dict):
+                continue
+            summary = trace.payload.get("skill_context_summary")
+            if isinstance(summary, dict):
+                return summary
+        return None
+
+    def _record_skill_context_injection_skip(self, run_id: str, *, reason: str) -> None:
+        self._append_react_trace(
+            run_id=run_id,
+            status="skill_context_injection_skipped",
+            payload={
+                "path": "paper_qa_lightweight",
+                "injected": False,
+                "reason": reason,
+            },
+        )
 
     @staticmethod
     def _compact_evidence_text(text: str, *, limit: int = 700) -> str:

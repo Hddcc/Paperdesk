@@ -11,7 +11,8 @@ import {
   getWorkbenchSessionFiles,
   listChatSessions,
   saveChatMessageAsReport,
-  streamChatMessage
+  streamChatMessage,
+  uploadWorkbenchSessionFile
 } from "../services/api";
 import type {
   ChatAttachment,
@@ -26,6 +27,7 @@ import type {
   WorkbenchCapabilitiesResponse,
   WorkbenchConfigResponse,
   WorkbenchFileContextResponse,
+  WorkbenchFileAsset,
   WorkbenchMessageTraceSummary
 } from "../types/models";
 
@@ -136,16 +138,19 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
   const slashCommandMenuOpen = ref(false);
   const draftAttachments = ref<ChatAttachment[]>(persistableAttachments(persistedState.draftAttachments ?? []));
   const selectedDocumentIds = ref<string[]>(persistedState.selectedDocumentIds ?? []);
+  const selectedFileIds = ref<string[]>([]);
   const uploadedTaskDocumentIds = ref<string[]>(persistedState.uploadedTaskDocumentIds ?? []);
   const selectedAgentProfileId = ref("paper_qa");
   const selectedModelId = ref("");
   const loading = ref(false);
   const isWorkbenchLoading = ref(false);
   const isCapabilitiesLoading = ref(false);
+  const isUploadingSessionFile = ref(false);
   const sending = ref(false);
   const stopping = ref(false);
   const savingReportMessageId = ref("");
   const error = ref("");
+  const sessionFileUploadError = ref("");
   const retrievalNotice = ref("");
   const selectedTraceMessageId = ref("");
   const messageTraceSummary = ref<WorkbenchMessageTraceSummary | null>(null);
@@ -305,6 +310,28 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     }
   }
 
+  function toggleSessionFile(fileId: string) {
+    const file = findWorkbenchFile(fileId);
+    const normalizedFileId = file ? getWorkbenchFileId(file) : fileId;
+    if (!file || !isSelectableSessionFile(file)) {
+      selectedFileIds.value = selectedFileIds.value.filter((item) => item !== normalizedFileId);
+      return;
+    }
+    if (selectedFileIds.value.includes(normalizedFileId)) {
+      selectedFileIds.value = selectedFileIds.value.filter((item) => item !== normalizedFileId);
+      return;
+    }
+    selectedFileIds.value = [...selectedFileIds.value, normalizedFileId];
+  }
+
+  function clearSelectedFiles() {
+    selectedFileIds.value = [];
+  }
+
+  function isSessionFileSelected(fileId: string) {
+    return selectedFileIds.value.includes(fileId);
+  }
+
   function markUploadedTaskDocument(documentId: string) {
     if (!uploadedTaskDocumentIds.value.includes(documentId)) {
       uploadedTaskDocumentIds.value = [...uploadedTaskDocumentIds.value, documentId];
@@ -350,6 +377,24 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       error.value = err instanceof Error ? err.message : "加载 Workbench 文件上下文失败";
     } finally {
       isWorkbenchLoading.value = false;
+    }
+  }
+
+  async function uploadSessionFile(file: File) {
+    if (!currentSessionId.value) {
+      await createNewSession();
+    }
+    isUploadingSessionFile.value = true;
+    sessionFileUploadError.value = "";
+    try {
+      const uploadedFile = await uploadWorkbenchSessionFile(currentSessionId.value, file);
+      await refreshWorkbenchFileContext();
+      return uploadedFile;
+    } catch (err) {
+      sessionFileUploadError.value = err instanceof Error ? err.message : "上传会话文件失败";
+      throw err;
+    } finally {
+      isUploadingSessionFile.value = false;
     }
   }
 
@@ -400,6 +445,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     const sessionId = currentSessionId.value;
     const attachments = cloneAttachments(draftAttachments.value);
     const selectedIds = [...selectedDocumentIds.value];
+    const selectedFileIdsForMessage = [...selectedFileIds.value];
     const tempUserId = `local-user-${crypto.randomUUID()}`;
     const tempAssistantId = `local-assistant-${crypto.randomUUID()}`;
     const createdAt = new Date().toISOString();
@@ -411,6 +457,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       status: "sending",
       citations: [],
       used_document_ids: selectedIds,
+      selected_file_ids: selectedFileIdsForMessage,
       memory_hits: [],
       attachments,
       created_at: createdAt
@@ -424,6 +471,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       retrieval_status: "skipped",
       citations: [],
       used_document_ids: [],
+      used_file_ids: [],
       memory_hits: [],
       attachments: [],
       action_status: "processing",
@@ -504,6 +552,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
         content,
         attachments,
         selected_document_ids: selectedIds,
+        selected_file_ids: selectedFileIdsForMessage,
         agent_profile_id: selectedAgentProfileId.value || null,
         model_id: selectedModelId.value || null,
         command: command?.id ?? null,
@@ -615,7 +664,24 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     slashCommandMenuOpen.value = false;
     draftAttachments.value = [];
     selectedDocumentIds.value = [];
+    selectedFileIds.value = [];
     uploadedTaskDocumentIds.value = [];
+  }
+
+  function getWorkbenchFileId(file: WorkbenchFileAsset) {
+    return file.file_id || file.id;
+  }
+
+  function findWorkbenchFile(fileId: string) {
+    const files = [
+      ...(workbenchFileContext.value?.session_files ?? []),
+      ...(workbenchFileContext.value?.workspace_files ?? [])
+    ];
+    return files.find((file) => getWorkbenchFileId(file) === fileId || file.id === fileId || file.file_id === fileId);
+  }
+
+  function isSelectableSessionFile(file: WorkbenchFileAsset) {
+    return file.status === "ready" && file.text_extract_status === "ready";
   }
 
   async function loadMessageTrace(messageId: string) {
@@ -766,15 +832,18 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     slashCommandMenuOpen,
     draftAttachments,
     selectedDocumentIds,
+    selectedFileIds,
     uploadedTaskDocumentIds,
     selectedAgentProfileId,
     selectedModelId,
     loading,
     isWorkbenchLoading,
     isCapabilitiesLoading,
+    isUploadingSessionFile,
     sending,
     savingReportMessageId,
     error,
+    sessionFileUploadError,
     retrievalNotice,
     isTraceLoading,
     traceError,
@@ -784,6 +853,7 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     loadWorkbenchConfig,
     loadWorkbenchCapabilities,
     refreshWorkbenchFileContext,
+    uploadSessionFile,
     loadMessageTrace,
     selectAssistantMessageForTrace,
     refreshSelectedMessageTrace,
@@ -798,6 +868,9 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     queueImageAttachment,
     queueLocalPdfAttachment,
     toggleLibraryDocument,
+    toggleSessionFile,
+    clearSelectedFiles,
+    isSessionFileSelected,
     markUploadedTaskDocument,
     removeDraftAttachment,
     sendCurrentMessage,
