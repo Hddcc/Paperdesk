@@ -13,5 +13,19 @@
   },
   "version": "1.0.0",
   "priority": 10,
-  "skill_file": "SKILL.md"
+  "skill_file": "SKILL.md",
+  "scope": "shared",
+  "source": "builtin",
+  "maturity": "stable",
+  "available_by_default": true,
+  "trigger": {
+    "keywords": ["对比", "比较", "区别", "差异", "compare", "comparison"],
+    "commands": ["compare"],
+    "intent_hints": ["comparison", "compare"],
+    "routes": ["comparison_analysis"],
+    "task_types": ["comparison"],
+    "document_count": {"min": 2},
+    "fallback": false,
+    "confidence": 0.9
+  }
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 from queue import Queue
@@ -71,11 +72,22 @@ from app.runtime import (
 
 from .export_service import ExportService
 from .research_context_assembler import ResearchContextAssembler
+from .research_skill_consistency_checker import (
+    ResearchSkillConsistencyChecker,
+    ResearchSkillConsistencyReport,
+)
 from .research_task_router import ResearchTaskRouter
 from .research_workspace_service import ResearchWorkspaceService
+from .skill_selector import SkillSelector
 
 
 EventSink = Callable[[dict], None]
+
+
+@dataclass(frozen=True)
+class _RouteRequestResult:
+    task_route: ResearchTaskRoute
+    consistency_report: ResearchSkillConsistencyReport
 
 
 class ResearchOrchestrator:
@@ -142,6 +154,8 @@ class ResearchOrchestrator:
         )
         self.planner_candidate_provider = RuleBasedPlannerCandidateProvider()
         self.task_router = ResearchTaskRouter()
+        self.skill_selector = SkillSelector()
+        self.skill_consistency_checker = ResearchSkillConsistencyChecker()
         self.tool_executor = ResearchToolExecutor(
             topic_planner=topic_planner,
             paper_search_agent=paper_search_agent,
@@ -157,7 +171,8 @@ class ResearchOrchestrator:
         event_sink: EventSink | None = None,
     ) -> ResearchState:
         run_id = str(uuid4())
-        task_route = self._route_request(request)
+        route_result = self._route_request(request)
+        task_route = route_result.task_route
         run = self.research_repository.create_run(run_id, request.topic, request_payload=request)
         runtime_state = ResearchRuntimeState(
             run_id=run.id,
@@ -182,6 +197,8 @@ class ResearchOrchestrator:
             },
         )
         self._emit_task_route(run.id, task_route, event_sink)
+        self._emit_research_skill_selected(run.id, task_route, event_sink)
+        self._append_research_skill_consistency_trace(run.id, route_result.consistency_report)
         self._checkpoint(
             runtime_state,
             request,
@@ -223,8 +240,11 @@ class ResearchOrchestrator:
         runtime_state.stop_reason = None
         if runtime_state.current_phase == ResearchRuntimePhase.FAILED:
             runtime_state.current_phase = ResearchRuntimePhase.EXECUTING
+        consistency_report = None
         if runtime_state.task_route is None:
-            runtime_state.task_route = self._route_request(request)
+            route_result = self._route_request(request)
+            runtime_state.task_route = route_result.task_route
+            consistency_report = route_result.consistency_report
         runtime_state.active_step = None
 
         state = self._load_state_snapshot(run_id, run.topic, runtime_state)
@@ -239,6 +259,8 @@ class ResearchOrchestrator:
         )
         if runtime_state.task_route is not None:
             self._emit_task_route(run_id, runtime_state.task_route, event_sink)
+        if consistency_report is not None:
+            self._append_research_skill_consistency_trace(run_id, consistency_report)
         self._emit(
             event_sink,
             {
@@ -1072,6 +1094,14 @@ class ResearchOrchestrator:
                 "planner_provider": runtime_state.planner_provider.value,
                 "planner_fallback_used": runtime_state.planner_fallback_used,
                 "task_route": runtime_state.task_route.model_dump(mode="json") if runtime_state.task_route else None,
+                "active_skill_id": (
+                    runtime_state.task_route.active_skill_id
+                    if runtime_state.task_route is not None
+                    else None
+                ),
+                "primary_skill_id": self._primary_skill_id(runtime_state.task_route),
+                "used_skill_ids": self._used_skill_ids(runtime_state.task_route),
+                "used_skills": self._used_skills_payload(runtime_state.task_route),
             },
         )
         self._emit(
@@ -1086,6 +1116,14 @@ class ResearchOrchestrator:
                 "planner_provider": runtime_state.planner_provider.value,
                 "planner_fallback_used": runtime_state.planner_fallback_used,
                 "task_route": runtime_state.task_route.model_dump(mode="json") if runtime_state.task_route else None,
+                "active_skill_id": (
+                    runtime_state.task_route.active_skill_id
+                    if runtime_state.task_route is not None
+                    else None
+                ),
+                "primary_skill_id": self._primary_skill_id(runtime_state.task_route),
+                "used_skill_ids": self._used_skill_ids(runtime_state.task_route),
+                "used_skills": self._used_skills_payload(runtime_state.task_route),
             },
         )
         self._emit_status(
@@ -1166,16 +1204,45 @@ class ResearchOrchestrator:
                 return item
         return None
 
-    def _route_request(self, request: ResearchRequest) -> ResearchTaskRoute:
+    def _route_request(self, request: ResearchRequest) -> _RouteRequestResult:
         documents = self._documents_for_request(request, self.library_repository.list_documents())
+        available_skills = self.skill_registry.list_enabled()
         task_route = self.task_router.route(request, ready_documents=documents)
-        active_skill = self.skill_registry.default_for(task_route.task_type)
+        default_skill = self.skill_registry.default_for(task_route.task_type)
+        skill_selection = self.skill_selector.select(
+            prompt=request.topic,
+            command=None,
+            intent_hint=None,
+            selected_document_count=max(len(documents), len(request.selected_document_ids)),
+            attachments=[],
+            available_skills=available_skills,
+            task_type=task_route.task_type.value,
+            route=task_route.execution_route.value,
+        )
+        task_route.used_skills = skill_selection.used_skills
+        primary_skill_id = (
+            skill_selection.primary_skill.skill_id
+            if skill_selection.primary_skill is not None
+            else None
+        )
+        active_skill_id = primary_skill_id or (default_skill.skill_id if default_skill is not None else None)
+        active_skill = (
+            self.skill_registry.load_definition(active_skill_id)
+            if active_skill_id is not None
+            else None
+        ) or default_skill
         if active_skill is not None:
             task_route.active_skill_id = active_skill.skill_id
             task_route.artifact_protocol = active_skill.artifact_protocol
             if active_skill.default_execution_mode.value == "lightweight" and task_route.allow_single_pass:
                 task_route.use_main_agent_loop = False
-        return task_route
+        consistency_report = self.skill_consistency_checker.check_route_selection(
+            task_route=task_route,
+            skill_selection_result=skill_selection,
+            available_skills=available_skills,
+            warning_only=True,
+        )
+        return _RouteRequestResult(task_route=task_route, consistency_report=consistency_report)
 
     def _active_skill(self, runtime_state: ResearchRuntimeState) -> SkillDefinition | None:
         if runtime_state.task_route is None or runtime_state.task_route.active_skill_id is None:
@@ -1210,6 +1277,103 @@ class ResearchOrchestrator:
                 "task_route": task_route.model_dump(mode="json"),
             },
         )
+
+    def _emit_research_skill_selected(
+        self,
+        run_id: str,
+        task_route: ResearchTaskRoute,
+        event_sink: EventSink | None,
+    ) -> None:
+        payload = {
+            "active_skill_id": task_route.active_skill_id,
+            "primary_skill_id": self._primary_skill_id(task_route),
+            "used_skill_ids": self._used_skill_ids(task_route),
+            "used_skills": self._used_skills_payload(task_route),
+            "task_type": task_route.task_type.value,
+            "execution_route": task_route.execution_route.value,
+        }
+        self.message_bus.append_trace(
+            run_id=run_id,
+            task_id=None,
+            trace_type=TraceEventType.CONTROL,
+            status="research_skill_selected",
+            message="Research skill selected for route trace.",
+            payload=payload,
+        )
+        self._emit(
+            event_sink,
+            {
+                "type": "research_skill_selected",
+                "run_id": run_id,
+                **payload,
+            },
+        )
+
+    def _append_research_skill_consistency_trace(
+        self,
+        run_id: str,
+        report: ResearchSkillConsistencyReport,
+    ) -> None:
+        self.message_bus.append_trace(
+            run_id=run_id,
+            task_id=None,
+            trace_type=TraceEventType.CONTROL,
+            status="research_skill_consistency_checked",
+            message="Research skill consistency checked in debug trace mode.",
+            payload=self._research_skill_consistency_payload(report),
+        )
+
+    @staticmethod
+    def _research_skill_consistency_payload(report: ResearchSkillConsistencyReport) -> dict:
+        checked_fields = [
+            "primary_skill_id",
+            "active_skill_id",
+            "execution_route",
+            "artifact_protocol.protocol_type",
+            "manifest.supported_task_types",
+            "manifest.trigger.task_types",
+            "manifest.trigger.routes",
+            "manifest.artifact_protocol.protocol_type",
+        ]
+        mismatches = [
+            {
+                "field": mismatch.field,
+                "expected": mismatch.expected,
+                "actual": mismatch.actual,
+                "message": mismatch.message,
+            }
+            for mismatch in report.mismatches
+        ]
+        return {
+            "ok": report.ok,
+            "severity": report.severity,
+            "checked_fields": checked_fields,
+            "mismatch_count": len(mismatches),
+            "mismatches": mismatches,
+            "task_type": report.task_type,
+            "active_skill_id": report.active_skill_id,
+            "primary_skill_id": report.primary_skill_id,
+            "execution_route": report.execution_route,
+        }
+
+    @staticmethod
+    def _primary_skill_id(task_route: ResearchTaskRoute | None) -> str | None:
+        if task_route is None:
+            return None
+        primary_skill = next((skill for skill in task_route.used_skills if skill.is_primary), None)
+        return primary_skill.skill_id if primary_skill is not None else task_route.active_skill_id
+
+    @staticmethod
+    def _used_skill_ids(task_route: ResearchTaskRoute | None) -> list[str]:
+        if task_route is None:
+            return []
+        return [skill.skill_id for skill in task_route.used_skills]
+
+    @staticmethod
+    def _used_skills_payload(task_route: ResearchTaskRoute | None) -> list[dict]:
+        if task_route is None:
+            return []
+        return [skill.model_dump(mode="json") for skill in task_route.used_skills]
 
     @staticmethod
     def _candidate_from_result(result: ResearchToolResult) -> ResearchPlannerCandidate | None:

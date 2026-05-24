@@ -32,6 +32,14 @@ from .library import (
     DocumentCategoryUpdateRequest,
     LibraryDocument,
 )
+from .file_asset import (
+    FileAsset,
+    FileKind,
+    FileScope,
+    FileSource,
+    FileStatus,
+    FileTextExtractionStatus,
+)
 from .paper import (
     EvidenceQuality,
     EvidenceItem,
@@ -92,9 +100,17 @@ from .runtime import (
     TraceEventType,
 )
 from .skills import (
+    SkillDocumentCountConstraint,
+    SkillContextSummary,
     SkillDefinition,
     SkillExecutionMode,
     SkillManifest,
+    SkillMaturity,
+    SkillSelection,
+    SkillSelectionResult,
+    SkillScope,
+    SkillSource,
+    SkillTriggerMetadata,
     ToolDeclaration,
     ToolObservation,
     ToolObservationError,
@@ -123,6 +139,7 @@ from .workbench import (
     WorkbenchModelOption,
     WorkbenchSlashCommand,
     WorkbenchTraceArtifactStatus,
+    WorkbenchTraceSkill,
     WorkbenchTraceToolStep,
 )
 
@@ -156,6 +173,12 @@ __all__ = [
     "EvidenceQuality",
     "EvidenceItem",
     "EvidenceSourceType",
+    "FileAsset",
+    "FileKind",
+    "FileScope",
+    "FileSource",
+    "FileStatus",
+    "FileTextExtractionStatus",
     "Heartbeat",
     "KnowledgeRetrievalStatus",
     "LibraryDocument",
@@ -214,9 +237,17 @@ __all__ = [
     "StopTask",
     "StoredAgentTask",
     "SubagentProfile",
+    "SkillContextSummary",
     "SkillDefinition",
+    "SkillDocumentCountConstraint",
     "SkillExecutionMode",
     "SkillManifest",
+    "SkillMaturity",
+    "SkillSelection",
+    "SkillSelectionResult",
+    "SkillScope",
+    "SkillSource",
+    "SkillTriggerMetadata",
     "TaskSummary",
     "TaskArtifactRef",
     "TaskExecutionTrace",
@@ -243,5 +274,6 @@ __all__ = [
     "WorkbenchModelOption",
     "WorkbenchSlashCommand",
     "WorkbenchTraceArtifactStatus",
+    "WorkbenchTraceSkill",
     "WorkbenchTraceToolStep",
 ]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.models import SkillDefinition, SkillManifest, ResearchTaskType
+from app.models import SkillDefinition, SkillManifest, ResearchTaskType, SkillMaturity, SkillSource
 
 
 class SkillRegistry:
@@ -52,7 +52,14 @@ class SkillRegistry:
         return sorted(self._manifests.values(), key=lambda skill: (skill.priority, skill.skill_id))
 
     def list_enabled(self) -> list[SkillManifest]:
-        return [skill for skill in self.list_all() if skill.enabled]
+        return [
+            skill
+            for skill in self.list_all()
+            if skill.enabled
+            and skill.available_by_default
+            and skill.maturity == SkillMaturity.STABLE
+            and skill.source == SkillSource.BUILTIN
+        ]
 
     def candidates_for(self, task_type: ResearchTaskType) -> list[SkillManifest]:
         return [

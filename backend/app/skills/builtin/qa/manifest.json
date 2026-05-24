@@ -13,5 +13,19 @@
   },
   "version": "1.0.0",
   "priority": 10,
-  "skill_file": "SKILL.md"
+  "skill_file": "SKILL.md",
+  "scope": "shared",
+  "source": "builtin",
+  "maturity": "stable",
+  "available_by_default": true,
+  "trigger": {
+    "keywords": [],
+    "commands": [],
+    "intent_hints": ["qa", "paper_qa", "knowledge_qa"],
+    "routes": ["knowledge_qa"],
+    "task_types": ["qa"],
+    "attachment_kinds": ["library_document"],
+    "fallback": true,
+    "confidence": 0.55
+  }
 }

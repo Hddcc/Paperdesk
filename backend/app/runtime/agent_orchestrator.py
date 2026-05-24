@@ -25,6 +25,8 @@ from app.repositories import ResearchRepository, RuntimeRepository
 
 from .message_bus import MessageBus
 from .skill_registry import SkillRegistry
+from app.services.skill_context_builder import SkillContextBuilder
+from app.services.skill_selector import SkillSelector
 from .tool_registry import ToolRegistry
 
 
@@ -184,17 +186,32 @@ class AgentOrchestrator:
         self.base_url = base_url
         self.timeout = timeout
         self.message_bus = MessageBus(runtime_repository)
+        self.skill_selector = SkillSelector()
+        self.skill_context_builder = SkillContextBuilder(self.skill_registry)
 
     def available_tools(self):
         return self.tool_registry.list_default_candidates(scope="knowledge")
 
     def available_skills(self):
-        return []
+        return self.skill_registry.list_enabled()
+
+    def select_skills_for_trace(self, payload: AgentOrchestratorInput):
+        return self.skill_selector.select(
+            prompt=payload.user_prompt,
+            command=payload.runtime_context.get("command"),
+            intent_hint=payload.runtime_context.get("intent_hint"),
+            selected_document_count=len(payload.selected_document_ids),
+            attachments=payload.attachments,
+            available_skills=payload.available_skills,
+            task_type=payload.runtime_context.get("task_type"),
+            route=payload.runtime_context.get("route"),
+        )
 
     def select_mode(self, payload: AgentOrchestratorInput) -> AgentModeDecision:
         """Create a trace and return the final mode decision."""
 
         trace_id = self._begin_trace(payload)
+        skill_selection = self.select_skills_for_trace(payload)
         guardrail_candidate = self._hard_guardrail_candidate(payload)
         fallback_candidate = self._fallback_rule_candidate(payload)
         llm_candidate = self._llm_candidate(payload)
@@ -221,7 +238,7 @@ class AgentOrchestrator:
             trace_id=trace_id,
             fallback_used=final_candidate.fallback_used,
         )
-        self._append_decision_trace(payload, decision, guardrail_candidate, fallback_candidate, llm_candidate)
+        self._append_decision_trace(payload, decision, guardrail_candidate, fallback_candidate, llm_candidate, skill_selection)
         return decision
 
     def append_trace(self, trace_id: str, *, status: str, message: str, payload: dict[str, Any] | None = None) -> None:
@@ -277,10 +294,12 @@ class AgentOrchestrator:
         guardrail_candidate: _ModeCandidate | None,
         fallback_candidate: _ModeCandidate,
         llm_candidate: _ModeCandidate | None,
+        skill_selection=None,
     ) -> None:
         guardrail_payload = self._candidate_trace_payload(guardrail_candidate) if guardrail_candidate else None
         fallback_payload = self._candidate_trace_payload(fallback_candidate)
         llm_payload = self._candidate_trace_payload(llm_candidate) if llm_candidate else None
+        skill_context_summary = self.skill_context_builder.build(skill_selection)
         self.message_bus.append_trace(
             run_id=decision.trace_id,
             task_id=None,
@@ -308,6 +327,24 @@ class AgentOrchestrator:
                 "llm_candidate": llm_payload,
                 "available_tool_ids": [tool.tool_id for tool in payload.available_tools[:30]],
                 "available_skill_ids": [skill.skill_id for skill in payload.available_skills[:20]],
+                "primary_skill_id": (
+                    skill_selection.primary_skill.skill_id
+                    if skill_selection is not None and skill_selection.primary_skill is not None
+                    else None
+                ),
+                "used_skill_ids": (
+                    [skill.skill_id for skill in skill_selection.used_skills]
+                    if skill_selection is not None
+                    else []
+                ),
+                "used_skills": (
+                    [skill.model_dump(mode="json") for skill in skill_selection.used_skills]
+                    if skill_selection is not None
+                    else []
+                ),
+                "skill_context_summary": (
+                    skill_context_summary.model_dump(mode="json") if skill_context_summary is not None else None
+                ),
                 "has_conversation_referents": bool(payload.conversation_referents),
                 "memory_hit_count": len(payload.memory_snapshot.items),
             },

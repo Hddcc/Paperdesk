@@ -13,5 +13,18 @@
   },
   "version": "1.0.0",
   "priority": 10,
-  "skill_file": "SKILL.md"
+  "skill_file": "SKILL.md",
+  "scope": "shared",
+  "source": "builtin",
+  "maturity": "stable",
+  "available_by_default": true,
+  "trigger": {
+    "keywords": ["研究路线", "路线图", "研究方向", "brief", "roadmap"],
+    "commands": [],
+    "intent_hints": ["research_brief", "brief"],
+    "routes": ["research_brief"],
+    "task_types": ["research_brief"],
+    "fallback": false,
+    "confidence": 0.84
+  }
 }

@@ -13,5 +13,19 @@
   },
   "version": "1.0.0",
   "priority": 10,
-  "skill_file": "SKILL.md"
+  "skill_file": "SKILL.md",
+  "scope": "shared",
+  "source": "builtin",
+  "maturity": "stable",
+  "available_by_default": true,
+  "trigger": {
+    "keywords": ["综述", "文献回顾", "review", "overview"],
+    "commands": ["summary"],
+    "intent_hints": ["review", "multi_paper_review"],
+    "routes": ["main_agent_review"],
+    "task_types": ["multi_paper_review"],
+    "document_count": {"min": 2},
+    "fallback": false,
+    "confidence": 0.88
+  }
 }

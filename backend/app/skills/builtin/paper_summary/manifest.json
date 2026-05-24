@@ -13,5 +13,19 @@
   },
   "version": "1.0.0",
   "priority": 10,
-  "skill_file": "SKILL.md"
+  "skill_file": "SKILL.md",
+  "scope": "shared",
+  "source": "builtin",
+  "maturity": "stable",
+  "available_by_default": true,
+  "trigger": {
+    "keywords": ["总结", "概括", "summary", "summarize"],
+    "commands": ["summary"],
+    "intent_hints": ["summary", "paper_summary", "single_paper_summary"],
+    "routes": ["single_paper_summary"],
+    "task_types": ["paper_summary"],
+    "document_count": {"min": 0, "max": 1},
+    "fallback": false,
+    "confidence": 0.86
+  }
 }

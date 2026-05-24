@@ -13,5 +13,18 @@
   },
   "version": "1.0.0",
   "priority": 10,
-  "skill_file": "SKILL.md"
+  "skill_file": "SKILL.md",
+  "scope": "shared",
+  "source": "builtin",
+  "maturity": "stable",
+  "available_by_default": true,
+  "trigger": {
+    "keywords": ["方法", "解释", "讲解", "原理", "method", "explain"],
+    "commands": [],
+    "intent_hints": ["method", "method_explainer"],
+    "routes": ["method_explanation"],
+    "task_types": ["method_explainer"],
+    "fallback": false,
+    "confidence": 0.84
+  }
 }

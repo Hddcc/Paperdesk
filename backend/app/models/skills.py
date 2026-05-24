@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .skill_selection import SkillSelection, SkillSelectionResult
 from .task_routing import ResearchArtifactProtocol, ResearchTaskType
 
 
@@ -15,6 +16,55 @@ class SkillExecutionMode(str, Enum):
 
     LIGHTWEIGHT = "lightweight"
     MAIN_AGENT = "main_agent"
+
+
+class SkillScope(str, Enum):
+    """Runtime surfaces where a skill can be considered."""
+
+    KNOWLEDGE = "knowledge"
+    RESEARCH = "research"
+    SHARED = "shared"
+
+
+class SkillSource(str, Enum):
+    """Origin of a file-backed skill declaration."""
+
+    BUILTIN = "builtin"
+    CUSTOM = "custom"
+    MCP = "mcp"
+
+
+class SkillMaturity(str, Enum):
+    """Default exposure maturity for skill selection metadata."""
+
+    STABLE = "stable"
+    EXPERIMENTAL = "experimental"
+    DISABLED = "disabled"
+
+
+class SkillDocumentCountConstraint(BaseModel):
+    """Optional document-count bounds used only for skill trigger matching."""
+
+    min: int | None = Field(default=None, ge=0)
+    max: int | None = Field(default=None, ge=0)
+
+
+class SkillTriggerMetadata(BaseModel):
+    """Manifest-owned trigger metadata for automatic skill selection.
+
+    These fields influence skill selection traces and output protocol choice
+    only. They do not grant tool permissions or bypass runtime guardrails.
+    """
+
+    keywords: list[str] = Field(default_factory=list)
+    commands: list[str] = Field(default_factory=list)
+    intent_hints: list[str] = Field(default_factory=list)
+    routes: list[str] = Field(default_factory=list)
+    task_types: list[str] = Field(default_factory=list)
+    attachment_kinds: list[str] = Field(default_factory=list)
+    document_count: SkillDocumentCountConstraint | None = None
+    fallback: bool = False
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class ToolSource(str, Enum):
@@ -144,3 +194,22 @@ class SkillManifest(BaseModel):
     version: str = "1.0.0"
     priority: int = 100
     skill_file: str = "SKILL.md"
+    scope: SkillScope = SkillScope.SHARED
+    source: SkillSource = SkillSource.BUILTIN
+    maturity: SkillMaturity = SkillMaturity.STABLE
+    available_by_default: bool = True
+    trigger: SkillTriggerMetadata | None = None
+
+
+class SkillContextSummary(BaseModel):
+    """Prompt-safe skill context summary for trace observability only."""
+
+    skill_id: str
+    name: str
+    short_description: str = ""
+    artifact_protocol: dict[str, Any] = Field(default_factory=dict)
+    available_tools: list[str] = Field(default_factory=list)
+    output_expectations: list[str] = Field(default_factory=list)
+    safety_constraints: list[str] = Field(default_factory=list)
+    trigger_reason: str = ""
+    char_count: int = 0

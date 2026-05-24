@@ -6,6 +6,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from .skill_selection import SkillSelection
+
 
 class ResearchInputMode(str, Enum):
     """User-facing input forms that can enter the unified task chain."""
@@ -80,4 +82,5 @@ class ResearchTaskRoute(BaseModel):
     use_main_agent_loop: bool = True
     allow_single_pass: bool = False
     active_skill_id: str | None = None
+    used_skills: list[SkillSelection] = Field(default_factory=list)
     rationale: str = ""
