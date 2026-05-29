@@ -105,7 +105,10 @@ class ToolRegistry:
                 spec.io_type != "read" or spec.operation_level != "query-level" or spec.destructive
             ):
                 continue
-            if spec.scope not in {scope, "shared", "common"}:
+            visible_scopes = {scope, "shared", "common"}
+            if scope == "knowledge":
+                visible_scopes.add("workspace")
+            if spec.scope not in visible_scopes:
                 continue
             if allowed_levels and spec.operation_level not in allowed_levels:
                 continue
@@ -251,7 +254,187 @@ def builtin_tool_declarations() -> list[ToolDeclaration]:
         ),
     ]
     tools.extend(paperdesk_chat_tool_declarations(common_output))
+    tools.extend(workspace_file_tool_declarations())
     return tools
+
+
+def workspace_file_tool_declarations() -> list[ToolDeclaration]:
+    """Declare session workspace file tools without wiring Agent execution.
+
+    Execution stays in the workspace tool adapter and existing workspace
+    services. These declarations are visible to Knowledge/workspace callers and
+    are kept out of research and MCP surfaces by scope/source metadata.
+    """
+
+    def workspace_tool(
+        tool_id: str,
+        name: str,
+        description: str,
+        properties: dict[str, dict],
+        output_properties: dict[str, dict],
+        *,
+        required: list[str] | None = None,
+        read_only: bool = True,
+        risk_level: str = "low",
+        operation_level: str = "query-level",
+        write_type: str = "none",
+        requires_confirmation: bool = False,
+        available_by_default: bool = True,
+        output_summary_policy: str = "Record relative paths and counts only.",
+        security_notes: list[str] | None = None,
+    ) -> ToolDeclaration:
+        spec = ToolSpec(
+            name=tool_id,
+            display_name=name,
+            description=description,
+            scope="workspace",
+            operation_level=operation_level,
+            io_type="read" if read_only else "write",
+            write_type=write_type,
+            destructive=False,
+            requires_confirmation=requires_confirmation,
+            input_object_types=["workspace_file"],
+            output_observation_type="workspace_file_tool_observation",
+            requires_post_read_verification=False,
+            verification_tool=None,
+            available_by_default=available_by_default,
+            maturity="stable",
+            source=ToolSource.BUILTIN.value,
+        )
+        return ToolDeclaration(
+            tool_id=tool_id,
+            source=ToolSource.BUILTIN,
+            name=name,
+            description=description,
+            input_schema={
+                "type": "object",
+                "action_type": "workspace_file_tool",
+                "risk_level": risk_level,
+                "scope_type": "session_workspace",
+                "operation_level": operation_level,
+                "io_type": spec.io_type,
+                "write_type": write_type,
+                "requires_confirmation": requires_confirmation,
+                "required": required or [],
+                "properties": properties,
+                "output_summary_policy": output_summary_policy,
+                "security_notes": security_notes or [],
+            },
+            output_schema={
+                "type": "object",
+                "properties": output_properties,
+                "output_summary_policy": output_summary_policy,
+            },
+            read_only=read_only,
+            enabled=True,
+            spec=spec,
+        )
+
+    safe_path_notes = [
+        "Only session workspace relative paths are accepted.",
+        "Absolute paths, drive paths, UNC paths, traversal, hidden paths, sensitive names, and symlink escapes are rejected.",
+        "Server filesystem locations are never returned.",
+    ]
+    return [
+        workspace_tool(
+            "workspace.file.list",
+            "List workspace files",
+            "List safe files inside the current session workspace, returning relative paths and file metadata.",
+            {
+                "path": {"type": "string", "default": ""},
+                "recursive": {"type": "boolean", "default": False},
+                "max_entries": {"type": "integer", "default": 100, "minimum": 1, "maximum": 500},
+            },
+            {
+                "items": {"type": "array"},
+                "count": {"type": "integer"},
+                "truncated": {"type": "boolean"},
+                "max_entries": {"type": "integer"},
+            },
+            risk_level="low",
+            security_notes=safe_path_notes,
+        ),
+        workspace_tool(
+            "workspace.file.read",
+            "Read workspace file",
+            "Read one safe UTF-8 text/code file from the current session workspace with content truncation.",
+            {
+                "path": {"type": "string"},
+                "max_chars": {"type": "integer", "default": 12000, "minimum": 1, "maximum": 50000},
+            },
+            {
+                "relative_path": {"type": "string"},
+                "content": {"type": "string"},
+                "included_chars": {"type": "integer"},
+                "char_count": {"type": "integer"},
+                "truncated": {"type": "boolean"},
+                "mime_type": {"type": ["string", "null"]},
+                "size_bytes": {"type": "integer"},
+            },
+            required=["path"],
+            risk_level="low",
+            output_summary_policy="Tool result may include content; trace summaries keep only path, size, included_chars, and truncation.",
+            security_notes=safe_path_notes
+            + ["Binary files, PDFs, unsupported extensions, and sensitive files are rejected."],
+        ),
+        workspace_tool(
+            "workspace.file.write_new",
+            "Create workspace file",
+            "Create a new safe UTF-8 text/code file in the current session workspace; existing files are rejected and cannot be overwritten.",
+            {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "display_name": {"type": "string"},
+            },
+            {
+                "relative_path": {"type": "string"},
+                "display_name": {"type": "string"},
+                "file_kind": {"type": "string"},
+                "mime_type": {"type": ["string", "null"]},
+                "size_bytes": {"type": "integer"},
+                "checksum": {"type": "string"},
+                "status": {"type": "string"},
+            },
+            required=["path", "content"],
+            read_only=False,
+            risk_level="low_to_medium",
+            operation_level="content-level",
+            write_type="create",
+            output_summary_policy="Record created relative path, file kind, size, checksum, and status; never record content.",
+            security_notes=safe_path_notes
+            + ["Cannot overwrite existing files.", "PDFs, binary files, unsupported extensions, and sensitive paths are rejected."],
+        ),
+        workspace_tool(
+            "workspace.file.overwrite_prepare",
+            "Prepare workspace overwrite",
+            "Prepare a diff and pending confirmation for one existing safe text/code file; it does not write the replacement.",
+            {
+                "path": {"type": "string"},
+                "new_content": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            {
+                "relative_path": {"type": "string"},
+                "old_checksum": {"type": "string"},
+                "new_checksum": {"type": "string"},
+                "diff_preview": {"type": "string"},
+                "diff_truncated": {"type": "boolean"},
+                "pending_action_created": {"type": "boolean"},
+                "confirmation_required": {"type": "boolean"},
+                "status": {"type": "string"},
+            },
+            required=["path", "new_content"],
+            read_only=False,
+            risk_level="medium",
+            operation_level="content-level",
+            write_type="prepare_overwrite",
+            requires_confirmation=True,
+            available_by_default=False,
+            output_summary_policy="Return diff preview and checksums; trace summaries omit old/new content and keep diff length only.",
+            security_notes=safe_path_notes
+            + ["Pending only; direct overwrite confirmation is not available as a tool.", "PDFs, binary files, unsupported extensions, and sensitive paths are rejected."],
+        ),
+    ]
 
 
 def paperdesk_chat_tool_declarations(output_schema: dict) -> list[ToolDeclaration]:

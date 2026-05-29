@@ -11,6 +11,7 @@ from .report_repository import ReportRepository
 from .research_repository import ResearchRepository
 from .runtime_repository import RuntimeRepository
 from .sqlite_repository import SQLiteRepository
+from .workspace_file_repository import WorkspaceFileRepository
 
 __all__ = [
     "ChatRepository",
@@ -24,4 +25,5 @@ __all__ = [
     "RuntimeRepository",
     "SQLiteDatabase",
     "SQLiteRepository",
+    "WorkspaceFileRepository",
 ]

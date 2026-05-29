@@ -34,6 +34,9 @@ from .skill_context_builder import SkillContextBuilder
 from .skill_selector import SkillSelector
 from .text_chunker import TextChunker
 from .workbench_service import WorkbenchService
+from .workspace_chat_operations import WorkspaceChatOperationService, WorkspacePendingActionAdapter
+from .workspace_operation_resolver import WorkspaceBoundaryGuard, WorkspaceIntentResolver, WorkspacePathExtractor
+from .workspace_trace_builder import WorkspaceTraceBuilder
 
 __all__ = [
     "ArxivClient",
@@ -68,4 +71,10 @@ __all__ = [
     "SkillSelector",
     "TextChunker",
     "WorkbenchService",
+    "WorkspaceBoundaryGuard",
+    "WorkspaceChatOperationService",
+    "WorkspaceIntentResolver",
+    "WorkspacePathExtractor",
+    "WorkspacePendingActionAdapter",
+    "WorkspaceTraceBuilder",
 ]

@@ -288,6 +288,27 @@ class SQLiteDatabase:
                     FOREIGN KEY (session_id) REFERENCES chat_sessions (id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS workspace_files (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    source_message_id TEXT,
+                    created_by TEXT NOT NULL,
+                    file_kind TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    relative_path TEXT NOT NULL,
+                    storage_path TEXT NOT NULL,
+                    mime_type TEXT,
+                    size_bytes INTEGER NOT NULL,
+                    checksum TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    source_file_ids_json TEXT NOT NULL DEFAULT '[]',
+                    source_document_ids_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    failure_reason TEXT,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions (id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS memory_records (
                     id TEXT PRIMARY KEY,
                     memory_type TEXT NOT NULL,

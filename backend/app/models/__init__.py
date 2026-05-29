@@ -40,6 +40,15 @@ from .file_asset import (
     FileStatus,
     FileTextExtractionStatus,
 )
+from .workspace_file import (
+    WorkspaceFile,
+    WorkspaceFileCreator,
+    WorkspaceFileListItem,
+    WorkspaceFileListResponse,
+    WorkspaceFileListSource,
+    WorkspaceFileReadResult,
+    WorkspaceFileStatus,
+)
 from .paper import (
     EvidenceQuality,
     EvidenceItem,
@@ -276,4 +285,11 @@ __all__ = [
     "WorkbenchTraceArtifactStatus",
     "WorkbenchTraceSkill",
     "WorkbenchTraceToolStep",
+    "WorkspaceFile",
+    "WorkspaceFileCreator",
+    "WorkspaceFileListItem",
+    "WorkspaceFileListResponse",
+    "WorkspaceFileListSource",
+    "WorkspaceFileReadResult",
+    "WorkspaceFileStatus",
 ]

@@ -17,6 +17,7 @@ from .paper_repository import PaperRepository
 from .report_repository import ReportRepository
 from .research_repository import ResearchRepository
 from .runtime_repository import RuntimeRepository
+from .workspace_file_repository import WorkspaceFileRepository
 
 
 class SQLiteRepository:
@@ -34,6 +35,7 @@ class SQLiteRepository:
         self.report = ReportRepository(self.database)
         self.runtime = RuntimeRepository(self.database)
         self.chat = ChatRepository(self.database)
+        self.workspace_file = WorkspaceFileRepository(self.database)
 
     def create_document(self, document: LibraryDocument) -> LibraryDocument:
         return self.library.create_document(document)

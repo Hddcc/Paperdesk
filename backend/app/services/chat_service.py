@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import re
 import shutil
+from typing import Any
 from uuid import uuid4
 
 from openai import OpenAI
@@ -28,6 +29,7 @@ from app.models import (
     KnowledgeRoute,
     MemorySnapshot,
     ResearchRunStatus,
+    WorkspaceFileReadResult,
 )
 from app.repositories import ChatRepository, FileAssetRepository, LibraryRepository
 
@@ -35,6 +37,27 @@ from .chat_memory_service import ChatMemoryService
 from .context_assembler import ContextAssembler
 from .file_text_extractor import FileTextExtractor
 from .rag_service import RagService
+from .workspace_chat_operations import (
+    WorkspaceChatOperationService,
+    WorkspacePendingActionAdapter,
+    build_workspace_file_context_block,
+    workspace_file_created_message,
+)
+from .workspace_operation_resolver import (
+    WorkspaceCommandBoundary as _WorkspaceCommandBoundary,
+    WorkspaceFileOverwriteIntent as _WorkspaceFileOverwriteIntent,
+    WorkspaceFilePendingResponse as _WorkspaceFilePendingResponse,
+    WorkspaceFileReadIntent as _WorkspaceFileReadIntent,
+    WorkspaceFileWriteNewIntent as _WorkspaceFileWriteNewIntent,
+    WorkspaceIntentResolver,
+    WorkspacePathExtractor,
+    unsupported_workspace_write_extension_message,
+    workspace_command_boundary_message,
+    workspace_file_overwrite_boundary_message,
+    workspace_file_write_new_boundary_message,
+    workspace_internal_write_boundary_message,
+)
+from .workspace_trace_builder import WorkspaceTraceBuilder
 
 
 @dataclass(slots=True)
@@ -105,6 +128,164 @@ class ChatService:
     SESSION_FILE_SUPPORTED_KINDS = {"txt", "md", "docx", "pdf"}
     SESSION_FILE_MAX_CHARS_PER_FILE = 4000
     SESSION_FILE_MAX_CHARS_TOTAL = 12000
+    WORKSPACE_FILE_READ_MAX_CHARS = 12000
+    WORKSPACE_FILE_READ_EXTENSIONS = (
+        "md",
+        "txt",
+        "json",
+        "csv",
+        "html",
+        "py",
+        "go",
+        "js",
+        "ts",
+        "vue",
+        "css",
+        "java",
+        "cpp",
+        "c",
+        "rs",
+        "yaml",
+        "yml",
+        "toml",
+    )
+    WORKSPACE_FILE_WRITE_NEW_EXTENSIONS = {
+        ".txt": ("txt", "text/plain"),
+        ".md": ("md", "text/markdown"),
+        ".json": ("json", "application/json"),
+        ".csv": ("csv", "text/csv"),
+        ".html": ("html", "text/html"),
+        ".py": ("py", "text/x-python"),
+        ".go": ("go", "text/x-go"),
+        ".js": ("js", "text/javascript"),
+        ".ts": ("ts", "text/typescript"),
+        ".vue": ("vue", "text/x-vue"),
+        ".css": ("css", "text/css"),
+        ".java": ("java", "text/x-java-source"),
+        ".cpp": ("cpp", "text/x-c++src"),
+        ".c": ("c", "text/x-csrc"),
+        ".rs": ("rs", "text/rust"),
+        ".yaml": ("yaml", "application/yaml"),
+        ".yml": ("yaml", "application/yaml"),
+        ".toml": ("toml", "application/toml"),
+    }
+    WORKSPACE_FILE_DIFF_PREVIEW_MAX_CHARS = 8000
+    WORKSPACE_FILE_OVERWRITE_PENDING_TTL_MINUTES = 30
+    WORKSPACE_FILE_OVERWRITE_ACTION_TYPE = "workspace_file_overwrite"
+    WORKSPACE_FILE_CONFIRM_MARKERS = (
+        "confirm",
+        "yes",
+        "execute",
+        "continue",
+        "ok",
+        "确认",
+        "执行",
+        "继续",
+        "是的",
+        "同意",
+        "可以",
+    )
+    WORKSPACE_FILE_CANCEL_MARKERS = (
+        "cancel",
+        "no",
+        "stop",
+        "取消",
+        "不用",
+        "撤销",
+        "先不",
+    )
+    COMMAND_HINT_MAX_CHARS = 120
+    COMMAND_EXECUTION_PATTERNS = (
+        r"npm\s+run\s+\S+",
+        r"npm\s+test\b",
+        r"npm\s+install\b",
+        r"yarn\s+(?:build|test|install)\b",
+        r"pnpm\s+(?:build|test|install)\b",
+        r"pytest(?:\s+[\w./\\:-]+)*",
+        r"python\s+-m\s+pytest(?:\s+[\w./\\:-]+)*",
+        r"python\s+[\w./\\:-]+\.py",
+        r"go\s+test(?:\s+[\w./\\:-]+)*",
+        r"go\s+run\s+[\w./\\:-]+",
+        r"go\s+build(?:\s+[\w./\\:-]+)*",
+        r"node\s+[\w./\\:-]+",
+        r"cargo\s+(?:test|build)\b",
+        r"mvn\s+test\b",
+        r"gradle\s+test\b",
+        r"make(?:\s+\w+)?\b",
+        r"docker\s+build\b",
+        r"docker\s+compose\s+up\b",
+        r"git\s+(?:status|diff|add|commit|push)\b",
+        r"rm\s+-rf\b",
+        r"del(?:\s+[\w./\\:-]+)?\b",
+        r"copy\s+[\w./\\:-]+",
+        r"move\s+[\w./\\:-]+",
+        r"powershell(?:\.exe)?\b",
+        r"bash\b",
+        r"cmd(?:\.exe)?\b",
+        r"uvicorn\s+[\w.:/-]+",
+        r"pip\s+install\b",
+    )
+    COMMAND_EXECUTION_NATURAL_MARKERS = (
+        "帮我运行",
+        "帮我执行",
+        "执行",
+        "运行",
+        "跑一下",
+        "跑下",
+        "启动服务",
+        "运行测试",
+        "运行构建",
+        "打开终端执行",
+        "在本地执行",
+        "run ",
+        "execute ",
+        "start server",
+        "run tests",
+        "run build",
+    )
+    COMMAND_CONCEPT_QUESTION_MARKERS = (
+        "什么是",
+        "是什么",
+        "做什么",
+        "怎么用",
+        "如何",
+        "怎么",
+        "区别",
+        "报错",
+        "一般怎么看",
+        "解释",
+        "含义",
+        "what is",
+        "what does",
+        "how to",
+        "how do",
+        "difference",
+        "explain",
+        "meaning",
+        "usage",
+    )
+    WORKSPACE_FILE_PATH_PATTERN = re.compile(
+        r"`(?P<quoted>[^`\r\n]+?\.(?:md|txt|json|csv|html|py|go|js|ts|vue|css|java|cpp|c|rs|ya?ml|toml))`"
+        r"|(?:^|[\s\"'“”‘’(:：])"
+        r"(?P<plain>(?:\./)?[A-Za-z0-9_\-\u4e00-\u9fff][^\s`\"'“”‘’<>()\[\]{}，。；;：:！？!?]*?"
+        r"\.(?:md|txt|json|csv|html|py|go|js|ts|vue|css|java|cpp|c|rs|ya?ml|toml))",
+        re.IGNORECASE,
+    )
+
+    WORKSPACE_FILE_PATH_PATTERN = re.compile(
+        r"`(?P<quoted>[^`\r\n]+)`"
+        r"|(?P<plain>"
+        r"[A-Za-z]:[\\/][^\s`\"'<>()\[\]{}，。；;！？!?]+"
+        r"|\\\\[^\s`\"'<>()\[\]{}，。；;！？!?]+"
+        r"|/(?!/)[^\s`\"'<>()\[\]{}，。；;！？!?]+"
+        r"|(?:\.\./)+[^\s`\"'<>()\[\]{}，。；;！？!?]+"
+        r"|\./[^\s`\"'<>()\[\]{}，。；;！？!?]+"
+        r"|\.[A-Za-z0-9_.-]+(?:[\\/][^\s`\"'<>()\[\]{}，。；;！？!?]+)*"
+        r"|[A-Za-z0-9_\-\u4e00-\u9fff.]+[\\/][^\s`\"'<>()\[\]{}，。；;！？!?]*"
+        r"|[A-Za-z0-9_\-\u4e00-\u9fff.]+\.[A-Za-z0-9]{1,12}"
+        r")",
+        re.IGNORECASE,
+    )
 
     def __init__(
         self,
@@ -117,6 +298,7 @@ class ChatService:
         rag_service: RagService,
         memory_service: ChatMemoryService,
         context_assembler: ContextAssembler,
+        workspace_file_service=None,
         agent_orchestrator=None,
         knowledge_agent_runtime=None,
         knowledge_planner_runtime=None,
@@ -137,6 +319,7 @@ class ChatService:
         self.rag_service = rag_service
         self.memory_service = memory_service
         self.context_assembler = context_assembler
+        self.workspace_file_service = workspace_file_service
         self.agent_orchestrator = agent_orchestrator
         self.knowledge_agent_runtime = knowledge_agent_runtime
         self.knowledge_planner_runtime = knowledge_planner_runtime
@@ -152,6 +335,18 @@ class ChatService:
             model=self.model,
             base_url_configured=bool(self.base_url),
             api_key_configured=bool(self.api_key),
+        )
+        self.workspace_pending_adapter = WorkspacePendingActionAdapter(
+            lambda: getattr(self.knowledge_agent_runtime, "pending_action_store", None)
+        )
+        self.workspace_chat_operations = WorkspaceChatOperationService(
+            workspace_file_service=self.workspace_file_service,
+            pending_adapter=self.workspace_pending_adapter,
+        )
+        self.workspace_intent_resolver = WorkspaceIntentResolver(
+            pending_reader=self._read_workspace_file_pending_action,
+            active_write_intent=self._has_active_write_intent,
+            read_then_write_request=self._looks_like_read_then_write_request,
         )
 
     def list_sessions(self) -> list[ChatSession]:
@@ -271,6 +466,43 @@ class ChatService:
         mode_decision = None
         fast_path_response = None
         general_chat_fast_path = False
+        workspace_command_boundary = self._detect_workspace_command_boundary(request.content)
+        workspace_file_pending_response = self._detect_workspace_file_pending_response(session.id, request.content)
+        workspace_file_overwrite_intent = None
+        workspace_file_write_new_intent = None
+        if workspace_command_boundary is None and workspace_file_pending_response is None:
+            workspace_file_overwrite_intent = self._detect_workspace_file_overwrite_intent(
+                request=request,
+                selected_document_ids=document_ids,
+                attachments=normalized_attachments,
+                history=history_before_current,
+            )
+        if (
+            workspace_command_boundary is None
+            and workspace_file_pending_response is None
+            and workspace_file_overwrite_intent is None
+        ):
+            workspace_file_write_new_intent = self._detect_workspace_file_write_new_intent(
+                request=request,
+                selected_document_ids=document_ids,
+                attachments=normalized_attachments,
+                history=history_before_current,
+            )
+        workspace_file_read_intent = None
+        if (
+            workspace_command_boundary is None
+            and
+            workspace_file_pending_response is None
+            and workspace_file_overwrite_intent is None
+            and workspace_file_write_new_intent is None
+        ):
+            workspace_file_read_intent = self._detect_workspace_file_read_intent(
+                request=request,
+                selected_document_ids=document_ids,
+                attachments=normalized_attachments,
+            )
+        workspace_file_context_lines: list[str] = []
+        workspace_file_read_error: str | None = None
         session_file_write_unsupported = bool(request.selected_file_ids) and not document_ids and (
             self._has_active_write_intent(request.content)
             or self._looks_like_read_then_write_request(request.content)
@@ -282,7 +514,77 @@ class ChatService:
             and not file_resolution.items
             and file_resolution.rejected_count > 0
         )
-        if mixed_file_and_document_selection:
+        if research_redirect is None and workspace_command_boundary is not None:
+            mode_decision = self._build_fast_path_decision(
+                session=session,
+                user_message=user_message,
+                request=request,
+                attachments=normalized_attachments,
+                selected_document_ids=document_ids,
+                memory_snapshot=memory_snapshot,
+                route=KnowledgeRoute.DIRECT_ANSWER,
+                intent=KnowledgeIntent.CHAT,
+                reason=workspace_command_boundary.reason,
+                requires_tools=False,
+                target_runtime="WorkspaceCommandBoundaryRuntime",
+            )
+        elif research_redirect is None and workspace_file_pending_response is not None:
+            mode_decision = self._build_fast_path_decision(
+                session=session,
+                user_message=user_message,
+                request=request,
+                attachments=normalized_attachments,
+                selected_document_ids=document_ids,
+                memory_snapshot=memory_snapshot,
+                route=KnowledgeRoute.TOOL_ACTION,
+                intent=KnowledgeIntent.CHAT,
+                reason=workspace_file_pending_response.reason,
+                requires_tools=True,
+                target_runtime="WorkspaceFileOverwriteRuntime",
+            )
+        elif research_redirect is None and workspace_file_overwrite_intent is not None:
+            mode_decision = self._build_fast_path_decision(
+                session=session,
+                user_message=user_message,
+                request=request,
+                attachments=normalized_attachments,
+                selected_document_ids=document_ids,
+                memory_snapshot=memory_snapshot,
+                route=KnowledgeRoute.TOOL_ACTION,
+                intent=KnowledgeIntent.CHAT,
+                reason=workspace_file_overwrite_intent.reason,
+                requires_tools=True,
+                target_runtime="WorkspaceFileOverwriteRuntime",
+            )
+        elif research_redirect is None and workspace_file_write_new_intent is not None:
+            mode_decision = self._build_fast_path_decision(
+                session=session,
+                user_message=user_message,
+                request=request,
+                attachments=normalized_attachments,
+                selected_document_ids=document_ids,
+                memory_snapshot=memory_snapshot,
+                route=KnowledgeRoute.TOOL_ACTION,
+                intent=KnowledgeIntent.CHAT,
+                reason=workspace_file_write_new_intent.reason,
+                requires_tools=True,
+                target_runtime="WorkspaceFileWriteNewRuntime",
+            )
+        elif research_redirect is None and workspace_file_read_intent is not None:
+            mode_decision = self._build_fast_path_decision(
+                session=session,
+                user_message=user_message,
+                request=request,
+                attachments=normalized_attachments,
+                selected_document_ids=document_ids,
+                memory_snapshot=memory_snapshot,
+                route=KnowledgeRoute.DIRECT_ANSWER,
+                intent=KnowledgeIntent.CHAT,
+                reason=workspace_file_read_intent.reason,
+                requires_tools=False,
+                target_runtime="WorkspaceFileDirectAnswerRuntime",
+            )
+        elif mixed_file_and_document_selection:
             mode_decision = self._build_fast_path_decision(
                 session=session,
                 user_message=user_message,
@@ -383,7 +685,200 @@ class ChatService:
         )
 
         agent_result = None
-        if mixed_file_and_document_selection:
+        if workspace_command_boundary is not None:
+            assistant_text = self._workspace_command_boundary_message()
+            retrieval_status = "skipped"
+            action_status = "needs_clarification"
+            document_ids = []
+            context_state = self._assemble_context_state(
+                session=session,
+                history=history_before_current,
+                current_request=request,
+                attachments=normalized_attachments,
+                evidence_items=[],
+                session_file_context_lines=[],
+            )
+            self._record_workspace_command_blocked_trace(
+                mode_decision,
+                boundary=workspace_command_boundary,
+            )
+            self._finish_agent_trace(
+                mode_decision,
+                action_status=action_status,
+                retrieval_status=retrieval_status,
+                used_document_count=0,
+                evidence_count=0,
+            )
+        elif workspace_file_pending_response is not None:
+            assistant_text, action_status = self._handle_workspace_file_pending_response(
+                session_id=session.id,
+                response=workspace_file_pending_response,
+                decision=mode_decision,
+            )
+            retrieval_status = "skipped"
+            document_ids = []
+            context_state = self._assemble_context_state(
+                session=session,
+                history=history_before_current,
+                current_request=request,
+                attachments=normalized_attachments,
+                evidence_items=[],
+                session_file_context_lines=[],
+            )
+            self._finish_agent_trace(
+                mode_decision,
+                action_status=action_status,
+                retrieval_status=retrieval_status,
+                used_document_count=0,
+                evidence_count=0,
+            )
+        elif workspace_file_overwrite_intent is not None and workspace_file_overwrite_intent.clarification:
+            assistant_text = workspace_file_overwrite_intent.clarification
+            retrieval_status = "skipped"
+            action_status = "needs_clarification"
+            document_ids = []
+            context_state = self._assemble_context_state(
+                session=session,
+                history=history_before_current,
+                current_request=request,
+                attachments=normalized_attachments,
+                evidence_items=[],
+                session_file_context_lines=[],
+            )
+            self._record_workspace_file_overwrite_skipped_trace(
+                mode_decision,
+                intent=workspace_file_overwrite_intent,
+                status="needs_clarification",
+            )
+            self._finish_agent_trace(
+                mode_decision,
+                action_status=action_status,
+                retrieval_status=retrieval_status,
+                used_document_count=0,
+                evidence_count=0,
+            )
+        elif workspace_file_overwrite_intent is not None:
+            assistant_text, action_status = self._create_workspace_file_overwrite_pending(
+                session_id=session.id,
+                intent=workspace_file_overwrite_intent,
+                decision=mode_decision,
+            )
+            retrieval_status = "skipped"
+            document_ids = []
+            context_state = self._assemble_context_state(
+                session=session,
+                history=history_before_current,
+                current_request=request,
+                attachments=normalized_attachments,
+                evidence_items=[],
+                session_file_context_lines=[],
+            )
+            self._finish_agent_trace(
+                mode_decision,
+                action_status=action_status,
+                retrieval_status=retrieval_status,
+                used_document_count=0,
+                evidence_count=0,
+            )
+        elif workspace_file_write_new_intent is not None and workspace_file_write_new_intent.clarification:
+            assistant_text = workspace_file_write_new_intent.clarification
+            retrieval_status = "skipped"
+            action_status = "needs_clarification"
+            document_ids = []
+            context_state = self._assemble_context_state(
+                session=session,
+                history=history_before_current,
+                current_request=request,
+                attachments=normalized_attachments,
+                evidence_items=[],
+                session_file_context_lines=[],
+            )
+            self._record_workspace_file_create_skipped_trace(
+                mode_decision,
+                intent=workspace_file_write_new_intent,
+                status="needs_clarification",
+            )
+            self._finish_agent_trace(
+                mode_decision,
+                action_status=action_status,
+                retrieval_status=retrieval_status,
+                used_document_count=0,
+                evidence_count=0,
+            )
+        elif workspace_file_write_new_intent is not None:
+            workspace_file, create_error = self._create_workspace_file_from_write_new_intent(
+                session_id=session.id,
+                intent=workspace_file_write_new_intent,
+            )
+            retrieval_status = "skipped"
+            document_ids = []
+            context_state = self._assemble_context_state(
+                session=session,
+                history=history_before_current,
+                current_request=request,
+                attachments=normalized_attachments,
+                evidence_items=[],
+                session_file_context_lines=[],
+            )
+            if workspace_file is None:
+                assistant_text = create_error or "Unable to create the workspace file."
+                action_status = "needs_clarification"
+                self._record_workspace_file_create_skipped_trace(
+                    mode_decision,
+                    intent=workspace_file_write_new_intent,
+                    status="failed",
+                    error=create_error,
+                )
+            else:
+                assistant_text = self._workspace_file_created_message(workspace_file)
+                action_status = "created_workspace_file"
+                self._record_workspace_file_created_trace(mode_decision, workspace_file)
+            self._finish_agent_trace(
+                mode_decision,
+                action_status=action_status,
+                retrieval_status=retrieval_status,
+                used_document_count=0,
+                evidence_count=0,
+            )
+        elif workspace_file_read_intent is not None and workspace_file_read_intent.clarification:
+            workspace_file_read_error = workspace_file_read_intent.clarification
+        elif workspace_file_read_intent is not None:
+            result, error = self._read_workspace_file_context(session.id, workspace_file_read_intent.relative_path)
+            workspace_file_read_error = error
+            if result is not None:
+                workspace_file_context_lines = self._build_workspace_file_context_block(result)
+                self._record_workspace_file_context_trace(mode_decision, result)
+
+        if (
+            workspace_command_boundary is not None
+            or
+            workspace_file_pending_response is not None
+            or workspace_file_overwrite_intent is not None
+            or workspace_file_write_new_intent is not None
+        ):
+            pass
+        elif workspace_file_read_error is not None:
+            assistant_text = workspace_file_read_error
+            retrieval_status = "skipped"
+            action_status = "needs_clarification"
+            context_state = self._assemble_context_state(
+                session=session,
+                history=history_before_current,
+                current_request=request,
+                attachments=normalized_attachments,
+                evidence_items=[],
+                session_file_context_lines=[],
+            )
+            self._finish_agent_trace(
+                mode_decision,
+                action_status=action_status,
+                retrieval_status=retrieval_status,
+                used_document_count=0,
+                evidence_count=0,
+            )
+        elif workspace_file_read_intent is not None:
+            pass
+        elif mixed_file_and_document_selection:
             assistant_text = (
                 "本轮请只选择普通会话文件或论文库文件之一。普通文件只读问答和论文库 RAG 暂不混合处理。"
             )
@@ -562,12 +1057,18 @@ class ChatService:
             self._finish_agent_trace(mode_decision, agent_result)
         elif (
             fast_path_response is None
+            and workspace_command_boundary is None
+            and workspace_file_pending_response is None
+            and workspace_file_overwrite_intent is None
+            and workspace_file_write_new_intent is None
             and not mixed_file_and_document_selection
             and not session_file_write_unsupported
             and not session_file_all_rejected
+            and workspace_file_read_error is None
             and mode_decision is not None
             and mode_decision.mode == AgentRunMode.DIRECT
         ):
+            direct_context_lines = [*session_file_context_lines, *workspace_file_context_lines]
             assistant_text, context_state = self._generate_answer(
                 session=session,
                 history=history_before_current,
@@ -575,7 +1076,7 @@ class ChatService:
                 attachments=normalized_attachments,
                 memory_snapshot=memory_snapshot,
                 evidence_items=[],
-                session_file_context_lines=session_file_context_lines,
+                session_file_context_lines=direct_context_lines,
                 delta_sink=delta_sink,
             )
             rejection_notice = self._session_file_rejection_notice(file_resolution)
@@ -623,8 +1124,18 @@ class ChatService:
                 retrieval_status = "skipped"
                 warning = "所选论文仍在入库处理中，本轮先按普通模型回答。"
 
-        if fast_path_response is None and retrieval_failure_message and research_redirect is None and agent_result is None and not (
+        if (
+            fast_path_response is None
+            and workspace_command_boundary is None
+            and workspace_file_pending_response is None
+            and workspace_file_overwrite_intent is None
+            and workspace_file_write_new_intent is None
+            and retrieval_failure_message
+            and research_redirect is None
+            and agent_result is None
+            and not (
             mode_decision is not None and mode_decision.mode == AgentRunMode.DIRECT
+            )
         ):
             assistant_text = retrieval_failure_message
             context_state = self._assemble_context_state(
@@ -647,6 +1158,10 @@ class ChatService:
                 )
         elif (
             fast_path_response is None
+            and workspace_command_boundary is None
+            and workspace_file_pending_response is None
+            and workspace_file_overwrite_intent is None
+            and workspace_file_write_new_intent is None
             and research_redirect is None
             and agent_result is None
             and not mixed_file_and_document_selection
@@ -1089,7 +1604,19 @@ class ChatService:
             requires_rag=False,
             requires_confirmation=False,
             risk_level=KnowledgeRiskLevel.LOW if requires_tools else KnowledgeRiskLevel.NONE,
-            required_capabilities=["deterministic_read"] if requires_tools else [],
+            required_capabilities=(
+                ["deterministic_write_new"]
+                if requires_tools and target_runtime == "WorkspaceFileWriteNewRuntime"
+                else (
+                    ["workspace_file_overwrite_confirmation"]
+                    if requires_tools and target_runtime == "WorkspaceFileOverwriteRuntime"
+                    else (
+                        ["workspace_command_execution_blocked"]
+                        if target_runtime == "WorkspaceCommandBoundaryRuntime"
+                        else (["deterministic_read"] if requires_tools else [])
+                    )
+                )
+            ),
             trace_id=trace_id,
             fallback_used=False,
         )
@@ -2420,6 +2947,283 @@ class ChatService:
                 )
             )
         return normalized
+
+    def _detect_workspace_file_write_new_intent(
+        self,
+        *,
+        request: ChatMessageRequest,
+        selected_document_ids: list[str],
+        attachments: list[ChatAttachment],
+        history: list[ChatMessage],
+    ) -> _WorkspaceFileWriteNewIntent | None:
+        if self.workspace_file_service is None:
+            return None
+        return self.workspace_intent_resolver.detect_write_new_intent(
+            request=request,
+            selected_document_ids=selected_document_ids,
+            attachments=attachments,
+            history=history,
+        )
+
+    def _detect_workspace_file_overwrite_intent(
+        self,
+        *,
+        request: ChatMessageRequest,
+        selected_document_ids: list[str],
+        attachments: list[ChatAttachment],
+        history: list[ChatMessage],
+    ) -> _WorkspaceFileOverwriteIntent | None:
+        if self.workspace_file_service is None:
+            return None
+        return self.workspace_intent_resolver.detect_overwrite_intent(
+            request=request,
+            selected_document_ids=selected_document_ids,
+            attachments=attachments,
+            history=history,
+        )
+
+    def _detect_workspace_file_read_intent(
+        self,
+        *,
+        request: ChatMessageRequest,
+        selected_document_ids: list[str],
+        attachments: list[ChatAttachment],
+    ) -> _WorkspaceFileReadIntent | None:
+        if self.workspace_file_service is None:
+            return None
+        return self.workspace_intent_resolver.detect_read_intent(
+            request=request,
+            selected_document_ids=selected_document_ids,
+            attachments=attachments,
+        )
+
+    @classmethod
+    def _detect_workspace_command_boundary(cls, content: str) -> _WorkspaceCommandBoundary | None:
+        return WorkspaceIntentResolver.detect_command_boundary(content)
+
+    def _detect_workspace_file_pending_response(
+        self,
+        session_id: str,
+        content: str,
+    ) -> _WorkspaceFilePendingResponse | None:
+        return self.workspace_intent_resolver.detect_pending_response(session_id, content)
+
+    def _create_workspace_file_from_write_new_intent(
+        self,
+        *,
+        session_id: str,
+        intent: _WorkspaceFileWriteNewIntent,
+    ):
+        return self.workspace_chat_operations.create_file_from_write_new_intent(
+            session_id=session_id,
+            intent=intent,
+        )
+
+    def _create_workspace_file_overwrite_pending(
+        self,
+        *,
+        session_id: str,
+        intent: _WorkspaceFileOverwriteIntent,
+        decision: AgentModeDecision | None,
+    ) -> tuple[str, str]:
+        assistant_text, action_status, pending, error = self.workspace_chat_operations.create_overwrite_pending(
+            session_id=session_id,
+            intent=intent,
+        )
+        if pending is not None:
+            self._record_workspace_file_overwrite_pending_trace(decision, pending=pending)
+        elif error:
+            self._record_workspace_file_overwrite_skipped_trace(
+                decision,
+                intent=intent,
+                status="failed",
+                error=error,
+            )
+        return assistant_text, action_status
+
+    def _handle_workspace_file_pending_response(
+        self,
+        *,
+        session_id: str,
+        response: _WorkspaceFilePendingResponse,
+        decision: AgentModeDecision | None,
+    ) -> tuple[str, str]:
+        assistant_text, action_status, workspace_file, skipped_intent, error = (
+            self.workspace_chat_operations.handle_pending_response(
+                session_id=session_id,
+                response=response,
+            )
+        )
+        if workspace_file is not None:
+            self._record_workspace_file_overwritten_trace(decision, workspace_file)
+        if skipped_intent is not None:
+            self._record_workspace_file_overwrite_skipped_trace(
+                decision,
+                intent=skipped_intent,
+                status="failed",
+                error=error,
+            )
+        return assistant_text, action_status
+
+    def _read_workspace_file_pending_action(self, session_id: str) -> dict[str, Any] | None:
+        return self.workspace_pending_adapter.read(
+            session_id,
+            action_type=WorkspaceChatOperationService.WORKSPACE_FILE_OVERWRITE_ACTION_TYPE,
+        )
+
+    def _write_workspace_file_pending_action(self, session_id: str, payload: dict[str, Any]) -> None:
+        self.workspace_pending_adapter.write(session_id, payload)
+
+    def _clear_workspace_file_pending_action(self, session_id: str) -> None:
+        self.workspace_pending_adapter.clear(session_id)
+
+    def _read_workspace_file_context(
+        self,
+        session_id: str,
+        relative_path: str | None,
+    ) -> tuple[WorkspaceFileReadResult | None, str | None]:
+        return self.workspace_chat_operations.read_workspace_file_context(
+            session_id=session_id,
+            relative_path=relative_path,
+        )
+
+    @staticmethod
+    def _build_workspace_file_context_block(result: WorkspaceFileReadResult) -> list[str]:
+        return build_workspace_file_context_block(result)
+
+    def _record_workspace_file_created_trace(
+        self,
+        decision: AgentModeDecision | None,
+        workspace_file,
+    ) -> None:
+        if decision is None or self.agent_orchestrator is None:
+            return
+        self.agent_orchestrator.append_trace(
+            decision.trace_id,
+            status="workspace_file_created",
+            message="Workspace file created through deterministic write_new.",
+            payload=WorkspaceTraceBuilder.file_created(workspace_file),
+        )
+
+    def _record_workspace_file_create_skipped_trace(
+        self,
+        decision: AgentModeDecision | None,
+        *,
+        intent: _WorkspaceFileWriteNewIntent,
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        if decision is None or self.agent_orchestrator is None:
+            return
+        self.agent_orchestrator.append_trace(
+            decision.trace_id,
+            status="workspace_file_create_skipped",
+            message="Workspace file write_new was skipped before any file content was written.",
+            payload=WorkspaceTraceBuilder.file_create_skipped(intent, status=status, error=error),
+        )
+
+    def _record_workspace_command_blocked_trace(
+        self,
+        decision: AgentModeDecision | None,
+        *,
+        boundary: _WorkspaceCommandBoundary,
+    ) -> None:
+        if decision is None or self.agent_orchestrator is None:
+            return
+        self.agent_orchestrator.append_trace(
+            decision.trace_id,
+            status="workspace_command_execution_blocked",
+            message="Workspace command execution request was blocked before any tool or LLM execution.",
+            payload=WorkspaceTraceBuilder.command_blocked(boundary),
+        )
+
+    def _record_workspace_file_overwrite_pending_trace(
+        self,
+        decision: AgentModeDecision | None,
+        *,
+        pending: dict[str, Any],
+    ) -> None:
+        if decision is None or self.agent_orchestrator is None:
+            return
+        self.agent_orchestrator.append_trace(
+            decision.trace_id,
+            status="workspace_file_overwrite_pending",
+            message="Workspace file overwrite diff prepared and stored as a pending action.",
+            payload=WorkspaceTraceBuilder.overwrite_pending(pending),
+        )
+
+    def _record_workspace_file_overwritten_trace(
+        self,
+        decision: AgentModeDecision | None,
+        workspace_file,
+    ) -> None:
+        if decision is None or self.agent_orchestrator is None:
+            return
+        self.agent_orchestrator.append_trace(
+            decision.trace_id,
+            status="workspace_file_overwritten",
+            message="Workspace file overwrite executed after confirmation.",
+            payload=WorkspaceTraceBuilder.file_overwritten(workspace_file),
+        )
+
+    def _record_workspace_file_overwrite_skipped_trace(
+        self,
+        decision: AgentModeDecision | None,
+        *,
+        intent: _WorkspaceFileOverwriteIntent,
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        if decision is None or self.agent_orchestrator is None:
+            return
+        self.agent_orchestrator.append_trace(
+            decision.trace_id,
+            status="workspace_file_overwrite_skipped",
+            message="Workspace file overwrite was skipped before file content was written.",
+            payload=WorkspaceTraceBuilder.overwrite_skipped(intent, status=status, error=error),
+        )
+
+    def _record_workspace_file_context_trace(
+        self,
+        decision: AgentModeDecision | None,
+        result: WorkspaceFileReadResult,
+    ) -> None:
+        if decision is None or self.agent_orchestrator is None:
+            return
+        self.agent_orchestrator.append_trace(
+            decision.trace_id,
+            status="workspace_file_context_injected",
+            message="Workspace file context prepared for a read-only direct answer.",
+            payload=WorkspaceTraceBuilder.context_injected(result),
+        )
+
+    @staticmethod
+    def _workspace_file_created_message(workspace_file) -> str:
+        return workspace_file_created_message(workspace_file)
+
+    @staticmethod
+    def _workspace_command_boundary_message() -> str:
+        return workspace_command_boundary_message()
+
+    @staticmethod
+    def _workspace_file_write_new_boundary_message() -> str:
+        return workspace_file_write_new_boundary_message()
+
+    @classmethod
+    def _unsupported_workspace_write_extension_message(cls) -> str:
+        return unsupported_workspace_write_extension_message(cls.WORKSPACE_FILE_WRITE_NEW_EXTENSIONS)
+
+    @staticmethod
+    def _workspace_internal_write_boundary_message() -> str:
+        return workspace_internal_write_boundary_message()
+
+    @staticmethod
+    def _workspace_file_overwrite_boundary_message() -> str:
+        return workspace_file_overwrite_boundary_message()
+
+    @classmethod
+    def _extract_workspace_file_paths(cls, content: str) -> list[str]:
+        return WorkspacePathExtractor.extract_paths(content)
 
     @staticmethod
     def _collect_document_ids(

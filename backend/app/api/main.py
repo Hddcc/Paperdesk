@@ -51,6 +51,7 @@ from app.services import (
     WorkbenchService,
 )
 from app.services.research_orchestrator import ResearchOrchestrator
+from app.services.workspace_file_service import WorkspaceFileService
 from app.runtime import AgentOrchestrator, KnowledgeAgentRuntime, KnowledgePlannerRuntime, ReflectionRuntime
 from app.runtime import ToolRegistry
 from app.vectorstores import MilvusVectorStore
@@ -190,6 +191,10 @@ def get_file_asset_repository():
     return get_repository().file_asset
 
 
+def get_workspace_file_repository():
+    return get_repository().workspace_file
+
+
 @lru_cache(maxsize=1)
 def get_report_lifecycle_service() -> ReportLifecycleService:
     return ReportLifecycleService(
@@ -221,6 +226,17 @@ def get_file_asset_service() -> FileAssetService:
         storage_dir=settings.file_asset_path,
         max_upload_bytes=settings.file_asset_max_upload_bytes,
         text_extractor=FileTextExtractor(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_workspace_file_service() -> WorkspaceFileService:
+    settings = get_settings()
+    return WorkspaceFileService(
+        workspace_repository=get_workspace_file_repository(),
+        chat_repository=get_chat_repository(),
+        workspace_base_dir=settings.workspace_path,
+        max_file_bytes=settings.workspace_file_max_bytes,
     )
 
 
@@ -366,6 +382,7 @@ def get_chat_service() -> ChatService:
         rag_service=get_rag_service(),
         memory_service=get_chat_memory_service(),
         context_assembler=get_context_assembler(),
+        workspace_file_service=get_workspace_file_service(),
         agent_orchestrator=get_agent_orchestrator(),
         knowledge_agent_runtime=get_knowledge_agent_runtime(),
         knowledge_planner_runtime=get_knowledge_planner_runtime(),

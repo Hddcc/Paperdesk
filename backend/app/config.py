@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     milvus_image: str = "milvusdb/milvus:v2.6.14"
     docker_desktop_path: str = "C:/Program Files/Docker/Docker/Docker Desktop.exe"
     workspace_dir: str = "./workspace"
+    workspace_file_max_bytes: int = 1024 * 1024
     upload_dir: str = "./workspace/uploads"
     file_asset_dir: str = "./workspace/files"
     file_asset_max_upload_bytes: int = 5 * 1024 * 1024
