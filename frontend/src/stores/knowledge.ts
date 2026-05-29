@@ -11,6 +11,7 @@ import {
   getWorkbenchSessionFiles,
   listChatSessions,
   saveChatMessageAsReport,
+  saveMessageAsWorkspaceFile,
   streamChatMessage,
   uploadWorkbenchSessionFile
 } from "../services/api";
@@ -28,7 +29,9 @@ import type {
   WorkbenchConfigResponse,
   WorkbenchFileContextResponse,
   WorkbenchFileAsset,
-  WorkbenchMessageTraceSummary
+  WorkbenchMessageTraceSummary,
+  WorkspaceFile,
+  WorkspaceFileFormat
 } from "../types/models";
 
 type SelectableLibraryDocument = Pick<LibraryDocument, "id" | "display_name" | "title" | "filename" | "status">;
@@ -149,6 +152,9 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
   const sending = ref(false);
   const stopping = ref(false);
   const savingReportMessageId = ref("");
+  const generatedWorkspaceFiles = ref<Record<string, WorkspaceFile[]>>({});
+  const isSavingWorkspaceFile = ref<Record<string, boolean>>({});
+  const workspaceFileSaveError = ref<string | null>(null);
   const error = ref("");
   const sessionFileUploadError = ref("");
   const retrievalNotice = ref("");
@@ -653,6 +659,54 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     }
   }
 
+  function addGeneratedWorkspaceFile(messageId: string, file: WorkspaceFile) {
+    const existingFiles = generatedWorkspaceFiles.value[messageId] ?? [];
+    if (existingFiles.some((item) => item.id === file.id)) {
+      return;
+    }
+    generatedWorkspaceFiles.value = {
+      ...generatedWorkspaceFiles.value,
+      [messageId]: [...existingFiles, file]
+    };
+  }
+
+  async function saveAssistantMessageAsWorkspaceFile(
+    messageId: string,
+    filename: string,
+    format: WorkspaceFileFormat
+  ) {
+    const message = messages.value.find((item) => item.id === messageId);
+    if (!message || message.role !== "assistant") {
+      workspaceFileSaveError.value = "只能保存助手消息。";
+      return null;
+    }
+    if (!currentSessionId.value) {
+      workspaceFileSaveError.value = "当前会话不可用，请稍后重试。";
+      return null;
+    }
+    isSavingWorkspaceFile.value = {
+      ...isSavingWorkspaceFile.value,
+      [messageId]: true
+    };
+    workspaceFileSaveError.value = null;
+    try {
+      const workspaceFile = await saveMessageAsWorkspaceFile(currentSessionId.value, messageId, {
+        filename,
+        format
+      });
+      addGeneratedWorkspaceFile(messageId, workspaceFile);
+      return workspaceFile;
+    } catch (err) {
+      workspaceFileSaveError.value = formatWorkspaceFileSaveError(err);
+      throw err;
+    } finally {
+      isSavingWorkspaceFile.value = {
+        ...isSavingWorkspaceFile.value,
+        [messageId]: false
+      };
+    }
+  }
+
   function clearComposer() {
     composerText.value = "";
     activeSlashCommand.value = null;
@@ -837,6 +891,9 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     isUploadingSessionFile,
     sending,
     savingReportMessageId,
+    generatedWorkspaceFiles,
+    isSavingWorkspaceFile,
+    workspaceFileSaveError,
     error,
     sessionFileUploadError,
     retrievalNotice,
@@ -871,10 +928,45 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     sendCurrentMessage,
     stopGeneration,
     saveAssistantMessageAsReport,
+    saveAssistantMessageAsWorkspaceFile,
+    addGeneratedWorkspaceFile,
     clearComposer
   };
 });
 
 function isAbortError(err: unknown) {
   return err instanceof DOMException && err.name === "AbortError";
+}
+
+function formatWorkspaceFileSaveError(err: unknown) {
+  const message = err instanceof Error ? err.message : "";
+  if (message.includes("Only assistant messages")) {
+    return "只能保存助手消息。";
+  }
+  if (message.includes("content is empty")) {
+    return "这条消息没有可保存的内容。";
+  }
+  if (message.includes("already exists")) {
+    return "该文件已存在，请换一个文件名。";
+  }
+  if (
+    message.includes("path separators") ||
+    message.includes("invalid") ||
+    message.includes("not allowed") ||
+    message.includes("unsafe") ||
+    message.includes("Security")
+  ) {
+    return "文件名不安全，请只输入普通文件名。";
+  }
+  if (
+    message.includes("Unsupported workspace file format") ||
+    message.includes("Unsupported workspace file extension") ||
+    message.includes("does not match")
+  ) {
+    return "当前只支持保存为 Markdown 或 TXT，请检查扩展名和格式。";
+  }
+  if (message.includes("not found")) {
+    return "当前会话或消息不存在，请刷新后重试。";
+  }
+  return message || "保存文件失败，请稍后重试。";
 }

@@ -155,6 +155,33 @@ export interface WorkbenchFileAsset {
   created_at: string;
 }
 
+export type WorkspaceFileFormat = "md" | "txt";
+
+export interface WorkspaceFile {
+  id: string;
+  session_id: string;
+  source_message_id?: string | null;
+  created_by: "agent" | "user" | "system";
+  file_kind: string;
+  display_name: string;
+  relative_path: string;
+  mime_type?: string | null;
+  size_bytes: number;
+  checksum: string;
+  status: "ready" | "failed";
+  source_file_ids: string[];
+  source_document_ids: string[];
+  created_at: string;
+  updated_at: string;
+  failure_reason?: string | null;
+}
+
+export interface WorkspaceFileSaveRequest {
+  filename: string;
+  format: WorkspaceFileFormat;
+  title?: string;
+}
+
 export interface WorkbenchFileContextResponse {
   session_id: string;
   library_documents: WorkbenchFileItem[];

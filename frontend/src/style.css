@@ -1670,6 +1670,111 @@ select {
   font-size: 13px;
 }
 
+.workspace-file-save-panel,
+.generated-workspace-files {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 11px;
+  border: 1px solid rgba(4, 124, 113, 0.14);
+  border-radius: var(--radius-md);
+  background: rgba(240, 253, 250, 0.72);
+}
+
+.workspace-file-save-panel label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.workspace-file-save-panel input,
+.workspace-file-save-panel select {
+  min-height: 34px;
+  font-size: 13px;
+}
+
+.workspace-file-save-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.generated-workspace-files h4 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.generated-workspace-file-card {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid rgba(127, 143, 166, 0.16);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.generated-workspace-file-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
+  background: #047c71;
+  color: white;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.generated-workspace-file-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.generated-workspace-file-main strong,
+.generated-workspace-file-main small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.generated-workspace-file-main strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.generated-workspace-file-main small {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.generated-workspace-file-path {
+  color: var(--text-muted);
+}
+
+.generated-workspace-file-actions {
+  display: grid;
+  grid-template-columns: auto minmax(0, 86px) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.generated-workspace-file-download-hint {
+  max-width: 86px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
 .execution-summary-panel {
   display: grid;
   gap: 10px;

@@ -134,6 +134,15 @@
                 <button
                   v-if="message.role === 'assistant'"
                   class="button-secondary message-action-button"
+                  :disabled="isMessageProcessing(message) || !message.content.trim()"
+                  @click="openWorkspaceFileForm(message)"
+                >
+                  <Save :size="15" />
+                  保存为文件
+                </button>
+                <button
+                  v-if="message.role === 'assistant'"
+                  class="button-secondary message-action-button"
                   :disabled="isMessageProcessing(message) || !message.content.trim() || store.isTraceLoading"
                   @click="showExecutionSummary(message)"
                 >
@@ -141,6 +150,97 @@
                   {{ store.selectedTraceMessageId === message.id && store.isTraceLoading ? "加载中..." : "执行摘要" }}
                 </button>
               </div>
+
+              <section
+                v-if="workspaceFileFormMessageId === message.id"
+                class="workspace-file-save-panel"
+                aria-label="保存为文件"
+              >
+                <label>
+                  <span>文件名</span>
+                  <input
+                    v-model="workspaceFileDraftName"
+                    type="text"
+                    autocomplete="off"
+                    placeholder="answer.md"
+                    @input="workspaceFileLocalError = ''"
+                  />
+                </label>
+                <label>
+                  <span>格式</span>
+                  <select v-model="workspaceFileDraftFormat" @change="syncWorkspaceFileExtension">
+                    <option value="md">Markdown</option>
+                    <option value="txt">TXT</option>
+                  </select>
+                </label>
+                <p v-if="activeWorkspaceFileError" class="error-text">{{ activeWorkspaceFileError }}</p>
+                <div class="workspace-file-save-actions">
+                  <button
+                    class="button-primary message-action-button"
+                    type="button"
+                    :disabled="Boolean(store.isSavingWorkspaceFile[message.id])"
+                    @click="saveWorkspaceFile(message)"
+                  >
+                    <Save :size="15" />
+                    {{ store.isSavingWorkspaceFile[message.id] ? "保存中..." : "保存" }}
+                  </button>
+                  <button
+                    class="button-secondary message-action-button"
+                    type="button"
+                    :disabled="Boolean(store.isSavingWorkspaceFile[message.id])"
+                    @click="closeWorkspaceFileForm"
+                  >
+                    取消
+                  </button>
+                </div>
+              </section>
+
+              <section
+                v-if="generatedFilesForMessage(message).length"
+                class="generated-workspace-files"
+                aria-label="生成的文件"
+              >
+                <h4>生成的文件</h4>
+                <article
+                  v-for="file in generatedFilesForMessage(message)"
+                  :key="file.id"
+                  class="generated-workspace-file-card"
+                >
+                  <div class="generated-workspace-file-icon" aria-hidden="true">
+                    {{ formatWorkspaceFileKind(file.file_kind) }}
+                  </div>
+                  <div class="generated-workspace-file-main">
+                    <strong>{{ file.display_name }}</strong>
+                    <small>
+                      {{ formatWorkspaceFileKind(file.file_kind) }} · {{ formatBytes(file.size_bytes) }} · {{ formatWorkspaceFileStatus(file.status) }}
+                    </small>
+                    <small v-if="file.relative_path" class="generated-workspace-file-path">
+                      {{ file.relative_path }}
+                    </small>
+                  </div>
+                  <div class="generated-workspace-file-actions">
+                    <button
+                      class="icon-button"
+                      type="button"
+                      title="下载接口待接入"
+                      aria-label="下载接口待接入"
+                      disabled
+                    >
+                      <Download :size="15" />
+                    </button>
+                    <small class="generated-workspace-file-download-hint">下载接口待接入</small>
+                    <button
+                      class="icon-button"
+                      type="button"
+                      :title="copiedWorkspaceFileId === file.id ? '已复制原文' : '复制助手原文'"
+                      :aria-label="copiedWorkspaceFileId === file.id ? '已复制原文' : '复制助手原文'"
+                      @click="copyWorkspaceFileSource(message, file.id)"
+                    >
+                      <Copy :size="15" />
+                    </button>
+                  </div>
+                </article>
+              </section>
 
               <section
                 v-if="isExecutionSummaryVisible(message)"
@@ -164,53 +264,6 @@
                       <small>{{ formatArtifactSummary(activeTraceSummary(message)) }}</small>
                     </span>
                   </div>
-                  <details class="trace-debug-details">
-                    <summary>调试详情</summary>
-                    <div class="trace-debug-content">
-                      <div class="trace-debug-section">
-                        <strong>使用的文件 ID</strong>
-                        <p>{{ formatIdList(activeTraceSummary(message)?.used_file_ids) }}</p>
-                      </div>
-                      <div class="trace-debug-section">
-                        <strong>使用的论文 ID</strong>
-                        <p>{{ formatIdList(activeTraceSummary(message)?.used_document_ids) }}</p>
-                      </div>
-                      <div class="trace-debug-section">
-                        <strong>文件处理摘要</strong>
-                        <p>{{ formatFileContextSummary(activeTraceSummary(message)) }}</p>
-                      </div>
-                      <div class="trace-debug-section">
-                        <strong>工具步骤</strong>
-                        <ul v-if="activeTraceSummary(message)?.tool_steps.length" class="trace-debug-list">
-                          <li v-for="step in activeTraceSummary(message)?.tool_steps" :key="`${step.display_name}-${step.status}`">
-                            <span>{{ step.display_name }}</span>
-                            <small>{{ step.status }}</small>
-                          </li>
-                        </ul>
-                        <p v-else>暂无工具步骤</p>
-                      </div>
-                      <div class="trace-debug-section">
-                        <strong>Skill</strong>
-                        <ul v-if="activeTraceSummary(message)?.used_skills?.length" class="trace-debug-list">
-                          <li v-for="skill in activeTraceSummary(message)?.used_skills" :key="skill.skill_id">
-                            <span>{{ skill.name }}</span>
-                            <small>{{ Math.round(skill.confidence * 100) }}%</small>
-                          </li>
-                        </ul>
-                        <p v-else>暂无 Skill 摘要</p>
-                      </div>
-                      <div class="trace-debug-section">
-                        <strong>执行事件</strong>
-                        <ul v-if="activeTraceSummary(message)?.compact_steps.length" class="trace-debug-list">
-                          <li v-for="step in activeTraceSummary(message)?.compact_steps" :key="`${step.kind}-${step.created_at}`">
-                            <span>{{ step.label }}</span>
-                            <small>{{ step.status }}</small>
-                          </li>
-                        </ul>
-                        <p v-else>暂无执行事件</p>
-                      </div>
-                    </div>
-                  </details>
                 </template>
               </section>
 
@@ -413,7 +466,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Copy, FileText, Paperclip, Plus, Save, SendHorizontal, StopCircle, Trash2, X } from "lucide-vue-next";
+import { Copy, Download, FileText, Paperclip, Plus, Save, SendHorizontal, StopCircle, Trash2, X } from "lucide-vue-next";
 
 import MarkdownPreview from "../components/MarkdownPreview.vue";
 import { useDocumentStore } from "../stores/documents";
@@ -425,7 +478,9 @@ import type {
   SlashCommandOption,
   WorkbenchFileAsset,
   WorkbenchFileItem,
-  WorkbenchMessageTraceSummary
+  WorkbenchMessageTraceSummary,
+  WorkspaceFile,
+  WorkspaceFileFormat
 } from "../types/models";
 
 const store = useKnowledgeStore();
@@ -434,6 +489,11 @@ const documentStore = useDocumentStore();
 const messagePanelRef = ref<HTMLElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const copiedMessageId = ref("");
+const copiedWorkspaceFileId = ref("");
+const workspaceFileFormMessageId = ref("");
+const workspaceFileDraftName = ref("");
+const workspaceFileDraftFormat = ref<WorkspaceFileFormat>("md");
+const workspaceFileLocalError = ref("");
 const showAttachMenu = ref(false);
 const showDocumentPicker = ref(false);
 const composerHeight = ref(112);
@@ -501,6 +561,9 @@ const mixedSelectionHint = computed(() =>
   store.selectedDocumentIds.length && store.selectedFileIds.length
     ? "当前后端建议普通文件和论文库文件分开提问。"
     : ""
+);
+const activeWorkspaceFileError = computed(() =>
+  workspaceFileLocalError.value || store.workspaceFileSaveError || ""
 );
 const visibleDraftAttachments = computed(() =>
   store.draftAttachments.filter((attachment) => attachment.kind !== "library_document")
@@ -725,6 +788,90 @@ function isMessageProcessing(message: ChatMessage) {
   return message.role === "assistant" && (message.status === "processing" || (message.status === "streaming" && !message.content.trim()));
 }
 
+function generatedFilesForMessage(message: ChatMessage): WorkspaceFile[] {
+  return store.generatedWorkspaceFiles[message.id] ?? [];
+}
+
+function openWorkspaceFileForm(message: ChatMessage) {
+  workspaceFileFormMessageId.value = message.id;
+  workspaceFileDraftFormat.value = "md";
+  workspaceFileDraftName.value = defaultWorkspaceFileName(message, "md");
+  workspaceFileLocalError.value = "";
+  store.workspaceFileSaveError = null;
+}
+
+function closeWorkspaceFileForm() {
+  workspaceFileFormMessageId.value = "";
+  workspaceFileDraftName.value = "";
+  workspaceFileLocalError.value = "";
+  store.workspaceFileSaveError = null;
+}
+
+function defaultWorkspaceFileName(message: ChatMessage, format: WorkspaceFileFormat) {
+  const shortId = message.id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8) || "answer";
+  return `answer-${shortId}.${format}`;
+}
+
+function syncWorkspaceFileExtension() {
+  const format = workspaceFileDraftFormat.value;
+  const currentName = workspaceFileDraftName.value.trim();
+  if (!currentName) {
+    workspaceFileDraftName.value = `answer.${format}`;
+    return;
+  }
+  workspaceFileDraftName.value = currentName.replace(/\.(md|txt)$/i, `.${format}`);
+  if (!/\.(md|txt)$/i.test(currentName)) {
+    workspaceFileDraftName.value = `${currentName}.${format}`;
+  }
+  workspaceFileLocalError.value = "";
+  store.workspaceFileSaveError = null;
+}
+
+async function saveWorkspaceFile(message: ChatMessage) {
+  const filename = workspaceFileDraftName.value.trim();
+  const localError = validateWorkspaceFileName(filename, workspaceFileDraftFormat.value);
+  if (localError) {
+    workspaceFileLocalError.value = localError;
+    return;
+  }
+  try {
+    await store.saveAssistantMessageAsWorkspaceFile(message.id, filename, workspaceFileDraftFormat.value);
+    closeWorkspaceFileForm();
+  } catch {
+    // Store owns the visible error message.
+  }
+}
+
+function validateWorkspaceFileName(filename: string, format: WorkspaceFileFormat) {
+  if (!filename) {
+    return "请输入文件名。";
+  }
+  if (/[\\/]/.test(filename) || filename.includes("..")) {
+    return "文件名不安全，请只输入普通文件名。";
+  }
+  if (!/^[^<>:"|?*\u0000-\u001f]+$/.test(filename)) {
+    return "文件名不安全，请只输入普通文件名。";
+  }
+  const extension = filename.includes(".") ? filename.split(".").pop()?.toLowerCase() : "";
+  if (extension && !["md", "txt"].includes(extension)) {
+    return "当前只支持保存为 Markdown 或 TXT。";
+  }
+  if (extension && extension !== format) {
+    return "文件扩展名和所选格式不一致。";
+  }
+  return "";
+}
+
+async function copyWorkspaceFileSource(message: ChatMessage, fileId: string) {
+  await navigator.clipboard.writeText(message.content);
+  copiedWorkspaceFileId.value = fileId;
+  window.setTimeout(() => {
+    if (copiedWorkspaceFileId.value === fileId) {
+      copiedWorkspaceFileId.value = "";
+    }
+  }, 1600);
+}
+
 async function showExecutionSummary(message: ChatMessage) {
   if (message.role !== "assistant" || isMessageProcessing(message)) {
     return;
@@ -795,26 +942,6 @@ function formatArtifactSummary(summary: WorkbenchMessageTraceSummary | null) {
   return "暂无产物";
 }
 
-function formatIdList(values?: string[] | null) {
-  if (!values?.length) {
-    return "无";
-  }
-  return values.join(", ");
-}
-
-function formatFileContextSummary(summary: WorkbenchMessageTraceSummary | null) {
-  const fileSummary = summary?.file_context_summary;
-  if (!fileSummary) {
-    return "暂无文件处理摘要";
-  }
-  return [
-    `文件数 ${fileSummary.file_count ?? 0}`,
-    `纳入字符数 ${fileSummary.total_included_chars ?? 0}`,
-    `截断文件数 ${fileSummary.truncated_file_count ?? 0}`,
-    `未使用文件数 ${fileSummary.rejected_file_count ?? 0}`
-  ].join("，");
-}
-
 async function copyMessage(message: ChatMessage) {
   await navigator.clipboard.writeText(message.content);
   copiedMessageId.value = message.id;
@@ -882,6 +1009,28 @@ function formatFileKind(kind: string) {
       return "PDF";
     default:
       return "FILE";
+  }
+}
+
+function formatWorkspaceFileKind(kind: string) {
+  switch (kind) {
+    case "md":
+      return "MD";
+    case "txt":
+      return "TXT";
+    default:
+      return kind.toUpperCase();
+  }
+}
+
+function formatWorkspaceFileStatus(status: string) {
+  switch (status) {
+    case "ready":
+      return "已生成";
+    case "failed":
+      return "失败";
+    default:
+      return status;
   }
 }
 

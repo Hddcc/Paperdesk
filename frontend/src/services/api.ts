@@ -28,7 +28,9 @@ import type {
   WorkbenchConfigResponse,
   WorkbenchFileAsset,
   WorkbenchFileContextResponse,
-  WorkbenchMessageTraceSummary
+  WorkbenchMessageTraceSummary,
+  WorkspaceFile,
+  WorkspaceFileSaveRequest
 } from "../types/models";
 
 const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
@@ -39,6 +41,22 @@ async function parseJson<T>(response: Response): Promise<T> {
     throw new Error(detail || `Request failed: ${response.status}`);
   }
   return (await response.json()) as T;
+}
+
+async function parseErrorDetail(response: Response): Promise<string> {
+  const rawDetail = await response.text().catch(() => "");
+  if (!rawDetail) {
+    return `Request failed: ${response.status}`;
+  }
+  try {
+    const parsed = JSON.parse(rawDetail) as { detail?: unknown };
+    if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+      return parsed.detail;
+    }
+  } catch {
+    // Keep the server body when it is plain text.
+  }
+  return rawDetail;
 }
 
 function normalizeFetchError(err: unknown, fallbackMessage: string): Error {
@@ -228,6 +246,29 @@ export async function getWorkbenchMessageTrace(
     return parseJson<WorkbenchMessageTraceSummary>(response);
   } catch (err) {
     throw normalizeFetchError(err, "鍔犺浇 Trace 鎽樿澶辫触");
+  }
+}
+
+export async function saveMessageAsWorkspaceFile(
+  sessionId: string,
+  messageId: string,
+  payload: WorkspaceFileSaveRequest
+): Promise<WorkspaceFile> {
+  try {
+    const response = await fetch(
+      `${baseUrl}/api/workbench/sessions/${sessionId}/messages/${messageId}/workspace-files`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      }
+    );
+    if (!response.ok) {
+      throw new Error(await parseErrorDetail(response));
+    }
+    return (await response.json()) as WorkspaceFile;
+  } catch (err) {
+    throw normalizeFetchError(err, "保存文件失败");
   }
 }
 
