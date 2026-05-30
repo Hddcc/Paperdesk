@@ -7,11 +7,9 @@ import {
   getChatSessionDetail,
   getWorkbenchCapabilities,
   getWorkbenchConfig,
-  getWorkbenchMessageTrace,
   getWorkbenchSessionFiles,
   listChatSessions,
   saveChatMessageAsReport,
-  saveMessageAsWorkspaceFile,
   streamChatMessage,
   uploadWorkbenchSessionFile
 } from "../services/api";
@@ -29,8 +27,6 @@ import type {
   WorkbenchConfigResponse,
   WorkbenchFileContextResponse,
   WorkbenchFileAsset,
-  WorkbenchMessageTraceSummary,
-  WorkspaceFile,
   WorkspaceFileFormat
 } from "../types/models";
 
@@ -38,12 +34,35 @@ type SelectableLibraryDocument = Pick<LibraryDocument, "id" | "display_name" | "
 
 const STORAGE_KEY = "paperdesk-knowledge-draft-state";
 
+interface BrowserSaveFilePickerOptions {
+  suggestedName?: string;
+  types?: Array<{
+    description?: string;
+    accept: Record<string, string[]>;
+  }>;
+}
+
+interface BrowserFileSystemWritableFileStream {
+  write(data: Blob): Promise<void>;
+  close(): Promise<void>;
+}
+
+interface BrowserFileSystemFileHandle {
+  createWritable(): Promise<BrowserFileSystemWritableFileStream>;
+}
+
+declare global {
+  interface Window {
+    showSaveFilePicker?: (options?: BrowserSaveFilePickerOptions) => Promise<BrowserFileSystemFileHandle>;
+  }
+}
+
 export const SLASH_COMMANDS: SlashCommandOption[] = [
   {
     id: "summary",
     label: "/summary",
-    group: "Paper",
-    description: "Summarize the selected paper.",
+    group: "论文",
+    description: "总结选中的论文。",
     intent_hint: "paper_summary",
     min_documents: 1,
     default_prompt: "请总结所选论文。"
@@ -51,8 +70,8 @@ export const SLASH_COMMANDS: SlashCommandOption[] = [
   {
     id: "compare",
     label: "/compare",
-    group: "Paper",
-    description: "Compare selected papers.",
+    group: "论文",
+    description: "对比选中的论文。",
     intent_hint: "paper_compare",
     min_documents: 2,
     default_prompt: "请对比所选论文。"
@@ -60,8 +79,8 @@ export const SLASH_COMMANDS: SlashCommandOption[] = [
   {
     id: "tag",
     label: "/tag",
-    group: "Library",
-    description: "Query or organize tags and categories.",
+    group: "论文库",
+    description: "查询或整理标签和分类。",
     intent_hint: "tag_query_or_write",
     default_prompt: "请处理标签或分类相关问题。",
     warning: "标签修改会进入确认流程。"
@@ -69,16 +88,16 @@ export const SLASH_COMMANDS: SlashCommandOption[] = [
   {
     id: "library",
     label: "/library",
-    group: "Library",
-    description: "Query library counts, status, and tags.",
+    group: "论文库",
+    description: "查询论文库数量、状态和标签。",
     intent_hint: "library_query",
     default_prompt: "请查询当前论文库状态。"
   },
   {
     id: "help",
     label: "/help",
-    group: "Help",
-    description: "Show available slash commands.",
+    group: "帮助",
+    description: "显示可用的斜杠命令。",
     intent_hint: "help",
     default_prompt: "显示可用命令说明。",
     local_only: true
@@ -152,16 +171,12 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
   const sending = ref(false);
   const stopping = ref(false);
   const savingReportMessageId = ref("");
-  const generatedWorkspaceFiles = ref<Record<string, WorkspaceFile[]>>({});
   const isSavingWorkspaceFile = ref<Record<string, boolean>>({});
   const workspaceFileSaveError = ref<string | null>(null);
+  const workspaceFileSaveErrorMessageId = ref("");
   const error = ref("");
   const sessionFileUploadError = ref("");
   const retrievalNotice = ref("");
-  const selectedTraceMessageId = ref("");
-  const messageTraceSummary = ref<WorkbenchMessageTraceSummary | null>(null);
-  const isTraceLoading = ref(false);
-  const traceError = ref("");
   const bootstrapped = ref(false);
   const activeChatAbortController = ref<AbortController | null>(null);
 
@@ -221,7 +236,6 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       contextState.value = null;
       clearComposer();
       retrievalNotice.value = "";
-      clearTraceSelection();
       if (remaining.length) {
         await openSession(remaining[0].id, { preserveComposer: false });
       } else {
@@ -251,7 +265,6 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       }
       retrievalNotice.value = latestRetrievalNotice(detail.messages);
       await refreshWorkbenchFileContext();
-      clearTraceSelection();
     } catch (err) {
       error.value = err instanceof Error ? err.message : "加载会话失败";
       throw err;
@@ -592,7 +605,6 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       retrievalNotice.value = completedResponse.assistant_message.warning || "";
       await refreshSessions();
       await refreshWorkbenchFileContext();
-      clearTraceSelection();
       return completedResponse;
     } catch (err) {
       if (isAbortError(err)) {
@@ -647,9 +659,6 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
             }
           : item
       );
-      if (selectedTraceMessageId.value === message.id) {
-        await refreshSelectedMessageTrace();
-      }
       return report;
     } catch (err) {
       error.value = err instanceof Error ? err.message : "保存报告失败";
@@ -659,29 +668,20 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     }
   }
 
-  function addGeneratedWorkspaceFile(messageId: string, file: WorkspaceFile) {
-    const existingFiles = generatedWorkspaceFiles.value[messageId] ?? [];
-    if (existingFiles.some((item) => item.id === file.id)) {
-      return;
-    }
-    generatedWorkspaceFiles.value = {
-      ...generatedWorkspaceFiles.value,
-      [messageId]: [...existingFiles, file]
-    };
-  }
-
   async function saveAssistantMessageAsWorkspaceFile(
     messageId: string,
-    filename: string,
+    suggestedFilename: string,
     format: WorkspaceFileFormat
   ) {
     const message = messages.value.find((item) => item.id === messageId);
     if (!message || message.role !== "assistant") {
       workspaceFileSaveError.value = "只能保存助手消息。";
+      workspaceFileSaveErrorMessageId.value = messageId;
       return null;
     }
     if (!currentSessionId.value) {
       workspaceFileSaveError.value = "当前会话不可用，请稍后重试。";
+      workspaceFileSaveErrorMessageId.value = messageId;
       return null;
     }
     isSavingWorkspaceFile.value = {
@@ -689,14 +689,16 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
       [messageId]: true
     };
     workspaceFileSaveError.value = null;
+    workspaceFileSaveErrorMessageId.value = messageId;
     try {
-      const workspaceFile = await saveMessageAsWorkspaceFile(currentSessionId.value, messageId, {
-        filename,
-        format
-      });
-      addGeneratedWorkspaceFile(messageId, workspaceFile);
-      return workspaceFile;
+      await saveTextWithBrowserPicker(message.content, suggestedFilename, format);
+      workspaceFileSaveErrorMessageId.value = "";
+      return null;
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        workspaceFileSaveErrorMessageId.value = "";
+        return null;
+      }
       workspaceFileSaveError.value = formatWorkspaceFileSaveError(err);
       throw err;
     } finally {
@@ -731,56 +733,6 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
 
   function isSelectableSessionFile(file: WorkbenchFileAsset) {
     return file.status === "ready" && file.text_extract_status === "ready";
-  }
-
-  async function loadMessageTrace(messageId: string) {
-    const message = messages.value.find((item) => item.id === messageId);
-    if (!message || message.role !== "assistant") {
-      return null;
-    }
-    selectedTraceMessageId.value = message.id;
-    isTraceLoading.value = true;
-    traceError.value = "";
-    try {
-      messageTraceSummary.value = await getWorkbenchMessageTrace(message.id);
-      return messageTraceSummary.value;
-    } catch (err) {
-      messageTraceSummary.value = null;
-      traceError.value = err instanceof Error ? err.message : "鍔犺浇 Trace 鎽樿澶辫触";
-      return null;
-    } finally {
-      isTraceLoading.value = false;
-    }
-  }
-
-  async function selectAssistantMessageForTrace(message: ChatMessage) {
-    if (message.role !== "assistant") {
-      return null;
-    }
-    return loadMessageTrace(message.id);
-  }
-
-  async function refreshSelectedMessageTrace() {
-    if (!selectedTraceMessageId.value) {
-      return null;
-    }
-    return loadMessageTrace(selectedTraceMessageId.value);
-  }
-
-  async function selectLatestAssistantMessageForTrace(items: ChatMessage[] = messages.value) {
-    const latestAssistant = [...items].reverse().find((item) => item.role === "assistant");
-    if (!latestAssistant) {
-      clearTraceSelection();
-      return null;
-    }
-    return selectAssistantMessageForTrace(latestAssistant);
-  }
-
-  function clearTraceSelection() {
-    selectedTraceMessageId.value = "";
-    messageTraceSummary.value = null;
-    traceError.value = "";
-    isTraceLoading.value = false;
   }
 
   function persistDraftState() {
@@ -874,8 +826,6 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     workbenchConfig,
     workbenchCapabilities,
     workbenchFileContext,
-    selectedTraceMessageId,
-    messageTraceSummary,
     composerText,
     activeSlashCommand,
     slashCommandMenuOpen,
@@ -891,14 +841,12 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     isUploadingSessionFile,
     sending,
     savingReportMessageId,
-    generatedWorkspaceFiles,
     isSavingWorkspaceFile,
     workspaceFileSaveError,
+    workspaceFileSaveErrorMessageId,
     error,
     sessionFileUploadError,
     retrievalNotice,
-    isTraceLoading,
-    traceError,
     stopping,
     bootstrap,
     refreshSessions,
@@ -906,9 +854,6 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     loadWorkbenchCapabilities,
     refreshWorkbenchFileContext,
     uploadSessionFile,
-    loadMessageTrace,
-    selectAssistantMessageForTrace,
-    refreshSelectedMessageTrace,
     createNewSession,
     removeSession,
     openSession,
@@ -929,10 +874,55 @@ export const useKnowledgeStore = defineStore("knowledge", () => {
     stopGeneration,
     saveAssistantMessageAsReport,
     saveAssistantMessageAsWorkspaceFile,
-    addGeneratedWorkspaceFile,
     clearComposer
   };
 });
+
+async function saveTextWithBrowserPicker(
+  content: string,
+  suggestedFilename: string,
+  format: WorkspaceFileFormat
+) {
+  const normalizedFilename = normalizeSuggestedFilename(suggestedFilename, format);
+  const pickerMimeType = format === "txt" ? "text/plain" : "text/markdown";
+  const blobMimeType = `${pickerMimeType};charset=utf-8`;
+  if (window.showSaveFilePicker) {
+    const handle = await window.showSaveFilePicker({
+      suggestedName: normalizedFilename,
+      types: [
+        {
+          description: format === "txt" ? "TXT 文本" : "Markdown 文档",
+          accept: {
+            [pickerMimeType]: [`.${format}`]
+          }
+        }
+      ]
+    });
+    const writable = await handle.createWritable();
+    await writable.write(new Blob([content], { type: blobMimeType }));
+    await writable.close();
+    return;
+  }
+
+  const blob = new Blob([content], { type: blobMimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = normalizedFilename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function normalizeSuggestedFilename(filename: string, format: WorkspaceFileFormat) {
+  const fallback = `answer.${format}`;
+  const cleaned = filename.trim() || fallback;
+  if (/\.(md|txt)$/i.test(cleaned)) {
+    return cleaned.replace(/\.(md|txt)$/i, `.${format}`);
+  }
+  return `${cleaned}.${format}`;
+}
 
 function isAbortError(err: unknown) {
   return err instanceof DOMException && err.name === "AbortError";

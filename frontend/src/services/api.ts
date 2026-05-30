@@ -272,6 +272,33 @@ export async function saveMessageAsWorkspaceFile(
   }
 }
 
+export async function exportMessageToLocalPath(
+  sessionId: string,
+  messageId: string,
+  path: string
+): Promise<WorkspaceFile> {
+  try {
+    const response = await fetch(
+      `${baseUrl}/api/workbench/sessions/${sessionId}/messages/${messageId}/export-to-path`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path })
+      }
+    );
+    if (!response.ok) {
+      throw new Error(await parseErrorDetail(response));
+    }
+    return (await response.json()) as WorkspaceFile;
+  } catch (err) {
+    throw normalizeFetchError(err, "保存到本地路径失败");
+  }
+}
+
+export function getWorkspaceFileDownloadUrl(sessionId: string, fileId: string): string {
+  return `${baseUrl}/api/workbench/sessions/${encodeURIComponent(sessionId)}/workspace-files/${encodeURIComponent(fileId)}/download`;
+}
+
 export async function askKnowledgeQuestion(payload: RagAskRequest): Promise<RagAnswer> {
   try {
     const response = await fetch(`${baseUrl}/api/rag/ask`, {

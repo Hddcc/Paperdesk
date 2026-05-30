@@ -222,6 +222,49 @@ export const useDocumentStore = defineStore("documents", () => {
     }
   }
 
+  async function addDocuments(files: File[]): Promise<LibraryDocument[]> {
+    if (!files.length) {
+      return [];
+    }
+    submittingUpload.value = true;
+    error.value = "";
+    const uploaded: LibraryDocument[] = [];
+    try {
+      for (const [index, file] of files.entries()) {
+        activeUploadName.value = file.name;
+        uploadHint.value =
+          files.length === 1
+            ? "正在上传，请稍候。"
+            : `正在上传 ${index + 1}/${files.length}：${file.name}`;
+        const document = await uploadDocument(file);
+        uploaded.push(document);
+        upsertDocument(document);
+        if (document.status === "processing") {
+          trackProcessingDocument(document.id);
+        }
+      }
+      if (processingUploads.value.length) {
+        uploadHint.value = `${processingUploads.value.length} 篇文档正在处理，列表会自动刷新。`;
+        void ensureProcessingPoll();
+      } else if (uploaded.some((document) => document.status === "ready")) {
+        uploadHint.value = "";
+        showCompletionNotice(
+          uploaded.length === 1
+            ? "PDF 已处理完成，现在可以直接使用。"
+            : `${uploaded.length} 篇 PDF 已处理完成，现在可以直接使用。`
+        );
+      }
+      return uploaded;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "上传文档失败";
+      uploadHint.value = "";
+      throw err;
+    } finally {
+      submittingUpload.value = false;
+      activeUploadName.value = "";
+    }
+  }
+
   async function removeDocument(documentId: string) {
     const previousDocuments = documents.value;
     const previousProcessingUploads = processingUploads.value;
@@ -334,6 +377,7 @@ export const useDocumentStore = defineStore("documents", () => {
     refreshDocuments,
     refreshCategories,
     addDocument,
+    addDocuments,
     removeDocument,
     addCategory,
     removeCategory,

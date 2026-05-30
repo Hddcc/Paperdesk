@@ -22,7 +22,7 @@
         <label class="button-primary library-file-trigger" :class="{ 'library-file-trigger-disabled': store.submittingUpload }">
           <UploadCloud :size="16" />
           <span>{{ store.submittingUpload ? "上传中..." : "上传论文" }}</span>
-          <input type="file" accept=".pdf" :disabled="store.submittingUpload" @change="handleUpload" />
+          <input type="file" accept=".pdf" multiple :disabled="store.submittingUpload" @change="handleUpload" />
         </label>
         <button class="button-secondary" type="button" @click="openCreateCategoryDialog">
           <Plus :size="16" />
@@ -457,11 +457,11 @@ function categoryCount(categoryId: string) {
 
 async function handleUpload(event: Event) {
   const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file) {
+  const files = Array.from(input.files ?? []);
+  if (!files.length) {
     return;
   }
-  await store.addDocument(file);
+  await store.addDocuments(files);
   input.value = "";
 }
 
