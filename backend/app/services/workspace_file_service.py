@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import mimetypes
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from uuid import uuid4
 
 from app.models import WorkspaceFile, WorkspaceFileListItem, WorkspaceFileReadResult
@@ -227,6 +227,103 @@ class WorkspaceFileService:
             created_by="agent",
         )
 
+    def export_assistant_message_to_path(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+        destination_path: str,
+    ) -> WorkspaceFile:
+        session = self.chat_repository.get_session(session_id)
+        if session is None:
+            raise WorkspaceFileServiceError("Chat session not found")
+
+        message = self.chat_repository.get_message(message_id)
+        if message is None or message.session_id != session_id:
+            raise WorkspaceFileServiceError("Chat message not found")
+        if message.role != "assistant":
+            raise WorkspaceFileServiceError("Only assistant messages can be exported")
+        if not message.content.strip():
+            raise WorkspaceFileServiceError("Assistant message content is empty")
+
+        return self.export_content_to_path(
+            session_id=session.id,
+            destination_path=destination_path,
+            content=message.content,
+            source_message_id=message.id,
+            source_file_ids=list(message.used_file_ids),
+            source_document_ids=list(message.used_document_ids),
+            created_by="agent",
+        )
+
+    def export_content_to_path(
+        self,
+        *,
+        session_id: str,
+        destination_path: str,
+        content: str,
+        source_message_id: str | None = None,
+        source_file_ids: list[str] | None = None,
+        source_document_ids: list[str] | None = None,
+        created_by: str = "agent",
+    ) -> WorkspaceFile:
+        if self.chat_repository.get_session(session_id) is None:
+            raise WorkspaceFileServiceError("Chat session not found")
+        if created_by not in {"agent", "user", "system"}:
+            raise WorkspaceFileServiceError("Invalid workspace file creator")
+        if not content.strip():
+            raise WorkspaceFileServiceError("Export content is empty")
+
+        destination = self._resolve_user_export_path(destination_path)
+        allowed = self.ALLOWED_EXTENSIONS.get(destination.suffix.casefold())
+        if allowed is None:
+            raise WorkspaceFileServiceError("Unsupported export file extension")
+        file_kind, mime_type = allowed
+
+        encoded = content.encode("utf-8")
+        if len(encoded) > self.max_file_bytes:
+            raise WorkspaceFileServiceError("Exported file is too large")
+        if destination.exists():
+            raise WorkspaceFileServiceError("Export destination already exists")
+        if destination.parent.exists() and not destination.parent.is_dir():
+            raise WorkspaceFileServiceError("Export destination parent is not a directory")
+
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            raise WorkspaceFileServiceError(f"Export write failed: {exc}") from exc
+
+        now = datetime.now(timezone.utc)
+        workspace_file = WorkspaceFile(
+            id=str(uuid4()),
+            session_id=session_id,
+            source_message_id=source_message_id,
+            created_by=created_by,  # type: ignore[arg-type]
+            file_kind=file_kind,
+            display_name=destination.name,
+            relative_path=str(destination),
+            storage_path=str(destination),
+            mime_type=mime_type,
+            size_bytes=len(encoded),
+            checksum=hashlib.sha256(encoded).hexdigest(),
+            status="ready",
+            source_file_ids=list(source_file_ids or []),
+            source_document_ids=list(source_document_ids or []),
+            created_at=now,
+            updated_at=now,
+        )
+        return self.workspace_repository.create(workspace_file)
+
+    def get_workspace_file_for_download(self, *, session_id: str, file_id: str) -> tuple[Path, WorkspaceFile]:
+        workspace_file = self.workspace_repository.get(file_id)
+        if workspace_file is None or workspace_file.session_id != session_id:
+            raise WorkspaceFileServiceError("Workspace file not found")
+        path = Path(workspace_file.storage_path)
+        if not path.exists() or not path.is_file():
+            raise WorkspaceFileServiceError("Workspace file not found")
+        return path, workspace_file
+
     def create_generated_file(
         self,
         *,
@@ -299,6 +396,34 @@ class WorkspaceFileService:
             updated_at=now,
         )
         return self.workspace_repository.create(workspace_file)
+
+    def _resolve_user_export_path(self, destination_path: str) -> Path:
+        raw_path = str(destination_path or "").strip().strip('"')
+        if not raw_path:
+            raise WorkspaceFileServiceError("Export path is required")
+        if "\x00" in raw_path:
+            raise WorkspaceFileServiceError("Export path is invalid")
+
+        if not self._looks_like_absolute_path(raw_path):
+            raise WorkspaceFileServiceError("Export path must be absolute")
+        destination = Path(raw_path).expanduser()
+
+        try:
+            resolved_parent = destination.parent.resolve(strict=False)
+        except OSError as exc:
+            raise WorkspaceFileServiceError("Export path is invalid") from exc
+        destination = resolved_parent / destination.name
+        if destination.name in {"", ".", ".."}:
+            raise WorkspaceFileServiceError("Export filename is required")
+        if destination.name.startswith("."):
+            raise WorkspaceFileServiceError("Hidden export filenames are not allowed")
+        if any(part == ".." for part in destination.parts):
+            raise WorkspaceFileServiceError("Path traversal is not allowed")
+        return destination
+
+    @staticmethod
+    def _looks_like_absolute_path(raw_path: str) -> bool:
+        return Path(raw_path).expanduser().is_absolute() or bool(PureWindowsPath(raw_path).drive)
 
     def inspect_existing_text_file(
         self,

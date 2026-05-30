@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.api.main import get_file_asset_service, get_workbench_service, get_workspace_file_service
@@ -23,6 +24,10 @@ class MessageWorkspaceFileCreateRequest(BaseModel):
     filename: str = Field(..., min_length=1)
     format: str | None = None
     title: str | None = None
+
+
+class MessageWorkspaceFileExportRequest(BaseModel):
+    path: str = Field(..., min_length=1)
 
 
 @router.get("/config")
@@ -122,6 +127,51 @@ def create_workspace_file_from_message(
             raise HTTPException(status_code=409, detail=message) from exc
         raise HTTPException(status_code=400, detail=message) from exc
     return workspace_file.model_dump(mode="json")
+
+
+@router.post("/sessions/{session_id}/messages/{message_id}/export-to-path")
+def export_message_to_local_path(
+    session_id: str,
+    message_id: str,
+    request: MessageWorkspaceFileExportRequest,
+    service: WorkspaceFileService = Depends(get_workspace_file_service),
+) -> dict:
+    try:
+        workspace_file = service.export_assistant_message_to_path(
+            session_id=session_id,
+            message_id=message_id,
+            destination_path=request.path,
+        )
+    except WorkspaceFileServiceError as exc:
+        message = str(exc)
+        if message in {"Chat session not found", "Chat message not found"}:
+            raise HTTPException(status_code=404, detail=message) from exc
+        if "already exists" in message:
+            raise HTTPException(status_code=409, detail=message) from exc
+        if "too large" in message:
+            raise HTTPException(status_code=413, detail=message) from exc
+        raise HTTPException(status_code=400, detail=message) from exc
+    return workspace_file.model_dump(mode="json")
+
+
+@router.get("/sessions/{session_id}/workspace-files/{file_id}/download")
+def download_workspace_file(
+    session_id: str,
+    file_id: str,
+    service: WorkspaceFileService = Depends(get_workspace_file_service),
+) -> FileResponse:
+    try:
+        path, workspace_file = service.get_workspace_file_for_download(
+            session_id=session_id,
+            file_id=file_id,
+        )
+    except WorkspaceFileServiceError as exc:
+        raise _workspace_file_http_error(exc) from exc
+    return FileResponse(
+        path,
+        media_type=workspace_file.mime_type or "application/octet-stream",
+        filename=workspace_file.display_name,
+    )
 
 
 def _workspace_file_http_error(exc: WorkspaceFileServiceError) -> HTTPException:

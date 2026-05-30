@@ -29,6 +29,7 @@ class FileAssetService:
         ".pdf": {"application/pdf", "application/octet-stream"},
     }
     PREVIEW_LIMIT = 1500
+    PDF_MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
     def __init__(
         self,
@@ -66,8 +67,10 @@ class FileAssetService:
 
         content = await upload.read()
         await upload.close()
-        if len(content) > self.max_upload_bytes:
-            raise HTTPException(status_code=413, detail="File is too large")
+        effective_max_upload_bytes = self.PDF_MAX_UPLOAD_BYTES if kind == "pdf" else self.max_upload_bytes
+        if len(content) > effective_max_upload_bytes:
+            limit_mb = max(1, effective_max_upload_bytes // (1024 * 1024))
+            raise HTTPException(status_code=413, detail=f"File is too large（文件超过 {limit_mb}MB，请选择更小的文件。）")
 
         file_id = str(uuid4())
         safe_filename = f"{file_id}{extension}"

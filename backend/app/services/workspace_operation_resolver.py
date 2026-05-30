@@ -28,6 +28,7 @@ class WorkspaceFileWriteNewIntent:
     source_document_ids: list[str] | None = None
     reason: str = "Explicit workspace write_new request handled deterministically."
     clarification: str | None = None
+    is_absolute_export: bool = False
 
 
 @dataclass(slots=True)
@@ -244,6 +245,9 @@ class WorkspaceBoundaryGuard:
                 "write a new file",
                 "output to",
                 "export to",
+                "save locally",
+                "save to local",
+                "save on my computer",
                 "新建",
                 "创建",
                 "生成",
@@ -254,6 +258,10 @@ class WorkspaceBoundaryGuard:
                 "另存为",
                 "输出到",
                 "存成",
+                "保存到本地",
+                "保存到电脑",
+                "存到本地",
+                "导出到",
             ),
         )
 
@@ -568,6 +576,18 @@ class WorkspaceIntentResolver:
         has_write_boundary_marker = WorkspaceBoundaryGuard.has_write_boundary_marker(marker_source)
         has_library_boundary_marker = WorkspaceBoundaryGuard.has_library_boundary_marker(marker_source)
         if not paths:
+            if self._looks_like_local_save_without_path(content):
+                return WorkspaceFileWriteNewIntent(
+                    relative_path=None,
+                    content=None,
+                    display_name=None,
+                    file_kind=None,
+                    reason="Local save requested without a concrete destination path.",
+                    clarification=(
+                        "请提供要保存到的完整本地路径，例如 `D:\\文献\\review.md` 或 `D:\\文献\\review.txt`。"
+                        "也可以点击回答下方的“保存为文件”按钮，在系统保存窗口里选择位置。"
+                    ),
+                )
             if WorkspaceBoundaryGuard.has_internal_write_boundary_intent(content):
                 return WorkspaceFileWriteNewIntent(
                     relative_path=None,
@@ -645,6 +665,7 @@ class WorkspaceIntentResolver:
                 display_name=Path(relative_path).name,
                 file_kind=extension_info[0],
                 reason="Explicit workspace write_new content supplied by the user.",
+                is_absolute_export=self._should_export_to_absolute_path(relative_path, marker_source),
             )
 
         if can_save_previous_assistant_content(content):
@@ -659,6 +680,7 @@ class WorkspaceIntentResolver:
                     source_file_ids=list(previous.used_file_ids),
                     source_document_ids=list(previous.used_document_ids),
                     reason="Previous assistant message saved through deterministic workspace write_new.",
+                    is_absolute_export=self._should_export_to_absolute_path(relative_path, marker_source),
                 )
             return WorkspaceFileWriteNewIntent(
                 relative_path=relative_path,
@@ -676,7 +698,52 @@ class WorkspaceIntentResolver:
             file_kind=extension_info[0],
             reason="Workspace write_new request has no deterministic content source.",
             clarification="请提供要写入文件的内容，或者先让助手生成内容后再说保存为该 workspace 文件。",
+            is_absolute_export=self._should_export_to_absolute_path(relative_path, marker_source),
         )
+
+    @staticmethod
+    def _is_absolute_export_path(path: str) -> bool:
+        return bool(re.match(r"^[A-Za-z]:/", path)) or (path.startswith("/") and not path.startswith("//"))
+
+    @classmethod
+    def _should_export_to_absolute_path(cls, path: str, marker_source: str) -> bool:
+        if not cls._is_absolute_export_path(path):
+            return False
+        normalized = marker_source.casefold()
+        markers = (
+            "save to",
+            "save as",
+            "save into",
+            "export to",
+            "output to",
+            "save locally",
+            "save to local",
+            "save on my computer",
+            "保存到",
+            "保存为",
+            "保存成",
+            "另存为",
+            "存到本地",
+            "保存到本地",
+            "保存到电脑",
+            "导出到",
+            "输出到",
+        )
+        return any(marker in normalized for marker in markers)
+
+    @staticmethod
+    def _looks_like_local_save_without_path(content: str) -> bool:
+        normalized = content.casefold()
+        markers = (
+            "save locally",
+            "save to local",
+            "save on my computer",
+            "保存到本地",
+            "保存到电脑",
+            "存到本地",
+            "导出到本地",
+        )
+        return any(marker in normalized for marker in markers)
 
     def detect_overwrite_intent(
         self,

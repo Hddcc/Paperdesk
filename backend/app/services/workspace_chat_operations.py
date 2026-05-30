@@ -81,17 +81,28 @@ class WorkspaceChatOperationService:
         if not intent.relative_path or intent.content is None or not intent.file_kind:
             return None, intent.clarification or "请提供明确的 workspace 相对路径和要写入的内容。"
         try:
-            workspace_file = self.workspace_file_service.create_generated_file(
-                session_id=session_id,
-                relative_path=intent.relative_path,
-                content=intent.content,
-                display_name=intent.display_name or Path(intent.relative_path).name,
-                file_kind=intent.file_kind,
-                source_message_id=intent.source_message_id,
-                source_file_ids=list(intent.source_file_ids or []),
-                source_document_ids=list(intent.source_document_ids or []),
-                created_by="agent",
-            )
+            if intent.is_absolute_export:
+                workspace_file = self.workspace_file_service.export_content_to_path(
+                    session_id=session_id,
+                    destination_path=intent.relative_path,
+                    content=intent.content,
+                    source_message_id=intent.source_message_id,
+                    source_file_ids=list(intent.source_file_ids or []),
+                    source_document_ids=list(intent.source_document_ids or []),
+                    created_by="agent",
+                )
+            else:
+                workspace_file = self.workspace_file_service.create_generated_file(
+                    session_id=session_id,
+                    relative_path=intent.relative_path,
+                    content=intent.content,
+                    display_name=intent.display_name or Path(intent.relative_path).name,
+                    file_kind=intent.file_kind,
+                    source_message_id=intent.source_message_id,
+                    source_file_ids=list(intent.source_file_ids or []),
+                    source_document_ids=list(intent.source_document_ids or []),
+                    created_by="agent",
+                )
         except ValueError as exc:
             return None, workspace_file_create_error_message(str(exc))
         return workspace_file, None
@@ -262,9 +273,10 @@ class WorkspaceChatOperationService:
 
 
 def workspace_file_created_message(workspace_file) -> str:
+    path_label = "file_path" if (":" in workspace_file.relative_path or workspace_file.relative_path.startswith("/")) else "relative_path"
     return (
-        "已新建 workspace 文件：\n"
-        f"- relative_path: {workspace_file.relative_path}\n"
+        "已保存文件：\n"
+        f"- {path_label}: {workspace_file.relative_path}\n"
         f"- display_name: {workspace_file.display_name}\n"
         f"- file_kind: {workspace_file.file_kind}\n"
         f"- mime_type: {workspace_file.mime_type}\n"
@@ -277,12 +289,18 @@ def workspace_file_create_error_message(error: str) -> str:
     if "already exists" in normalized:
         return "目标 workspace 文件已存在。请换一个文件名；覆盖和编辑需要后续确认流程。"
     if "too large" in normalized:
-        return "要写入的内容超过 workspace 文件大小限制。请缩短内容后重试。"
-    if "unsupported workspace file extension" in normalized:
+        return "要写入的内容超过文件大小限制。请缩短内容后重试。"
+    if "unsupported workspace file extension" in normalized or "unsupported export file extension" in normalized:
         return unsupported_workspace_write_extension_message(WorkspaceIntentResolver.WORKSPACE_FILE_WRITE_NEW_EXTENSIONS)
+    if "export path must be absolute" in normalized:
+        return "请提供完整的本地绝对路径，例如 D:\\文献\\review.md。"
+    if "export destination already exists" in normalized:
+        return "目标文件已经存在。请换一个文件名，或先删除旧文件后再保存。"
+    if "export write failed" in normalized:
+        return "无法写入目标路径。请确认文件夹存在、路径可访问，并且当前程序有写入权限。"
     if any(marker in normalized for marker in ("path", "absolute", "drive", "unc", "sensitive", "hidden")):
         return "只支持 workspace 内安全相对路径，不能使用绝对路径、路径穿越、敏感文件或隐藏路径。"
-    return "无法新建 workspace 文件，请检查路径、文件名和内容后重试。"
+    return "无法保存文件，请检查路径、文件名和内容后重试。"
 
 
 def build_workspace_file_context_block(result: WorkspaceFileReadResult) -> list[str]:
