@@ -371,7 +371,7 @@ class RagService:
             base_score = max(vector_score, keyword_score)
             score = base_score
             if item.multi_route_hit:
-                score += 0.18
+                score += 0.24
             if item.document_id in selected_ids:
                 score += 0.08
             if item.page_number is not None and item.citation_label:
@@ -403,7 +403,8 @@ class RagService:
             return queries
         expansions = [
             f"{question} abstract introduction method contribution experiment result conclusion",
-            f"{question} 摘要 引言 方法 贡献 实验 结果 结论",
+            f"{question} summary overview abstract introduction approach contribution experiment result conclusion",
+            f"{question} 摘要 引言 方法 贡献 实验 结果 结论 主要内容",
         ]
         for query in expansions:
             if query not in queries:
@@ -431,6 +432,19 @@ class RagService:
             "compare",
             "comparison",
             "analysis",
+            "explain",
+            "overview",
+            "what is this about",
+            "讲了什么",
+            "说了什么",
+            "主要讲",
+            "主要内容",
+            "一段话",
+            "一句话",
+            "解释",
+            "概括",
+            "介绍",
+            "这篇论文",
         )
         return any(marker in normalized for marker in markers)
 
@@ -458,6 +472,8 @@ class RagService:
             "evaluation",
             "result",
             "conclusion",
+            "overview",
+            "summary",
             "摘要",
             "引言",
             "方法",
@@ -465,6 +481,7 @@ class RagService:
             "实验",
             "结果",
             "结论",
+            "主要内容",
         )
         negative_markers = (
             "references",
@@ -472,14 +489,17 @@ class RagService:
             "bibliography",
             "acknowledgement",
             "acknowledgment",
+            "appendix",
+            "supplementary",
             "致谢",
             "参考文献",
+            "附录",
         )
         score = 0.0
         if any(marker in section_text for marker in positive_markers):
-            score += 0.18
+            score += 0.24
         if any(marker in section_text for marker in negative_markers):
-            score -= 0.35
+            score -= 0.55
         return score
 
     @staticmethod
