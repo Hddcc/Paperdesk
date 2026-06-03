@@ -90,7 +90,7 @@ class SkillContextBuilder:
             name=manifest.name,
             short_description=self._clip(manifest.description, 240),
             artifact_protocol=self._artifact_protocol_summary(manifest),
-            available_tools=self._available_tools(manifest.skill_id),
+            available_tools=self._available_tools(manifest),
             output_expectations=self._output_expectations(manifest),
             safety_constraints=self._safety_constraints(manifest.skill_id),
             trigger_reason=self._clip(selection.trigger_reason, 180),
@@ -146,10 +146,12 @@ class SkillContextBuilder:
         }
 
     @classmethod
-    def _available_tools(cls, skill_id: str) -> list[str]:
+    def _available_tools(cls, manifest: SkillManifest) -> list[str]:
+        if manifest.allowed_tool_ids:
+            return [tool_id for tool_id in manifest.allowed_tool_ids[: cls.MAX_AVAILABLE_TOOLS] if cls._is_safe_tool_id(tool_id)]
         return [
             tool_id
-            for tool_id in cls._DEFAULT_TOOL_IDS.get(skill_id, [])[: cls.MAX_AVAILABLE_TOOLS]
+            for tool_id in cls._DEFAULT_TOOL_IDS.get(manifest.skill_id, [])[: cls.MAX_AVAILABLE_TOOLS]
             if cls._is_safe_tool_id(tool_id)
         ]
 

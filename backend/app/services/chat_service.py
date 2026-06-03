@@ -13,6 +13,16 @@ from uuid import uuid4
 
 from openai import OpenAI
 
+from app.agent.runtimes import (
+    DirectChatRuntimeExecutor,
+    ExperimentalRuntimeExecutor,
+    KnowledgeAgentCapabilityProvider,
+    PaperRagRuntimeExecutor,
+    ReportRuntimeExecutor,
+    ToolActionRuntimeExecutor,
+    WorkspaceRuntimeExecutor,
+    WriteRuntimeExecutor,
+)
 from app.models import (
     AgentModeDecision,
     AgentOrchestratorInput,
@@ -34,6 +44,8 @@ from app.models import (
 from app.repositories import ChatRepository, FileAssetRepository, LibraryRepository
 
 from .chat_memory_service import ChatMemoryService
+from .agent_lifecycle_service import AgentLifecycleService
+from .agent_runtime_response_service import AgentRuntimeResponseRecorder
 from .context_assembler import ContextAssembler
 from .file_text_extractor import FileTextExtractor
 from .rag_service import RagService
@@ -321,7 +333,7 @@ class ChatService:
         self.context_assembler = context_assembler
         self.workspace_file_service = workspace_file_service
         self.agent_orchestrator = agent_orchestrator
-        self.knowledge_agent_runtime = knowledge_agent_runtime
+        self.knowledge_agent_provider = KnowledgeAgentCapabilityProvider(knowledge_agent_runtime)
         self.knowledge_planner_runtime = knowledge_planner_runtime
         self.reflection_runtime = reflection_runtime
         self.enable_research_from_knowledge = enable_research_from_knowledge
@@ -337,7 +349,7 @@ class ChatService:
             api_key_configured=bool(self.api_key),
         )
         self.workspace_pending_adapter = WorkspacePendingActionAdapter(
-            lambda: getattr(self.knowledge_agent_runtime, "pending_action_store", None)
+            lambda: self.knowledge_agent_provider.pending_action_store
         )
         self.workspace_chat_operations = WorkspaceChatOperationService(
             workspace_file_service=self.workspace_file_service,
@@ -348,6 +360,18 @@ class ChatService:
             active_write_intent=self._has_active_write_intent,
             read_then_write_request=self._looks_like_read_then_write_request,
         )
+        self.agent_lifecycle = AgentLifecycleService(
+            tool_registry=getattr(self.agent_orchestrator, "tool_registry", None),
+            skill_registry=getattr(self.agent_orchestrator, "skill_registry", None),
+        )
+        self.agent_runtime_response_recorder = AgentRuntimeResponseRecorder()
+        self.direct_chat_runtime_executor = DirectChatRuntimeExecutor()
+        self.paper_rag_runtime_executor = PaperRagRuntimeExecutor()
+        self.tool_action_runtime_executor = ToolActionRuntimeExecutor()
+        self.write_runtime_executor = WriteRuntimeExecutor()
+        self.report_runtime_executor = ReportRuntimeExecutor()
+        self.workspace_runtime_executor = WorkspaceRuntimeExecutor()
+        self.experimental_runtime_executor = ExperimentalRuntimeExecutor()
 
     def list_sessions(self) -> list[ChatSession]:
         return self.chat_repository.list_sessions()
@@ -440,6 +464,17 @@ class ChatService:
             message_id=user_message.id,
             attachments=normalized_attachments,
         )
+        lifecycle_result = self.agent_lifecycle.prepare_chat_request(
+            session_id=session.id,
+            message_id=user_message.id,
+            request=request,
+            selected_document_ids=document_ids,
+            selected_file_ids=file_resolution.used_file_ids,
+            pending_action=self._read_workspace_file_pending_action(session.id),
+            confirmation_received=self._is_lifecycle_confirmation_message(request.content),
+        )
+        lifecycle_request = lifecycle_result.request
+        lifecycle_dispatch_result = lifecycle_result.dispatch_result
 
         research_redirect = self._research_task_redirect_message(request.content)
         warning: str | None = None
@@ -628,7 +663,8 @@ class ChatService:
                 target_runtime="DirectChatRuntime",
             )
         elif research_redirect is None:
-            fast_path_response = self._try_deterministic_read_fast_path(
+            fast_path_response = self.tool_action_runtime_executor.run_deterministic_read(
+                deterministic_read=self._try_deterministic_read_fast_path,
                 content=request.content,
                 selected_document_ids=document_ids,
                 attachments=normalized_attachments,
@@ -676,6 +712,7 @@ class ChatService:
                     memory_snapshot=memory_snapshot,
                 )
         agent_trace_id = mode_decision.trace_id if mode_decision is not None else None
+        self._append_lifecycle_trace(mode_decision, lifecycle_request, lifecycle_dispatch_result)
         self._append_workbench_hint_trace(mode_decision, request)
         self._append_slash_command_hint_trace(
             mode_decision,
@@ -686,7 +723,9 @@ class ChatService:
 
         agent_result = None
         if workspace_command_boundary is not None:
-            assistant_text = self._workspace_command_boundary_message()
+            assistant_text = self.workspace_runtime_executor.boundary_message(
+                message_builder=self._workspace_command_boundary_message
+            )
             retrieval_status = "skipped"
             action_status = "needs_clarification"
             document_ids = []
@@ -710,7 +749,8 @@ class ChatService:
                 evidence_count=0,
             )
         elif workspace_file_pending_response is not None:
-            assistant_text, action_status = self._handle_workspace_file_pending_response(
+            assistant_text, action_status = self.workspace_runtime_executor.handle_pending_response(
+                handler=self._handle_workspace_file_pending_response,
                 session_id=session.id,
                 response=workspace_file_pending_response,
                 decision=mode_decision,
@@ -758,7 +798,8 @@ class ChatService:
                 evidence_count=0,
             )
         elif workspace_file_overwrite_intent is not None:
-            assistant_text, action_status = self._create_workspace_file_overwrite_pending(
+            assistant_text, action_status = self.write_runtime_executor.create_pending(
+                create_pending=self._create_workspace_file_overwrite_pending,
                 session_id=session.id,
                 intent=workspace_file_overwrite_intent,
                 decision=mode_decision,
@@ -806,7 +847,8 @@ class ChatService:
                 evidence_count=0,
             )
         elif workspace_file_write_new_intent is not None:
-            workspace_file, create_error = self._create_workspace_file_from_write_new_intent(
+            workspace_file, create_error = self.workspace_runtime_executor.create_file(
+                create_file=self._create_workspace_file_from_write_new_intent,
                 session_id=session.id,
                 intent=workspace_file_write_new_intent,
             )
@@ -843,7 +885,11 @@ class ChatService:
         elif workspace_file_read_intent is not None and workspace_file_read_intent.clarification:
             workspace_file_read_error = workspace_file_read_intent.clarification
         elif workspace_file_read_intent is not None:
-            result, error = self._read_workspace_file_context(session.id, workspace_file_read_intent.relative_path)
+            result, error = self.workspace_runtime_executor.read_context(
+                read_context=self._read_workspace_file_context,
+                session_id=session.id,
+                relative_path=workspace_file_read_intent.relative_path,
+            )
             workspace_file_read_error = error
             if result is not None:
                 workspace_file_context_lines = self._build_workspace_file_context_block(result)
@@ -990,7 +1036,7 @@ class ChatService:
                 session_file_context_lines=[],
             )
         else:
-            agent_result = self._execute_agent_mode(
+            agent_result = self._execute_agent_mode_through_runtime(
                 decision=mode_decision,
                 session=session,
                 request=request,
@@ -1018,13 +1064,13 @@ class ChatService:
             action_status = agent_result.action_status
             library_mutated = bool(getattr(agent_result, "library_mutated", False))
             if (
-                self.knowledge_agent_runtime is not None
+                self.knowledge_agent_provider.available
                 and evidence_items
-                and self.knowledge_agent_runtime.is_status_only_answer(assistant_text)
+                and self.knowledge_agent_provider.is_status_only_answer(assistant_text)
                 and not library_mutated
                 and action_status not in {"needs_clarification", "confirmation_required", "validation_failed", "failed"}
             ):
-                assistant_text = self.knowledge_agent_runtime.ensure_final_answer(
+                assistant_text = self.knowledge_agent_provider.ensure_final_answer(
                     user_prompt=request.content,
                     original_request=request,
                     runtime_mode=mode_decision.mode.value if mode_decision is not None else "knowledge_agent",
@@ -1069,7 +1115,8 @@ class ChatService:
             and mode_decision.mode == AgentRunMode.DIRECT
         ):
             direct_context_lines = [*session_file_context_lines, *workspace_file_context_lines]
-            assistant_text, context_state = self._generate_answer(
+            direct_result = self.direct_chat_runtime_executor.run(
+                generate_answer=self._generate_answer,
                 session=session,
                 history=history_before_current,
                 current_request=request,
@@ -1079,6 +1126,8 @@ class ChatService:
                 session_file_context_lines=direct_context_lines,
                 delta_sink=delta_sink,
             )
+            assistant_text = direct_result.content
+            context_state = direct_result.context_state
             rejection_notice = self._session_file_rejection_notice(file_resolution)
             if rejection_notice:
                 suffix = f"\n\n{rejection_notice}"
@@ -1172,7 +1221,8 @@ class ChatService:
                 session_id=session.id,
                 selected_document_ids=document_ids,
             )
-            assistant_text, context_state = self._generate_answer(
+            rag_result = self.paper_rag_runtime_executor.run(
+                generate_answer=self._generate_answer,
                 session=session,
                 history=history_before_current,
                 current_request=request,
@@ -1182,6 +1232,8 @@ class ChatService:
                 session_file_context_lines=[],
                 delta_sink=delta_sink,
             )
+            assistant_text = rag_result.content
+            context_state = rag_result.context_state
             citations = self._collect_citations(evidence_items)
             self._append_direct_llm_trace(mode_decision)
             if mode_decision is not None:
@@ -1193,6 +1245,17 @@ class ChatService:
                     used_document_count=len(document_ids),
                     evidence_count=len(evidence_items),
                 )
+        lifecycle_dispatch_result = self.agent_runtime_response_recorder.complete(
+            request=lifecycle_request,
+            result=lifecycle_dispatch_result,
+            response_text=assistant_text,
+            action_status=action_status,
+            retrieval_status=retrieval_status,
+            citations=citations,
+            used_document_ids=document_ids,
+            evidence_items=evidence_items,
+        )
+        self._append_lifecycle_response_trace(mode_decision, lifecycle_dispatch_result)
         assistant_message = ChatMessage(
             id=str(uuid4()),
             session_id=session.id,
@@ -1311,6 +1374,65 @@ class ChatService:
             message="Direct answer LLM call finished.",
             payload=self.last_llm_diagnostic.as_trace_payload(),
         )
+
+    def _append_lifecycle_trace(
+        self,
+        decision: AgentModeDecision | None,
+        lifecycle_request,
+        lifecycle_dispatch_result,
+    ) -> None:
+        if decision is None or self.agent_orchestrator is None:
+            return
+        self.agent_orchestrator.append_trace(
+            decision.trace_id,
+            status="agent_lifecycle_entry",
+            message="Chat request passed through the runtime-first Agent lifecycle.",
+            payload={
+                "route": lifecycle_request.route.route.value,
+                "target_runtime": lifecycle_request.route.target_runtime.value,
+                "requires_tools": lifecycle_request.route.requires_tools,
+                "requires_rag": lifecycle_request.route.requires_rag,
+                "requires_confirmation": lifecycle_request.route.requires_confirmation,
+                "selected_document_count": len(lifecycle_request.context.selected_document_ids),
+                "selected_file_count": len(lifecycle_request.context.selected_file_ids),
+                "has_pending_action": lifecycle_request.context.pending_action is not None,
+                "allowed_tool_count": len(lifecycle_request.tool_policy.allowed_tools),
+                "filtered_tool_count": len(lifecycle_request.tool_policy.filtered_tools),
+                "dispatch_status": lifecycle_dispatch_result.status,
+                "dispatch_runtime": lifecycle_dispatch_result.runtime.value,
+                "trace_stages": [event.stage.value for event in lifecycle_request.trace],
+            },
+        )
+
+    def _append_lifecycle_response_trace(
+        self,
+        decision: AgentModeDecision | None,
+        lifecycle_dispatch_result,
+    ) -> None:
+        if decision is None or self.agent_orchestrator is None:
+            return
+        self.agent_orchestrator.append_trace(
+            decision.trace_id,
+            status="agent_lifecycle_response",
+            message="Route runtime response metadata finalized.",
+            payload={
+                "route": lifecycle_dispatch_result.route.value,
+                "runtime": lifecycle_dispatch_result.runtime.value,
+                "status": lifecycle_dispatch_result.status,
+                "orchestration_pattern": lifecycle_dispatch_result.data.get("orchestration_pattern"),
+                "response_owner": lifecycle_dispatch_result.data.get("response_owner"),
+                "action_status": lifecycle_dispatch_result.data.get("action_status"),
+                "retrieval_status": lifecycle_dispatch_result.data.get("retrieval_status"),
+                "citation_count": lifecycle_dispatch_result.metrics.get("citation_count"),
+                "evidence_count": lifecycle_dispatch_result.metrics.get("evidence_count"),
+                "used_document_count": lifecycle_dispatch_result.metrics.get("used_document_count"),
+            },
+        )
+
+    @classmethod
+    def _is_lifecycle_confirmation_message(cls, content: str) -> bool:
+        normalized = (content or "").strip().casefold()
+        return bool(normalized) and any(marker.casefold() in normalized for marker in cls.WORKSPACE_FILE_CONFIRM_MARKERS)
 
     def _append_workbench_hint_trace(
         self,
@@ -1669,36 +1791,13 @@ class ChatService:
         document_ids: list[str],
         source: str,
     ) -> None:
-        if self.knowledge_agent_runtime is None or not document_ids:
-            return
-        read_state = getattr(self.knowledge_agent_runtime, "_read_react_state", None)
-        write_state = getattr(self.knowledge_agent_runtime, "_write_react_state", None)
-        if not callable(read_state) or not callable(write_state):
-            return
-        ids = list(dict.fromkeys(str(document_id) for document_id in document_ids if document_id))
-        if not ids:
-            return
         try:
-            state = read_state(session.id)
-            referent = {
-                "label": f"fast-path resolved {len(ids)} documents",
-                "document_ids": ids,
-                "source_tool": "chat.fast_path",
-                "source": source,
-                "count": len(ids),
-            }
-            state["last_document_set"] = referent
-            if len(ids) == 1:
-                state["last_single_document"] = {
-                    **referent,
-                    "document_id": ids[0],
-                    "count": 1,
-                }
-            else:
-                state["last_multi_document_set"] = referent
-            state["last_user_goal"] = content[:240]
-            state["updated_at"] = datetime.now(timezone.utc).isoformat()
-            write_state(session.id, state)
+            self.knowledge_agent_provider.record_fast_path_referents(
+                session_id=session.id,
+                content=content,
+                document_ids=document_ids,
+                source=source,
+            )
         except Exception:
             return
 
@@ -2473,13 +2572,13 @@ class ChatService:
             return None
         conversation_referents: dict = {}
         has_pending_action = False
-        if self.knowledge_agent_runtime is not None:
+        if self.knowledge_agent_provider.available:
             try:
-                conversation_referents = self.knowledge_agent_runtime.conversation_referents(session.id)
+                conversation_referents = self.knowledge_agent_provider.conversation_referents(session.id)
             except Exception:
                 conversation_referents = {}
             try:
-                has_pending_action = self.knowledge_agent_runtime.has_pending_action(session.id)
+                has_pending_action = self.knowledge_agent_provider.has_pending_action(session.id)
             except Exception:
                 has_pending_action = False
         payload = AgentOrchestratorInput(
@@ -2515,7 +2614,7 @@ class ChatService:
         selected_document_ids: list[str],
         history: list[ChatMessage],
     ):
-        # Runtime dispatch remains the compatibility boundary: DIRECT falls
+        # Runtime executors remain the compatibility boundary: DIRECT falls
         # back to normal answer generation, while REACT/PLANNER/REFLECTION are
         # delegated to their existing runtimes without changing chat behavior.
         if self._has_pending_action(session.id):
@@ -2571,6 +2670,79 @@ class ChatService:
                 )
         return None
 
+    def _execute_agent_mode_through_runtime(
+        self,
+        *,
+        decision: AgentModeDecision | None,
+        session: ChatSession,
+        request: ChatMessageRequest,
+        attachments: list[ChatAttachment],
+        selected_document_ids: list[str],
+        history: list[ChatMessage],
+    ):
+        kwargs = {
+            "decision": decision,
+            "session": session,
+            "request": request,
+            "attachments": attachments,
+            "selected_document_ids": selected_document_ids,
+            "history": history,
+        }
+        if self._is_report_runtime_request(request.content):
+            self._append_runtime_executor_trace(decision, "ReportRuntimeExecutor")
+            return self.report_runtime_executor.run_agent_mode(
+                execute_agent_mode=self._execute_agent_mode,
+                **kwargs,
+            )
+        if decision is not None and decision.mode in {AgentRunMode.PLANNER, AgentRunMode.REFLECTION}:
+            self._append_runtime_executor_trace(decision, "ExperimentalRuntimeExecutor")
+            return self.experimental_runtime_executor.run_agent_mode(
+                execute_agent_mode=self._execute_agent_mode,
+                **kwargs,
+            )
+        if self._has_pending_action(session.id) or self._has_active_write_intent(request.content):
+            self._append_runtime_executor_trace(decision, "WriteRuntimeExecutor")
+            return self.write_runtime_executor.run_pending_write(
+                execute_agent_mode=self._execute_agent_mode,
+                **kwargs,
+            )
+        self._append_runtime_executor_trace(decision, "ToolActionRuntimeExecutor")
+        return self.tool_action_runtime_executor.run_agent_mode(
+            execute_agent_mode=self._execute_agent_mode,
+            **kwargs,
+        )
+
+    def _append_runtime_executor_trace(self, decision: AgentModeDecision | None, executor_name: str) -> None:
+        if decision is None or self.agent_orchestrator is None:
+            return
+        self.agent_orchestrator.append_trace(
+            decision.trace_id,
+            status="route_runtime_executor_selected",
+            message="Route runtime executor selected for legacy-compatible execution.",
+            payload={
+                "executor": executor_name,
+                "mode": decision.mode.value,
+                "route": decision.route.value,
+                "target_runtime": decision.target_runtime,
+            },
+        )
+
+    def _is_report_runtime_request(self, content: str) -> bool:
+        return self._contains_any(
+            content,
+            (
+                "report",
+                "write report",
+                "save report",
+                "analysis report",
+                "报告",
+                "写报告",
+                "生成报告",
+                "保存报告",
+                "综述",
+            ),
+        )
+
     def _finish_agent_trace(
         self,
         decision: AgentModeDecision | None,
@@ -2605,17 +2777,17 @@ class ChatService:
         selected_document_ids: list[str],
         trace_id: str | None = None,
     ):
-        if self.knowledge_agent_runtime is None:
+        if not self.knowledge_agent_provider.available:
             return None
         try:
             if trace_id is None:
-                return self.knowledge_agent_runtime.handle(
+                return self.knowledge_agent_provider.handle(
                     session=session,
                     request=request,
                     attachments=attachments,
                     selected_document_ids=selected_document_ids,
                 )
-            return self.knowledge_agent_runtime.run_react(
+            return self.knowledge_agent_provider.run_react(
                 session=session,
                 request=request,
                 attachments=attachments,
@@ -2651,10 +2823,10 @@ class ChatService:
         return any(marker in normalized for marker in markers)
 
     def _has_pending_action(self, session_id: str) -> bool:
-        if self.knowledge_agent_runtime is None:
+        if not self.knowledge_agent_provider.available:
             return False
         try:
-            return bool(self.knowledge_agent_runtime.has_pending_action(session_id))
+            return bool(self.knowledge_agent_provider.has_pending_action(session_id))
         except Exception:
             return False
 
@@ -2674,10 +2846,10 @@ class ChatService:
                 current_request.content
             ):
                 return []
-        if self.knowledge_agent_runtime is None:
+        if not self.knowledge_agent_provider.available:
             return []
         try:
-            return self.knowledge_agent_runtime.build_context_lines()
+            return self.knowledge_agent_provider.build_context_lines()
         except Exception:
             return []
 

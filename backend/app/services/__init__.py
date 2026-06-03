@@ -1,6 +1,16 @@
 """Service layer exports."""
 
 from .arxiv_client import ArxivClient
+from .agent_ingress_service import AgentIngressService
+from .agent_context_service import AgentContextLifecycleService
+from .agent_lifecycle_adapter_service import AgentLifecycleAdapterResult, AgentLifecycleAdapterService
+from .agent_lifecycle_service import AgentLifecycleResult, AgentLifecycleService
+from .agent_route_service import AgentRouteDecisionService
+from .agent_runtime_dispatch_service import AgentRuntimeDispatchService
+from .agent_runtime_response_service import AgentRuntimeResponseRecorder
+from .agent_skill_service import AgentSkillLifecycleService
+from .agent_tool_policy_service import AgentToolObservationFactory, AgentToolPolicyResolver
+from .agent_write_safety_service import AgentWriteSafetyService
 from .chat_memory_service import ChatMemoryService
 from .chat_service import ChatService
 from .context_assembler import ContextAssembler
@@ -40,6 +50,19 @@ from .workspace_trace_builder import WorkspaceTraceBuilder
 
 __all__ = [
     "ArxivClient",
+    "AgentIngressService",
+    "AgentContextLifecycleService",
+    "AgentLifecycleAdapterResult",
+    "AgentLifecycleAdapterService",
+    "AgentLifecycleResult",
+    "AgentLifecycleService",
+    "AgentRouteDecisionService",
+    "AgentRuntimeDispatchService",
+    "AgentRuntimeResponseRecorder",
+    "AgentSkillLifecycleService",
+    "AgentToolObservationFactory",
+    "AgentToolPolicyResolver",
+    "AgentWriteSafetyService",
     "ChatMemoryService",
     "ChatService",
     "ContextAssembler",

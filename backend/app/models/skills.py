@@ -199,6 +199,7 @@ class SkillManifest(BaseModel):
     maturity: SkillMaturity = SkillMaturity.STABLE
     available_by_default: bool = True
     trigger: SkillTriggerMetadata | None = None
+    allowed_tool_ids: list[str] = Field(default_factory=list)
 
 
 class SkillContextSummary(BaseModel):

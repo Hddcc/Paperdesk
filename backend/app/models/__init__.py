@@ -23,6 +23,22 @@ from .agent_orchestration import (
     KnowledgeRoute,
     KnowledgeTargetObject,
 )
+from .agent_lifecycle import (
+    ActiveSkillState,
+    AgentLifecycleStage,
+    AgentLifecycleTraceEvent,
+    AgentOrchestrationPattern,
+    ContextPacket,
+    PaperDeskRoute,
+    PaperDeskRuntimeKind,
+    PendingWriteAction,
+    RouteDecisionPacket,
+    RuntimeRequest,
+    RuntimeResult,
+    ToolPolicyDecision,
+    WriteActionPlan,
+    WriteOperationLevel,
+)
 from .enums import EvidenceSourceType, ResearchRunStatus, TodoTaskStatus
 from .library import (
     ChunkRecord,
@@ -153,6 +169,10 @@ from .workbench import (
 )
 
 __all__ = [
+    "ActiveSkillState",
+    "AgentLifecycleStage",
+    "AgentLifecycleTraceEvent",
+    "AgentOrchestrationPattern",
     "AgentTask",
     "AgentTaskStatus",
     "AgentModeDecision",
@@ -174,6 +194,7 @@ __all__ = [
     "CitationRecord",
     "ContinueTask",
     "ControlMessageType",
+    "ContextPacket",
     "CoordinatorDecision",
     "DocumentCategory",
     "DocumentCategoryAssignmentRequest",
@@ -200,6 +221,9 @@ __all__ = [
     "PaperCurationItem",
     "PaperCurationRequest",
     "PaperCurationResponse",
+    "PaperDeskRoute",
+    "PaperDeskRuntimeKind",
+    "PendingWriteAction",
     "PaperRecord",
     "PaperSearchRequest",
     "PaperSearchResponse",
@@ -242,6 +266,9 @@ __all__ = [
     "ResearchToolResult",
     "ResearchToolResultClassification",
     "ResearchToolResultStatus",
+    "RouteDecisionPacket",
+    "RuntimeRequest",
+    "RuntimeResult",
     "SpawnTask",
     "StopTask",
     "StoredAgentTask",
@@ -266,6 +293,7 @@ __all__ = [
     "ToolObservation",
     "ToolObservationError",
     "ToolPolicy",
+    "ToolPolicyDecision",
     "ToolSource",
     "ToolSpec",
     "ToolVerification",
@@ -292,4 +320,6 @@ __all__ = [
     "WorkspaceFileListSource",
     "WorkspaceFileReadResult",
     "WorkspaceFileStatus",
+    "WriteActionPlan",
+    "WriteOperationLevel",
 ]

@@ -305,6 +305,10 @@ class SkillSelector:
                 [],
             )
 
+        explicit_keyword_match = self._manifest_explicit_keyword_match(prompt, selected_document_count, skills)
+        if explicit_keyword_match is not None:
+            return explicit_keyword_match
+
         if selected_document_count >= 2:
             compare_keywords = self._manifest_matched_keywords(prompt, "comparison", skills)
             if compare_keywords:
@@ -440,6 +444,35 @@ class SkillSelector:
                 return skill.skill_id
         return None
 
+    def _manifest_explicit_keyword_match(
+        self,
+        prompt: str,
+        selected_document_count: int,
+        skills: dict[str, SkillManifest],
+    ) -> tuple[str, list[str], str, float, list[str]] | None:
+        for skill in sorted(skills.values(), key=lambda item: (item.priority, item.skill_id)):
+            trigger = skill.trigger
+            if trigger is None:
+                continue
+            if skill.skill_id == "file_read":
+                continue
+            if str(skill.source.value if hasattr(skill.source, "value") else skill.source) != "custom":
+                continue
+            if not self._document_count_matches(skill, selected_document_count, allow_missing=True):
+                continue
+            keywords = self._manifest_matched_keywords(prompt, skill.skill_id, skills)
+            if not keywords:
+                continue
+            confidence = trigger.confidence or 0.82
+            return (
+                skill.skill_id,
+                ["prompt_keyword"],
+                "Skill manifest keyword trigger matched.",
+                confidence,
+                keywords,
+            )
+        return None
+
     def _manifest_matched_keywords(
         self,
         prompt: str,
@@ -473,7 +506,7 @@ class SkillSelector:
             skill.enabled
             and skill.available_by_default
             and str(skill.maturity.value if hasattr(skill.maturity, "value") else skill.maturity) == "stable"
-            and str(skill.source.value if hasattr(skill.source, "value") else skill.source) == "builtin"
+            and str(skill.source.value if hasattr(skill.source, "value") else skill.source) in {"builtin", "custom"}
         )
 
     @classmethod
