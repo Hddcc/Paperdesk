@@ -1,7 +1,5 @@
-"""Canonical Agent lifecycle service exports."""
+"""Compatibility wrapper for Agent Core lifecycle service."""
 
-from __future__ import annotations
-
-from .agent_lifecycle_adapter_service import AgentLifecycleResult, AgentLifecycleService
+from app.agent.lifecycle.service import AgentLifecycleResult, AgentLifecycleService
 
 __all__ = ["AgentLifecycleResult", "AgentLifecycleService"]

@@ -5,14 +5,14 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from app.api.main import get_category_repository, get_document_library_service, get_library_repository
+from app.api.main import get_category_repository, get_library_repository, get_paper_upload_use_case
+from app.application import PaperUploadUseCase
 from app.models import (
     DocumentCategoryAssignmentRequest,
     DocumentCategoryCreateRequest,
     DocumentCategoryUpdateRequest,
 )
 from app.repositories import CategoryRepository, LibraryRepository
-from app.services import DocumentLibraryService
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 category_router = APIRouter(prefix="/document-categories", tags=["document-categories"])
@@ -20,17 +20,17 @@ category_router = APIRouter(prefix="/document-categories", tags=["document-categ
 
 @router.get("")
 def list_documents(
-    service: DocumentLibraryService = Depends(get_document_library_service),
+    use_case: PaperUploadUseCase = Depends(get_paper_upload_use_case),
 ) -> list[dict]:
-    return [document.model_dump(mode="json") for document in service.list_documents()]
+    return [document.model_dump(mode="json") for document in use_case.list_documents()]
 
 
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
-    service: DocumentLibraryService = Depends(get_document_library_service),
+    use_case: PaperUploadUseCase = Depends(get_paper_upload_use_case),
 ) -> dict:
-    document = await service.upload_document(file)
+    document = await use_case.upload_document(file)
     return document.model_dump(mode="json")
 
 
@@ -58,9 +58,9 @@ def get_document_file(
 @router.delete("/{document_id}")
 def delete_document(
     document_id: str,
-    service: DocumentLibraryService = Depends(get_document_library_service),
+    use_case: PaperUploadUseCase = Depends(get_paper_upload_use_case),
 ) -> dict:
-    document = service.delete_document(document_id)
+    document = use_case.delete_document(document_id)
     return document.model_dump(mode="json")
 
 

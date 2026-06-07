@@ -12,7 +12,9 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.api.main import get_chat_service, get_report_lifecycle_service
+from app.api.main import get_chat_service, get_chat_use_case, get_report_lifecycle_service
+from app.application import ChatUseCase
+from app.domains.paper import ReportLifecycleService
 from app.models import (
     ChatContextState,
     ChatMessageRequest,
@@ -22,32 +24,32 @@ from app.models import (
     MemorySnapshot,
     ResearchRunStatus,
 )
-from app.services import ChatService, ReportLifecycleService
+from app.services import ChatService
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.get("/sessions")
-def list_sessions(service: ChatService = Depends(get_chat_service)) -> list[dict]:
-    return [item.model_dump(mode="json") for item in service.list_sessions()]
+def list_sessions(use_case: ChatUseCase = Depends(get_chat_use_case)) -> list[dict]:
+    return [item.model_dump(mode="json") for item in use_case.list_sessions()]
 
 
 @router.post("/sessions")
 def create_session(
     request: ChatSessionCreateRequest,
-    service: ChatService = Depends(get_chat_service),
+    use_case: ChatUseCase = Depends(get_chat_use_case),
 ) -> dict:
-    session = service.create_session(request.title)
+    session = use_case.create_session(request)
     return session.model_dump(mode="json")
 
 
 @router.delete("/sessions/{session_id}")
 def delete_session(
     session_id: str,
-    service: ChatService = Depends(get_chat_service),
+    use_case: ChatUseCase = Depends(get_chat_use_case),
 ) -> dict:
     try:
-        session = service.delete_session(session_id)
+        session = use_case.delete_session(session_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return session.model_dump(mode="json")
@@ -56,10 +58,10 @@ def delete_session(
 @router.get("/sessions/{session_id}")
 def get_session_detail(
     session_id: str,
-    service: ChatService = Depends(get_chat_service),
+    use_case: ChatUseCase = Depends(get_chat_use_case),
 ) -> dict:
     try:
-        detail = service.get_session_detail(session_id)
+        detail = use_case.get_session_detail(session_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ChatSessionDetail.model_validate(detail).model_dump(mode="json")
@@ -68,10 +70,10 @@ def get_session_detail(
 @router.get("/sessions/{session_id}/memory")
 def get_memory_snapshot(
     session_id: str,
-    service: ChatService = Depends(get_chat_service),
+    use_case: ChatUseCase = Depends(get_chat_use_case),
 ) -> dict:
     try:
-        snapshot = service.get_memory_snapshot(session_id)
+        snapshot = use_case.get_memory_snapshot(session_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return MemorySnapshot.model_validate(snapshot).model_dump(mode="json")
@@ -80,10 +82,10 @@ def get_memory_snapshot(
 @router.get("/sessions/{session_id}/context")
 def get_context_state(
     session_id: str,
-    service: ChatService = Depends(get_chat_service),
+    use_case: ChatUseCase = Depends(get_chat_use_case),
 ) -> dict:
     try:
-        state = service.get_context_state(session_id)
+        state = use_case.get_context_state(session_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ChatContextState.model_validate(state).model_dump(mode="json")
@@ -93,10 +95,10 @@ def get_context_state(
 def send_message(
     session_id: str,
     request: ChatMessageRequest,
-    service: ChatService = Depends(get_chat_service),
+    use_case: ChatUseCase = Depends(get_chat_use_case),
 ) -> dict:
     try:
-        response = service.send_message(session_id, request)
+        response = use_case.send_message(session_id, request)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ChatSendResponse.model_validate(response).model_dump(mode="json")
@@ -106,10 +108,10 @@ def send_message(
 def send_message_stream(
     session_id: str,
     request: ChatMessageRequest,
-    service: ChatService = Depends(get_chat_service),
+    use_case: ChatUseCase = Depends(get_chat_use_case),
 ):
     try:
-        service.get_context_state(session_id)
+        use_case.get_context_state(session_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -124,7 +126,7 @@ def send_message_stream(
 
         def worker() -> None:
             try:
-                response = service.send_message(session_id, request, delta_sink=push_delta)
+                response = use_case.send_message(session_id, request, delta_sink=push_delta)
             except Exception as exc:
                 events.put(("error", {"type": "error", "message": str(exc) or "Chat message failed"}))
                 return
@@ -155,11 +157,11 @@ def send_message_stream(
                     return
         except GeneratorExit:
             cancelled = True
-            _record_stream_cancelled(service, session_id)
+            _record_stream_cancelled(use_case.chat_service, session_id)
             raise
         except Exception:
             cancelled = True
-            _record_stream_cancelled(service, session_id)
+            _record_stream_cancelled(use_case.chat_service, session_id)
             raise
 
     return StreamingResponse(

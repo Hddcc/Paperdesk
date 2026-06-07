@@ -10,7 +10,7 @@ from queue import Queue
 from threading import Thread
 from uuid import uuid4
 
-from app.agents import (
+from app.domains.paper.research_agents import (
     LibraryRetrieverAgent,
     PaperSearchAgent,
     ReadingSummarizerAgent,
@@ -56,18 +56,20 @@ from app.repositories import (
     ResearchRepository,
     RuntimeRepository,
 )
-from app.runtime import (
-    default_read_only_academic_mcp_declarations,
+from app.agent.runtimes.experimental import (
     MainAgentRuntime,
     MessageBus,
-    ReadOnlyMcpAdapter,
-    RuleBasedPlannerCandidateProvider,
     ResearchToolExecutor,
+    RuleBasedPlannerCandidateProvider,
     ScratchpadStore,
-    SkillRegistry,
     SubagentRunner,
     TaskRegistry,
-    ToolRegistry,
+)
+from app.agent.skills import SkillRegistry
+from app.agent.tools import ToolRegistry
+from app.agent.tools.mcp_adapter import (
+    default_read_only_academic_mcp_declarations,
+    ReadOnlyMcpAdapter,
 )
 
 from .export_service import ExportService

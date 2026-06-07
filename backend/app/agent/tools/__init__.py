@@ -1,7 +1,7 @@
 """Tool registry, policy, and observation helpers."""
 
-from app.runtime import ToolRegistry
-from app.services import AgentToolObservationFactory, AgentToolPolicyResolver
+from .policy import AgentToolObservationFactory, AgentToolPolicyResolver
+from .registry import ToolRegistry
 
 __all__ = [
     "AgentToolObservationFactory",

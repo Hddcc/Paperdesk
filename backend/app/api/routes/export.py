@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 
 from app.api.main import get_export_service, get_report_repository
+from app.domains.artifact import ExportService
 from app.repositories import ReportRepository
-from app.services import ExportService
 
 router = APIRouter(prefix="/export", tags=["export"])
 

@@ -11,7 +11,7 @@ import time
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.agents import (
+from app.domains.paper.research_agents import (
     LibraryRetrieverAgent,
     PaperAnalysisAgent,
     PaperSearchAgent,
@@ -21,39 +21,39 @@ from app.agents import (
     TopicPlannerAgent,
 )
 from app.config import Settings, get_settings
-from app.repositories import SQLiteRepository
-from app.services import (
-    ArxivClient,
-    ChatMemoryService,
-    ChatService,
-    ContextAssembler,
-    ContextBudgetService,
-    ContextCompactionService,
-    ContextFileStore,
+from app.application import ChatUseCase, PaperUploadUseCase, ReportUseCase, WorkspaceUseCase
+from app.agent.tools import ToolRegistry
+from app.domains.artifact import ExportService
+from app.domains.paper import (
     DocumentLibraryService,
-    EmbeddingService,
-    ExportService,
-    FileAssetService,
-    FileTextExtractor,
     KnowledgeIngestionService,
-    MilvusBootstrapService,
-    OpenAlexClient,
     PaperAnalysisService,
     PaperSearchService,
     PaperSelectionService,
     PdfParser,
     QueryTranslationService,
     RagService,
-    ResearchContextAssembler,
     ReportLifecycleService,
-    ResearchWorkspaceService,
     TextChunker,
-    WorkbenchService,
+)
+from app.domains.workspace import WorkbenchService, WorkspaceFileService
+from app.infrastructure.files import ContextFileStore, FileAssetService, FileTextExtractor
+from app.infrastructure.integrations import ArxivClient, OpenAlexClient
+from app.infrastructure.llm import EmbeddingService
+from app.infrastructure.vectorstore import MilvusBootstrapService
+from app.repositories import SQLiteRepository
+from app.services import (
+    ChatMemoryService,
+    ChatService,
+    ContextAssembler,
+    ContextBudgetService,
+    ContextCompactionService,
+    ResearchContextAssembler,
+    ResearchWorkspaceService,
 )
 from app.services.research_orchestrator import ResearchOrchestrator
-from app.services.workspace_file_service import WorkspaceFileService
-from app.runtime import AgentOrchestrator, KnowledgeAgentRuntime, KnowledgePlannerRuntime, ReflectionRuntime
-from app.runtime import ToolRegistry
+from app.agent.runtimes.experimental import KnowledgePlannerRuntime, ReflectionRuntime
+from app.runtime import AgentOrchestrator, KnowledgeAgentRuntime
 from app.vectorstores import MilvusVectorStore
 
 logger = logging.getLogger(__name__)
@@ -392,6 +392,34 @@ def get_chat_service() -> ChatService:
         model=settings.effective_llm_model,
         api_key=settings.effective_llm_api_key,
         base_url=settings.effective_llm_base_url,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_chat_use_case() -> ChatUseCase:
+    return ChatUseCase(get_chat_service())
+
+
+@lru_cache(maxsize=1)
+def get_paper_upload_use_case() -> PaperUploadUseCase:
+    return PaperUploadUseCase(get_document_library_service())
+
+
+@lru_cache(maxsize=1)
+def get_report_use_case() -> ReportUseCase:
+    return ReportUseCase(
+        report_repository=get_report_repository(),
+        report_lifecycle_service=get_report_lifecycle_service(),
+        export_service=get_export_service(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_workspace_use_case() -> WorkspaceUseCase:
+    return WorkspaceUseCase(
+        workbench_service=get_workbench_service(),
+        workspace_file_service=get_workspace_file_service(),
+        file_asset_service=get_file_asset_service(),
     )
 
 

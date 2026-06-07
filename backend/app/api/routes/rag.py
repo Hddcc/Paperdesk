@@ -5,8 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from app.api.main import get_rag_service
+from app.domains.paper import RagService
 from app.models import RagAskRequest, RagAskResponse
-from app.services import RagService
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 

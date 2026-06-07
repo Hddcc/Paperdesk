@@ -1,10 +1,13 @@
 """Skill registry and selection helpers."""
 
-from app.runtime import SkillRegistry
-from app.services import AgentSkillLifecycleService, SkillSelector
+from .context import SkillContextBuilder
+from .lifecycle import AgentSkillLifecycleService
+from .registry import SkillRegistry
+from .selector import SkillSelector
 
 __all__ = [
     "AgentSkillLifecycleService",
     "SkillRegistry",
+    "SkillContextBuilder",
     "SkillSelector",
 ]

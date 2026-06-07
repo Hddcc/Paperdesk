@@ -8,8 +8,10 @@ from .agent_lifecycle_service import AgentLifecycleResult, AgentLifecycleService
 from .agent_route_service import AgentRouteDecisionService
 from .agent_runtime_dispatch_service import AgentRuntimeDispatchService
 from .agent_runtime_response_service import AgentRuntimeResponseRecorder
+from .agent_rag_trace_service import AgentRagTraceService
 from .agent_skill_service import AgentSkillLifecycleService
 from .agent_tool_policy_service import AgentToolObservationFactory, AgentToolPolicyResolver
+from .agent_trace_recorder import AgentTraceRecorder
 from .agent_write_safety_service import AgentWriteSafetyService
 from .chat_memory_service import ChatMemoryService
 from .chat_service import ChatService
@@ -59,9 +61,11 @@ __all__ = [
     "AgentRouteDecisionService",
     "AgentRuntimeDispatchService",
     "AgentRuntimeResponseRecorder",
+    "AgentRagTraceService",
     "AgentSkillLifecycleService",
     "AgentToolObservationFactory",
     "AgentToolPolicyResolver",
+    "AgentTraceRecorder",
     "AgentWriteSafetyService",
     "ChatMemoryService",
     "ChatService",

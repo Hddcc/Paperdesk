@@ -25,8 +25,7 @@ from app.repositories import ResearchRepository, RuntimeRepository
 
 from .message_bus import MessageBus
 from .skill_registry import SkillRegistry
-from app.services.skill_context_builder import SkillContextBuilder
-from app.services.skill_selector import SkillSelector
+from app.agent.skills import SkillContextBuilder, SkillSelector
 from .tool_registry import ToolRegistry
 
 

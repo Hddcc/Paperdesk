@@ -39,6 +39,14 @@ from .agent_lifecycle import (
     WriteActionPlan,
     WriteOperationLevel,
 )
+from .capabilities import (
+    CapabilityDeclaration,
+    CapabilityMaturity,
+    CapabilityResolution,
+    CapabilityRouteBinding,
+    CapabilityToolBinding,
+    RuntimeMetricsEnvelope,
+)
 from .enums import EvidenceSourceType, ResearchRunStatus, TodoTaskStatus
 from .library import (
     ChunkRecord,
@@ -178,6 +186,11 @@ __all__ = [
     "AgentModeDecision",
     "AgentOrchestratorInput",
     "AgentRunMode",
+    "CapabilityDeclaration",
+    "CapabilityMaturity",
+    "CapabilityResolution",
+    "CapabilityRouteBinding",
+    "CapabilityToolBinding",
     "KnowledgeIntent",
     "KnowledgeRiskLevel",
     "KnowledgeRoute",
@@ -269,6 +282,7 @@ __all__ = [
     "RouteDecisionPacket",
     "RuntimeRequest",
     "RuntimeResult",
+    "RuntimeMetricsEnvelope",
     "SpawnTask",
     "StopTask",
     "StoredAgentTask",

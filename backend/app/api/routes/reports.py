@@ -8,9 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from app.api.main import get_export_service, get_report_lifecycle_service, get_report_repository
+from app.api.main import get_export_service, get_report_lifecycle_service, get_report_repository, get_report_use_case
+from app.application import ReportUseCase
+from app.domains.artifact import ExportService
+from app.domains.paper import ReportLifecycleService
 from app.repositories import ReportRepository
-from app.services import ExportService, ReportLifecycleService
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -37,12 +39,12 @@ def get_report(report_id: str, repository: ReportRepository = Depends(get_report
 @router.post("/from-message")
 def save_report_from_message(
     request: ReportFromMessageRequest,
-    service: ReportLifecycleService = Depends(get_report_lifecycle_service),
+    use_case: ReportUseCase = Depends(get_report_use_case),
 ) -> dict:
     if not request.session_id:
         raise HTTPException(status_code=400, detail="session_id is required for local chat messages")
     try:
-        report = service.save_from_message(
+        report = use_case.save_from_message(
             session_id=request.session_id,
             message_id=request.message_id,
             optional_title=request.optional_title,
@@ -76,14 +78,13 @@ def export_report_markdown(
 @router.delete("/{report_id}")
 def delete_report(
     report_id: str,
-    repository: ReportRepository = Depends(get_report_repository),
-    export_service: ExportService = Depends(get_export_service),
+    use_case: ReportUseCase = Depends(get_report_use_case),
 ) -> dict:
-    report = repository.delete_report(report_id)
+    report = use_case.delete_report(report_id)
     if report is None:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    export_path = export_service.get_export_path(report_id)
+    export_path = use_case.export_path(report_id)
     _delete_report_exports(export_path)
     return report.model_dump(mode="json")
 

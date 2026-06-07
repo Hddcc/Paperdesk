@@ -11,8 +11,9 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from .capabilities import CapabilityDeclaration
 from .chat import ChatAttachment
 from .skills import ToolDeclaration
 
@@ -60,6 +61,7 @@ class AgentLifecycleStage(str, Enum):
 
     INGRESS = "ingress"
     ROUTE = "route"
+    CAPABILITY = "capability"
     SKILL = "skill"
     CONTEXT = "context"
     RUNTIME = "runtime"
@@ -99,6 +101,7 @@ class ActiveSkillState(BaseModel):
     confidence: float = 0.0
     trigger_reason: str = ""
     allowed_tool_ids: list[str] = Field(default_factory=list)
+    capability_ids: list[str] = Field(default_factory=list)
 
 
 class RouteDecisionPacket(BaseModel):
@@ -106,6 +109,7 @@ class RouteDecisionPacket(BaseModel):
 
     route: PaperDeskRoute = PaperDeskRoute.DIRECT_CHAT
     reason: str
+    capability_id: str = "chat"
     confidence: float = 0.0
     requires_tools: bool = False
     requires_rag: bool = False
@@ -115,6 +119,23 @@ class RouteDecisionPacket(BaseModel):
     orchestration_pattern: AgentOrchestrationPattern = AgentOrchestrationPattern.SINGLE_TURN
     selected_document_ids: list[str] = Field(default_factory=list)
     target_scope: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def infer_capability_id(self) -> "RouteDecisionPacket":
+        if self.capability_id and self.capability_id != "chat":
+            return self
+        self.capability_id = _capability_for_route(self.route)
+        return self
+
+
+def _capability_for_route(route: PaperDeskRoute) -> str:
+    if route in {PaperDeskRoute.WORKSPACE_READ, PaperDeskRoute.WORKSPACE_WRITE}:
+        return "workspace"
+    if route == PaperDeskRoute.EXPERIMENTAL_RESEARCH:
+        return "research"
+    if route == PaperDeskRoute.DIRECT_CHAT:
+        return "chat"
+    return "paper"
 
 
 class ContextPacket(BaseModel):
@@ -127,6 +148,7 @@ class ContextPacket(BaseModel):
     pending_action: dict[str, Any] | None = None
     workspace_scope: dict[str, Any] = Field(default_factory=dict)
     preferences: dict[str, Any] = Field(default_factory=dict)
+    capability_scope: dict[str, Any] = Field(default_factory=dict)
     token_budget: int | None = None
 
 
@@ -137,6 +159,7 @@ class ToolPolicyDecision(BaseModel):
     filtered_tools: dict[str, str] = Field(default_factory=dict)
     confirmation_required: bool = False
     reason: str = ""
+    capability_id: str = ""
 
 
 class RuntimeRequest(BaseModel):
@@ -146,6 +169,7 @@ class RuntimeRequest(BaseModel):
     message_id: str
     user_prompt: str
     route: RouteDecisionPacket
+    capability: CapabilityDeclaration | None = None
     active_skill: ActiveSkillState | None = None
     context: ContextPacket = Field(default_factory=ContextPacket)
     tool_policy: ToolPolicyDecision = Field(default_factory=ToolPolicyDecision)
@@ -172,6 +196,7 @@ class RuntimeResult(BaseModel):
 
     route: PaperDeskRoute
     runtime: PaperDeskRuntimeKind
+    capability_id: str = ""
     status: str = "completed"
     response_text: str = ""
     data: dict[str, Any] = Field(default_factory=dict)

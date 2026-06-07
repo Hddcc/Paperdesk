@@ -71,7 +71,7 @@ def __getattr__(name: str) -> Any:
         "RuntimeHandler",
         "default_runtime_dispatcher",
     }:
-        from app.runtime import DEFAULT_ROUTE_RUNTIME_MAP, RuntimeDispatcher, RuntimeHandler, default_runtime_dispatcher
+        from .dispatcher import DEFAULT_ROUTE_RUNTIME_MAP, RuntimeDispatcher, RuntimeHandler, default_runtime_dispatcher
 
         return {
             "DEFAULT_ROUTE_RUNTIME_MAP": DEFAULT_ROUTE_RUNTIME_MAP,
@@ -89,7 +89,7 @@ def __getattr__(name: str) -> Any:
         "ToolActionRuntime",
         "WorkspaceActionRuntime",
     }:
-        from app.runtime import (
+        from .lifecycle import (
             ConfirmedWriteRuntime,
             DirectChatRuntime,
             ExperimentalRuntime,

@@ -33,10 +33,9 @@ from app.models import (
     TraceEventType,
 )
 from app.repositories import CategoryRepository, ResearchRepository, RuntimeRepository
-from app.services.skill_context_builder import SkillContextBuilder
-from app.services.context_file_store import ContextFileStore
-from app.services.document_library_service import DocumentLibraryService
-from app.services.rag_service import RagService
+from app.agent.skills import SkillContextBuilder
+from app.domains.paper import DocumentLibraryService, RagService
+from app.infrastructure.files import ContextFileStore
 from app.vectorstores import AbstractVectorStore
 
 from .message_bus import MessageBus

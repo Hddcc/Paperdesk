@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.agents import PaperAnalysisAgent, PaperSelectionAgent
+from app.domains.paper import PaperSearchService
+from app.domains.paper.research_agents import PaperAnalysisAgent, PaperSelectionAgent
 from app.api.main import get_paper_analysis_agent, get_paper_search_service, get_paper_selection_agent
 from app.models import (
     PaperAnalysisRequest,
@@ -14,7 +15,6 @@ from app.models import (
     PaperSearchRequest,
     PaperSearchResponse,
 )
-from app.services import PaperSearchService
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 

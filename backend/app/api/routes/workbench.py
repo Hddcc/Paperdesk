@@ -6,7 +6,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from app.api.main import get_file_asset_service, get_workbench_service, get_workspace_file_service
+from app.api.main import get_workbench_service, get_workspace_file_service, get_workspace_use_case
+from app.application import WorkspaceUseCase
+from app.domains.workspace import WorkbenchService, WorkspaceFileService, WorkspaceFileServiceError
 from app.models import (
     WorkbenchCapabilitiesResponse,
     WorkbenchConfigResponse,
@@ -14,8 +16,6 @@ from app.models import (
     WorkbenchMessageTraceSummary,
     WorkspaceFileListResponse,
 )
-from app.services import FileAssetService, WorkbenchService
-from app.services.workspace_file_service import WorkspaceFileService, WorkspaceFileServiceError
 
 router = APIRouter(prefix="/workbench", tags=["workbench"])
 
@@ -31,22 +31,22 @@ class MessageWorkspaceFileExportRequest(BaseModel):
 
 
 @router.get("/config")
-def get_workbench_config(service: WorkbenchService = Depends(get_workbench_service)) -> dict:
-    return WorkbenchConfigResponse.model_validate(service.get_config()).model_dump(mode="json")
+def get_workbench_config(use_case: WorkspaceUseCase = Depends(get_workspace_use_case)) -> dict:
+    return WorkbenchConfigResponse.model_validate(use_case.get_config()).model_dump(mode="json")
 
 
 @router.get("/capabilities")
-def get_workbench_capabilities(service: WorkbenchService = Depends(get_workbench_service)) -> dict:
-    return WorkbenchCapabilitiesResponse.model_validate(service.get_capabilities()).model_dump(mode="json")
+def get_workbench_capabilities(use_case: WorkspaceUseCase = Depends(get_workspace_use_case)) -> dict:
+    return WorkbenchCapabilitiesResponse.model_validate(use_case.get_capabilities()).model_dump(mode="json")
 
 
 @router.get("/sessions/{session_id}/files")
 def get_workbench_session_files(
     session_id: str,
-    service: WorkbenchService = Depends(get_workbench_service),
+    use_case: WorkspaceUseCase = Depends(get_workspace_use_case),
 ) -> dict:
     try:
-        context = service.get_file_context(session_id)
+        context = use_case.get_file_context(session_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return WorkbenchFileContextResponse.model_validate(context).model_dump(mode="json")
@@ -99,9 +99,9 @@ def read_workspace_file(
 async def upload_workbench_session_file(
     session_id: str,
     file: UploadFile = File(...),
-    service: FileAssetService = Depends(get_file_asset_service),
+    use_case: WorkspaceUseCase = Depends(get_workspace_use_case),
 ) -> dict:
-    return (await service.upload_session_file(session_id, file)).model_dump(mode="json")
+    return (await use_case.upload_session_file(session_id, file)).model_dump(mode="json")
 
 
 @router.post("/sessions/{session_id}/messages/{message_id}/workspace-files")
@@ -186,10 +186,10 @@ def _workspace_file_http_error(exc: WorkspaceFileServiceError) -> HTTPException:
 @router.get("/messages/{message_id}/trace")
 def get_workbench_message_trace(
     message_id: str,
-    service: WorkbenchService = Depends(get_workbench_service),
+    use_case: WorkspaceUseCase = Depends(get_workspace_use_case),
 ) -> dict:
     try:
-        summary = service.get_message_trace_summary(message_id)
+        summary = use_case.get_message_trace_summary(message_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return WorkbenchMessageTraceSummary.model_validate(summary).model_dump(mode="json")

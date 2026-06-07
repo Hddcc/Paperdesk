@@ -60,6 +60,7 @@ class SkillTriggerMetadata(BaseModel):
     commands: list[str] = Field(default_factory=list)
     intent_hints: list[str] = Field(default_factory=list)
     routes: list[str] = Field(default_factory=list)
+    capability_ids: list[str] = Field(default_factory=list)
     task_types: list[str] = Field(default_factory=list)
     attachment_kinds: list[str] = Field(default_factory=list)
     document_count: SkillDocumentCountConstraint | None = None
@@ -95,6 +96,8 @@ class ToolSpec(BaseModel):
     name: str
     display_name: str = ""
     description: str
+    capability_id: str = "paper"
+    integration_source: str | None = None
     scope: str = "experimental"
     maturity: str = "stable"
     operation_level: str
@@ -109,6 +112,7 @@ class ToolSpec(BaseModel):
     available_by_default: bool = False
     feature_flag: str | None = None
     source: str = "builtin"
+    metrics_fields: list[str] = Field(default_factory=list)
 
 
 class ToolObservationError(BaseModel):
@@ -134,12 +138,14 @@ class ToolObservation(BaseModel):
 
     tool_name: str
     success: bool
+    capability_id: str = ""
     operation_level: str
     io_type: str
     write_type: str = "none"
     target_objects: list[dict[str, Any]] = Field(default_factory=list)
     affected_objects: list[dict[str, Any]] = Field(default_factory=list)
     counts: dict[str, Any] = Field(default_factory=dict)
+    metrics: dict[str, Any] = Field(default_factory=dict)
     data: dict[str, Any] = Field(default_factory=dict)
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     requires_followup: bool = False
@@ -174,6 +180,7 @@ class SkillDefinition(BaseModel):
     description: str
     body: str
     available_tools: list[str] = Field(default_factory=list)
+    capability_ids: list[str] = Field(default_factory=list)
     references: list[str] = Field(default_factory=list)
     inputs: dict[str, Any] = Field(default_factory=dict)
     artifact_protocol: ResearchArtifactProtocol
@@ -200,6 +207,7 @@ class SkillManifest(BaseModel):
     available_by_default: bool = True
     trigger: SkillTriggerMetadata | None = None
     allowed_tool_ids: list[str] = Field(default_factory=list)
+    capability_ids: list[str] = Field(default_factory=list)
 
 
 class SkillContextSummary(BaseModel):
@@ -210,6 +218,7 @@ class SkillContextSummary(BaseModel):
     short_description: str = ""
     artifact_protocol: dict[str, Any] = Field(default_factory=dict)
     available_tools: list[str] = Field(default_factory=list)
+    capability_ids: list[str] = Field(default_factory=list)
     output_expectations: list[str] = Field(default_factory=list)
     safety_constraints: list[str] = Field(default_factory=list)
     trigger_reason: str = ""

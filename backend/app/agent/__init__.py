@@ -11,11 +11,16 @@ from typing import Any
 __all__ = [
     "AgentLifecycleResult",
     "AgentLifecycleService",
+    "AgentRagTraceService",
+    "AgentRuntimeResponseRecorder",
+    "AgentTraceRecorder",
     "AgentToolPolicyResolver",
+    "CapabilityRegistry",
     "RuntimeDispatcher",
     "SkillRegistry",
     "SkillSelector",
     "ToolRegistry",
+    "default_capability_registry",
     "default_runtime_dispatcher",
 ]
 
@@ -28,12 +33,27 @@ def __getattr__(name: str) -> Any:
             "AgentLifecycleResult": AgentLifecycleResult,
             "AgentLifecycleService": AgentLifecycleService,
         }[name]
+    if name in {"AgentRagTraceService", "AgentRuntimeResponseRecorder", "AgentTraceRecorder"}:
+        from .observability import AgentRagTraceService, AgentRuntimeResponseRecorder, AgentTraceRecorder
+
+        return {
+            "AgentRagTraceService": AgentRagTraceService,
+            "AgentRuntimeResponseRecorder": AgentRuntimeResponseRecorder,
+            "AgentTraceRecorder": AgentTraceRecorder,
+        }[name]
     if name in {"RuntimeDispatcher", "default_runtime_dispatcher"}:
         from .runtimes import RuntimeDispatcher, default_runtime_dispatcher
 
         return {
             "RuntimeDispatcher": RuntimeDispatcher,
             "default_runtime_dispatcher": default_runtime_dispatcher,
+        }[name]
+    if name in {"CapabilityRegistry", "default_capability_registry"}:
+        from .capabilities import CapabilityRegistry, default_capability_registry
+
+        return {
+            "CapabilityRegistry": CapabilityRegistry,
+            "default_capability_registry": default_capability_registry,
         }[name]
     if name in {"SkillRegistry", "SkillSelector"}:
         from .skills import SkillRegistry, SkillSelector

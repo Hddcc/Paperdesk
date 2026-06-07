@@ -23,6 +23,31 @@ from app.agent.runtimes import (
     WorkspaceRuntimeExecutor,
     WriteRuntimeExecutor,
 )
+from app.agent.lifecycle import AgentLifecycleService
+from app.agent.observability import AgentRuntimeResponseRecorder
+from app.domains.paper import RagService
+from app.domains.workspace.chat_operations import (
+    WorkspaceChatOperationService,
+    WorkspacePendingActionAdapter,
+    build_workspace_file_context_block,
+    workspace_file_created_message,
+)
+from app.domains.workspace.operations import (
+    WorkspaceCommandBoundary as _WorkspaceCommandBoundary,
+    WorkspaceFileOverwriteIntent as _WorkspaceFileOverwriteIntent,
+    WorkspaceFilePendingResponse as _WorkspaceFilePendingResponse,
+    WorkspaceFileReadIntent as _WorkspaceFileReadIntent,
+    WorkspaceFileWriteNewIntent as _WorkspaceFileWriteNewIntent,
+    WorkspaceIntentResolver,
+    WorkspacePathExtractor,
+    unsupported_workspace_write_extension_message,
+    workspace_command_boundary_message,
+    workspace_file_overwrite_boundary_message,
+    workspace_file_write_new_boundary_message,
+    workspace_internal_write_boundary_message,
+)
+from app.domains.workspace.trace import WorkspaceTraceBuilder
+from app.infrastructure.files import FileTextExtractor
 from app.models import (
     AgentModeDecision,
     AgentOrchestratorInput,
@@ -44,32 +69,7 @@ from app.models import (
 from app.repositories import ChatRepository, FileAssetRepository, LibraryRepository
 
 from .chat_memory_service import ChatMemoryService
-from .agent_lifecycle_service import AgentLifecycleService
-from .agent_runtime_response_service import AgentRuntimeResponseRecorder
 from .context_assembler import ContextAssembler
-from .file_text_extractor import FileTextExtractor
-from .rag_service import RagService
-from .workspace_chat_operations import (
-    WorkspaceChatOperationService,
-    WorkspacePendingActionAdapter,
-    build_workspace_file_context_block,
-    workspace_file_created_message,
-)
-from .workspace_operation_resolver import (
-    WorkspaceCommandBoundary as _WorkspaceCommandBoundary,
-    WorkspaceFileOverwriteIntent as _WorkspaceFileOverwriteIntent,
-    WorkspaceFilePendingResponse as _WorkspaceFilePendingResponse,
-    WorkspaceFileReadIntent as _WorkspaceFileReadIntent,
-    WorkspaceFileWriteNewIntent as _WorkspaceFileWriteNewIntent,
-    WorkspaceIntentResolver,
-    WorkspacePathExtractor,
-    unsupported_workspace_write_extension_message,
-    workspace_command_boundary_message,
-    workspace_file_overwrite_boundary_message,
-    workspace_file_write_new_boundary_message,
-    workspace_internal_write_boundary_message,
-)
-from .workspace_trace_builder import WorkspaceTraceBuilder
 
 
 @dataclass(slots=True)

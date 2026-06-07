@@ -5,6 +5,7 @@ from app.models import (
     AgentLifecycleStage,
     AgentLifecycleTraceEvent,
     AgentOrchestrationPattern,
+    CapabilityDeclaration,
     ContextPacket,
     PaperDeskRoute,
     PaperDeskRuntimeKind,
@@ -15,14 +16,12 @@ from app.models import (
     WriteActionPlan,
     WriteOperationLevel,
 )
-from app.services import (
-    AgentContextLifecycleService,
-    AgentIngressService,
-    AgentLifecycleResult,
-    AgentLifecycleService,
-    AgentRouteDecisionService,
-    AgentRuntimeDispatchService,
-)
+from app.agent.memory.context import AgentContextLifecycleService
+from app.agent.runtimes.service_dispatch import AgentRuntimeDispatchService
+
+from .ingress import AgentIngressService
+from .router import AgentRouteDecisionService
+from .service import AgentLifecycleResult, AgentLifecycleService
 
 __all__ = [
     "ActiveSkillState",
@@ -33,6 +32,7 @@ __all__ = [
     "AgentLifecycleStage",
     "AgentLifecycleTraceEvent",
     "AgentOrchestrationPattern",
+    "CapabilityDeclaration",
     "AgentRouteDecisionService",
     "AgentRuntimeDispatchService",
     "ContextPacket",
