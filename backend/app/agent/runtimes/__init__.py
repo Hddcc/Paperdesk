@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 __all__ = [
+    "AgentModeCompatibilityAdapter",
+    "AgentModeExecutionAdapter",
     "ConfirmedWriteRuntime",
+    "ChatAnswerRuntime",
     "DEFAULT_ROUTE_RUNTIME_MAP",
     "DirectChatRuntime",
     "DirectChatRuntimeExecutor",
@@ -18,7 +21,9 @@ __all__ = [
     "ReportActionRuntime",
     "RuntimeDispatcher",
     "RuntimeHandler",
+    "RuntimeLLMClient",
     "RuntimeAnswerResult",
+    "RuntimeLLMDiagnostic",
     "ExperimentalRuntimeExecutor",
     "ToolActionRuntime",
     "ToolActionRuntimeExecutor",
@@ -32,31 +37,40 @@ __all__ = [
 def __getattr__(name: str) -> Any:
     if name in {
         "DirectChatRuntimeExecutor",
+        "ChatAnswerRuntime",
         "ExperimentalRuntimeExecutor",
         "PaperRagRuntimeExecutor",
         "ReportRuntimeExecutor",
         "RuntimeAnswerResult",
+        "RuntimeLLMClient",
+        "RuntimeLLMDiagnostic",
         "ToolActionRuntimeExecutor",
         "WorkspaceRuntimeExecutor",
         "WriteRuntimeExecutor",
     }:
         from .chat_execution import (
+            ChatAnswerRuntime,
             DirectChatRuntimeExecutor,
             ExperimentalRuntimeExecutor,
             PaperRagRuntimeExecutor,
             ReportRuntimeExecutor,
             RuntimeAnswerResult,
+            RuntimeLLMClient,
+            RuntimeLLMDiagnostic,
             ToolActionRuntimeExecutor,
             WorkspaceRuntimeExecutor,
             WriteRuntimeExecutor,
         )
 
         return {
+            "ChatAnswerRuntime": ChatAnswerRuntime,
             "DirectChatRuntimeExecutor": DirectChatRuntimeExecutor,
             "ExperimentalRuntimeExecutor": ExperimentalRuntimeExecutor,
             "PaperRagRuntimeExecutor": PaperRagRuntimeExecutor,
             "ReportRuntimeExecutor": ReportRuntimeExecutor,
             "RuntimeAnswerResult": RuntimeAnswerResult,
+            "RuntimeLLMClient": RuntimeLLMClient,
+            "RuntimeLLMDiagnostic": RuntimeLLMDiagnostic,
             "ToolActionRuntimeExecutor": ToolActionRuntimeExecutor,
             "WorkspaceRuntimeExecutor": WorkspaceRuntimeExecutor,
             "WriteRuntimeExecutor": WriteRuntimeExecutor,
@@ -65,6 +79,13 @@ def __getattr__(name: str) -> Any:
         from .knowledge_provider import KnowledgeAgentCapabilityProvider
 
         return KnowledgeAgentCapabilityProvider
+    if name in {"AgentModeCompatibilityAdapter", "AgentModeExecutionAdapter"}:
+        from .compatibility import AgentModeCompatibilityAdapter, AgentModeExecutionAdapter
+
+        return {
+            "AgentModeCompatibilityAdapter": AgentModeCompatibilityAdapter,
+            "AgentModeExecutionAdapter": AgentModeExecutionAdapter,
+        }[name]
     if name in {
         "DEFAULT_ROUTE_RUNTIME_MAP",
         "RuntimeDispatcher",

@@ -31,8 +31,10 @@ class AgentToolPolicyResolver:
         capability_id: str | None = None,
         confirmation_granted: bool = False,
         feature_flags: Iterable[str] | None = None,
+        bound_external_tool_ids: Iterable[str] | None = None,
     ) -> ToolPolicyDecision:
         enabled_flags = set(feature_flags or [])
+        bound_external_ids = set(bound_external_tool_ids or [])
         active_capability = capability_id or route.capability_id
         requested_ids = list(active_skill.allowed_tool_ids) if active_skill and active_skill.allowed_tool_ids else []
         candidates = (
@@ -61,6 +63,7 @@ class AgentToolPolicyResolver:
                 capability_id=active_capability,
                 confirmation_granted=confirmation_granted,
                 feature_flags=enabled_flags,
+                bound_external_tool_ids=bound_external_ids,
             )
             if reason:
                 filtered[tool.tool_id] = reason
@@ -72,6 +75,7 @@ class AgentToolPolicyResolver:
         return ToolPolicyDecision(
             allowed_tools=allowed,
             filtered_tools=filtered,
+            filter_reasons=dict(filtered),
             confirmation_required=confirmation_required or route.requires_confirmation,
             capability_id=active_capability,
             reason=self._reason(route, active_skill, allowed, filtered),
@@ -85,10 +89,13 @@ class AgentToolPolicyResolver:
         capability_id: str,
         confirmation_granted: bool,
         feature_flags: set[str],
+        bound_external_tool_ids: set[str],
     ) -> str:
         spec = tool.spec
         if spec is None:
             return "tool has no safety metadata"
+        if spec.source == "mcp" and tool.tool_id not in bound_external_tool_ids:
+            return "external MCP tool is not bound or configured for this user"
         if spec.feature_flag and spec.feature_flag not in feature_flags:
             return f"feature flag required: {spec.feature_flag}"
         if spec.capability_id not in {capability_id, "shared", "common"}:

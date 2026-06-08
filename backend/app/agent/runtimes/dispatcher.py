@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Protocol
 
+from app.agent.runner import default_runner_policy_for_runtime
 from app.models import (
     AgentLifecycleStage,
     PaperDeskRoute,
@@ -84,14 +85,15 @@ class RuntimeDispatcher:
         )
         handler = self._handlers.get(runtime)
         if handler is None:
+            status, message = self._fallback_status_and_message(request, runtime)
             return RuntimeResult(
                 route=request.route.route,
                 runtime=runtime,
                 capability_id=request.route.capability_id,
-                status="deferred",
+                status=status,
                 response_text="",
                 data={
-                    "message": "runtime handler not connected yet",
+                    "message": message,
                     "runtime": runtime.value,
                     "capability_id": request.route.capability_id,
                     "orchestration_pattern": request.route.orchestration_pattern.value,
@@ -99,7 +101,7 @@ class RuntimeDispatcher:
                     "target_scope": request.route.target_scope,
                     "active_skill": self._active_skill_payload(request),
                 },
-                metrics=self._metrics(request, runtime, status="deferred").model_dump(mode="json"),
+                metrics=self._metrics(request, runtime, status=status).model_dump(mode="json"),
                 trace=list(request.trace),
             )
         if callable(handler) and not hasattr(handler, "handle"):
@@ -110,52 +112,19 @@ class RuntimeDispatcher:
         return result
 
     @staticmethod
-    def _execution_policy(request: RuntimeRequest, runtime: PaperDeskRuntimeKind) -> dict[str, Any]:
-        pattern = request.route.orchestration_pattern.value
-        if runtime == PaperDeskRuntimeKind.TOOL_ACTION:
-            return {
-                "pattern": pattern,
-                "max_steps": 4,
-                "stop_reason": "bounded_tool_steps_or_final_answer",
-                "observations": "structured_tool_results",
-            }
-        if runtime in {
-            PaperDeskRuntimeKind.CONFIRMED_WRITE,
-            PaperDeskRuntimeKind.WORKSPACE_ACTION,
-        } and request.route.requires_confirmation:
-            return {
-                "pattern": pattern,
-                "max_steps": 3,
-                "stop_reason": "preview_confirm_execute_verify_complete",
-                "requires_explicit_scope": True,
-            }
-        if runtime == PaperDeskRuntimeKind.PAPER_RAG:
-            return {
-                "pattern": pattern,
-                "max_steps": 1,
-                "stop_reason": "retrieve_then_synthesize_complete",
-                "planner_enabled": False,
-            }
-        if runtime == PaperDeskRuntimeKind.DIRECT_CHAT:
-            return {
-                "pattern": pattern,
-                "max_steps": 1,
-                "stop_reason": "single_turn_answer_complete",
-                "rag_enabled": False,
-                "tools_enabled": False,
-            }
+    def _execution_policy(request: RuntimeRequest, runtime: PaperDeskRuntimeKind) -> dict[str, object]:
+        return default_runner_policy_for_runtime(runtime, request.route.orchestration_pattern).as_trace_payload()
+
+    @staticmethod
+    def _fallback_status_and_message(
+        request: RuntimeRequest,
+        runtime: PaperDeskRuntimeKind,
+    ) -> tuple[str, str]:
+        if request.route.requires_confirmation:
+            return "pending_confirmation", "runtime requires explicit confirmation before execution"
         if runtime == PaperDeskRuntimeKind.EXPERIMENTAL:
-            return {
-                "pattern": pattern,
-                "max_steps": 6,
-                "stop_reason": "experimental_policy_limit",
-                "feature_flag_required": True,
-            }
-        return {
-            "pattern": pattern,
-            "max_steps": 2,
-            "stop_reason": "deterministic_service_workflow_complete",
-        }
+            return "safely_blocked", "experimental runtime is gated by feature policy"
+        return "completed", "runtime policy recorded; chat service owns final response persistence"
 
     @staticmethod
     def _active_skill_payload(request: RuntimeRequest) -> dict[str, Any] | None:

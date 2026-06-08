@@ -84,6 +84,7 @@ class ChatMessageRequest(BaseModel):
     model_id: str | None = None
     command: str | None = None
     intent_hint: str | None = None
+    deep_research: bool = False
 
     @model_validator(mode="after")
     def normalize_lists(self) -> "ChatMessageRequest":
@@ -137,6 +138,11 @@ class ChatContextState(BaseModel):
     stage: ContextStage = "normal"
     estimated_tokens: int = 0
     budget_tokens: int = 0
+    context_profile: str | None = None
+    effective_context_window: int = 0
+    retained_message_count: int = 0
+    dropped_message_count: int = 0
+    truncated_sections: list[str] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
     last_compacted_at: datetime | None = None
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from app.agent.memory.context import AgentContextLifecycleService
 from app.config import Settings
+from app.models import ContextBudgetAllocation, ContextBudgetProfile
 
 try:
     import tiktoken
@@ -18,14 +20,23 @@ class ContextBudgetService:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.context_policy = AgentContextLifecycleService(
+            default_profile=self._profile_from_settings(),
+            model_context_window=settings.effective_max_context_tokens,
+        )
 
     @property
     def max_context_tokens(self) -> int:
-        return self.settings.effective_max_context_tokens
+        return self.allocation.effective_context_window
 
     @property
     def budget_tokens(self) -> int:
-        return max(self.max_context_tokens - self.settings.response_reserve_tokens, 2000)
+        return max(
+            self.allocation.effective_context_window
+            - self.allocation.generation_reserve
+            - self.allocation.safety_reserve,
+            2000,
+        )
 
     @property
     def warn_tokens(self) -> int:
@@ -34,6 +45,22 @@ class ContextBudgetService:
     @property
     def force_tokens(self) -> int:
         return int(self.budget_tokens * self.settings.compact_force_ratio)
+
+    @property
+    def allocation(self) -> ContextBudgetAllocation:
+        return self.context_policy.allocate_budget(
+            profile=self._profile_from_settings(),
+            model_context_window=self.settings.effective_max_context_tokens,
+            explicit_token_budget=self.settings.max_context_tokens,
+        )
+
+    @property
+    def fallback_message_cap(self) -> int:
+        return self.allocation.fallback_message_cap
+
+    @property
+    def sliding_messages_budget(self) -> int:
+        return self.allocation.sliding_messages_budget
 
     def estimate_messages(self, messages: list[dict[str, Any]]) -> int:
         total = 0
@@ -69,3 +96,11 @@ class ContextBudgetService:
         non_ascii_chars = len(text) - ascii_chars
         estimated = math.ceil(ascii_chars / 4 + non_ascii_chars * 0.8)
         return max(estimated, 1)
+
+    def _profile_from_settings(self) -> ContextBudgetProfile:
+        effective = self.settings.effective_max_context_tokens
+        if effective <= 8192:
+            return ContextBudgetProfile.SMALL
+        if effective <= 32768:
+            return ContextBudgetProfile.STANDARD
+        return ContextBudgetProfile.LARGE

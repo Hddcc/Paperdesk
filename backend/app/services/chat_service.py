@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import re
 import shutil
@@ -14,11 +15,15 @@ from uuid import uuid4
 from openai import OpenAI
 
 from app.agent.runtimes import (
+    AgentModeCompatibilityAdapter,
+    AgentModeExecutionAdapter,
+    ChatAnswerRuntime,
     DirectChatRuntimeExecutor,
     ExperimentalRuntimeExecutor,
     KnowledgeAgentCapabilityProvider,
     PaperRagRuntimeExecutor,
     ReportRuntimeExecutor,
+    RuntimeLLMClient,
     ToolActionRuntimeExecutor,
     WorkspaceRuntimeExecutor,
     WriteRuntimeExecutor,
@@ -49,9 +54,6 @@ from app.domains.workspace.operations import (
 from app.domains.workspace.trace import WorkspaceTraceBuilder
 from app.infrastructure.files import FileTextExtractor
 from app.models import (
-    AgentModeDecision,
-    AgentOrchestratorInput,
-    AgentRunMode,
     ChatAttachment,
     ChatContextState,
     ChatMessage,
@@ -60,9 +62,8 @@ from app.models import (
     ChatSession,
     ChatSessionDetail,
     KnowledgeIntent,
-    KnowledgeRiskLevel,
-    KnowledgeRoute,
     MemorySnapshot,
+    PaperDeskRoute,
     ResearchRunStatus,
     WorkspaceFileReadResult,
 )
@@ -334,6 +335,10 @@ class ChatService:
         self.workspace_file_service = workspace_file_service
         self.agent_orchestrator = agent_orchestrator
         self.knowledge_agent_provider = KnowledgeAgentCapabilityProvider(knowledge_agent_runtime)
+        self.agent_mode_adapter = AgentModeCompatibilityAdapter(
+            agent_orchestrator=self.agent_orchestrator,
+            knowledge_agent_provider=self.knowledge_agent_provider,
+        )
         self.knowledge_planner_runtime = knowledge_planner_runtime
         self.reflection_runtime = reflection_runtime
         self.enable_research_from_knowledge = enable_research_from_knowledge
@@ -365,13 +370,43 @@ class ChatService:
             skill_registry=getattr(self.agent_orchestrator, "skill_registry", None),
         )
         self.agent_runtime_response_recorder = AgentRuntimeResponseRecorder()
-        self.direct_chat_runtime_executor = DirectChatRuntimeExecutor()
-        self.paper_rag_runtime_executor = PaperRagRuntimeExecutor()
+        self.chat_answer_runtime = ChatAnswerRuntime(
+            context_assembler=self.context_assembler,
+            llm_client=RuntimeLLMClient(
+                model=self.model,
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=self.timeout,
+            ),
+            knowledge_context_provider=self._knowledge_context_lines,
+            template_answer_builder=self._build_template_answer,
+        )
+        self.direct_chat_runtime_executor = DirectChatRuntimeExecutor(self.chat_answer_runtime)
+        self.paper_rag_runtime_executor = PaperRagRuntimeExecutor(
+            answer_runtime=self.chat_answer_runtime,
+            rag_service=self.rag_service,
+            citation_collector=self._collect_citations,
+        )
         self.tool_action_runtime_executor = ToolActionRuntimeExecutor()
         self.write_runtime_executor = WriteRuntimeExecutor()
         self.report_runtime_executor = ReportRuntimeExecutor()
         self.workspace_runtime_executor = WorkspaceRuntimeExecutor()
         self.experimental_runtime_executor = ExperimentalRuntimeExecutor()
+        self.agent_mode_execution_adapter = AgentModeExecutionAdapter(
+            agent_orchestrator=self.agent_orchestrator,
+            tool_action_runtime_executor=self.tool_action_runtime_executor,
+            write_runtime_executor=self.write_runtime_executor,
+            report_runtime_executor=self.report_runtime_executor,
+            experimental_runtime_executor=self.experimental_runtime_executor,
+        )
+
+    def _sync_runtime_llm_config(self) -> None:
+        llm_client = self.chat_answer_runtime.llm_client
+        llm_client.model = self.model
+        llm_client.api_key = self.api_key
+        llm_client.base_url = self.base_url
+        llm_client.timeout = self.timeout
+        llm_client.openai_factory = OpenAI
 
     def list_sessions(self) -> list[ChatSession]:
         return self.chat_repository.list_sessions()
@@ -425,6 +460,7 @@ class ChatService:
         *,
         delta_sink: Callable[[str], None] | None = None,
     ) -> ChatSendResponse:
+        self._sync_runtime_llm_config()
         session = self._require_session(session_id)
         normalized_attachments = self._normalize_attachments(
             request.attachments,
@@ -464,18 +500,6 @@ class ChatService:
             message_id=user_message.id,
             attachments=normalized_attachments,
         )
-        lifecycle_result = self.agent_lifecycle.prepare_chat_request(
-            session_id=session.id,
-            message_id=user_message.id,
-            request=request,
-            selected_document_ids=document_ids,
-            selected_file_ids=file_resolution.used_file_ids,
-            pending_action=self._read_workspace_file_pending_action(session.id),
-            confirmation_received=self._is_lifecycle_confirmation_message(request.content),
-        )
-        lifecycle_request = lifecycle_result.request
-        lifecycle_dispatch_result = lifecycle_result.dispatch_result
-
         research_redirect = self._research_task_redirect_message(request.content)
         warning: str | None = None
         retrieval_failure_message: str | None = None
@@ -498,6 +522,24 @@ class ChatService:
             session_id=session.id,
             selected_document_ids=document_ids,
         )
+        lifecycle_result = self.agent_lifecycle.prepare_chat_request(
+            session_id=session.id,
+            message_id=user_message.id,
+            request=request,
+            selected_document_ids=document_ids,
+            selected_file_ids=file_resolution.used_file_ids,
+            pending_action=self._read_workspace_file_pending_action(session.id),
+            confirmation_received=self._is_lifecycle_confirmation_message(request.content),
+            recent_messages=[
+                {"role": message.role, "content": message.content, "message_id": message.id}
+                for message in history_before_current[-24:]
+            ],
+            memory_snapshot=memory_snapshot.model_dump(mode="json"),
+        )
+        lifecycle_request = lifecycle_result.request
+        lifecycle_dispatch_result = lifecycle_result.dispatch_result
+        lifecycle_route = lifecycle_request.route.route
+        lifecycle_execution_route = lifecycle_route
         mode_decision = None
         fast_path_response = None
         general_chat_fast_path = False
@@ -549,6 +591,7 @@ class ChatService:
             and not file_resolution.items
             and file_resolution.rejected_count > 0
         )
+        recent_paper_reference = self._has_recent_paper_reference(request.content, session.id)
         if research_redirect is None and workspace_command_boundary is not None:
             mode_decision = self._build_fast_path_decision(
                 session=session,
@@ -557,7 +600,7 @@ class ChatService:
                 attachments=normalized_attachments,
                 selected_document_ids=document_ids,
                 memory_snapshot=memory_snapshot,
-                route=KnowledgeRoute.DIRECT_ANSWER,
+                route=PaperDeskRoute.DIRECT_CHAT,
                 intent=KnowledgeIntent.CHAT,
                 reason=workspace_command_boundary.reason,
                 requires_tools=False,
@@ -571,7 +614,7 @@ class ChatService:
                 attachments=normalized_attachments,
                 selected_document_ids=document_ids,
                 memory_snapshot=memory_snapshot,
-                route=KnowledgeRoute.TOOL_ACTION,
+                route=PaperDeskRoute.WORKSPACE_WRITE,
                 intent=KnowledgeIntent.CHAT,
                 reason=workspace_file_pending_response.reason,
                 requires_tools=True,
@@ -585,7 +628,7 @@ class ChatService:
                 attachments=normalized_attachments,
                 selected_document_ids=document_ids,
                 memory_snapshot=memory_snapshot,
-                route=KnowledgeRoute.TOOL_ACTION,
+                route=PaperDeskRoute.WORKSPACE_WRITE,
                 intent=KnowledgeIntent.CHAT,
                 reason=workspace_file_overwrite_intent.reason,
                 requires_tools=True,
@@ -599,7 +642,7 @@ class ChatService:
                 attachments=normalized_attachments,
                 selected_document_ids=document_ids,
                 memory_snapshot=memory_snapshot,
-                route=KnowledgeRoute.TOOL_ACTION,
+                route=PaperDeskRoute.WORKSPACE_WRITE,
                 intent=KnowledgeIntent.CHAT,
                 reason=workspace_file_write_new_intent.reason,
                 requires_tools=True,
@@ -613,7 +656,7 @@ class ChatService:
                 attachments=normalized_attachments,
                 selected_document_ids=document_ids,
                 memory_snapshot=memory_snapshot,
-                route=KnowledgeRoute.DIRECT_ANSWER,
+                route=PaperDeskRoute.WORKSPACE_READ,
                 intent=KnowledgeIntent.CHAT,
                 reason=workspace_file_read_intent.reason,
                 requires_tools=False,
@@ -627,7 +670,7 @@ class ChatService:
                 attachments=normalized_attachments,
                 selected_document_ids=document_ids,
                 memory_snapshot=memory_snapshot,
-                route=KnowledgeRoute.DIRECT_ANSWER,
+                route=PaperDeskRoute.DIRECT_CHAT,
                 intent=KnowledgeIntent.CHAT,
                 reason="Session file and paper selections are kept separate in the 37.4 read-only file path.",
                 requires_tools=False,
@@ -641,7 +684,7 @@ class ChatService:
                 attachments=normalized_attachments,
                 selected_document_ids=document_ids,
                 memory_snapshot=memory_snapshot,
-                route=KnowledgeRoute.DIRECT_ANSWER,
+                route=PaperDeskRoute.DIRECT_CHAT,
                 intent=KnowledgeIntent.CHAT,
                 reason="Session files are read-only references and cannot authorize library write operations.",
                 requires_tools=False,
@@ -656,7 +699,7 @@ class ChatService:
                 attachments=normalized_attachments,
                 selected_document_ids=document_ids,
                 memory_snapshot=memory_snapshot,
-                route=KnowledgeRoute.DIRECT_ANSWER,
+                route=PaperDeskRoute.DIRECT_CHAT,
                 intent=KnowledgeIntent.CHAT,
                 reason="Selected session files are injected as read-only direct-answer context.",
                 requires_tools=False,
@@ -677,7 +720,7 @@ class ChatService:
                     attachments=normalized_attachments,
                     selected_document_ids=document_ids,
                     memory_snapshot=memory_snapshot,
-                    route=KnowledgeRoute.TOOL_ACTION,
+                    route=PaperDeskRoute.LIBRARY_READ,
                     intent=fast_path_response.intent,
                     reason=fast_path_response.reason,
                     requires_tools=True,
@@ -696,21 +739,62 @@ class ChatService:
                     attachments=normalized_attachments,
                     selected_document_ids=document_ids,
                     memory_snapshot=memory_snapshot,
-                    route=KnowledgeRoute.DIRECT_ANSWER,
+                    route=PaperDeskRoute.DIRECT_CHAT,
                     intent=KnowledgeIntent.CHAT,
                     reason="Conservative local fast path: plain chat without library, grounding, or write intent.",
                     requires_tools=False,
                     target_runtime="DirectChatRuntime",
                 )
             else:
-                mode_decision = self._select_agent_mode(
+                mode_decision = self._build_lifecycle_route_decision(
                     session=session,
                     user_message=user_message,
                     request=request,
                     attachments=normalized_attachments,
                     selected_document_ids=document_ids,
                     memory_snapshot=memory_snapshot,
+                    route=lifecycle_route,
+                    reason=lifecycle_request.route.reason,
+                    requires_tools=lifecycle_request.route.requires_tools,
+                    target_runtime=lifecycle_request.route.target_runtime.value,
                 )
+        lifecycle_execution_route = self._effective_lifecycle_execution_route(
+            lifecycle_route=lifecycle_route,
+            research_redirect=research_redirect,
+            workspace_command_boundary=workspace_command_boundary,
+            workspace_file_pending_response=workspace_file_pending_response,
+            workspace_file_overwrite_intent=workspace_file_overwrite_intent,
+            workspace_file_write_new_intent=workspace_file_write_new_intent,
+            workspace_file_read_intent=workspace_file_read_intent,
+            mixed_file_and_document_selection=mixed_file_and_document_selection,
+            session_file_write_unsupported=session_file_write_unsupported,
+            session_file_direct_answer=session_file_direct_answer,
+            session_file_all_rejected=session_file_all_rejected,
+            recent_paper_reference=recent_paper_reference,
+            fast_path_response=fast_path_response,
+            general_chat_fast_path=general_chat_fast_path,
+        )
+        if (
+            mode_decision is not None
+            and lifecycle_execution_route != lifecycle_route
+            and lifecycle_execution_route in {PaperDeskRoute.PAPER_RAG, PaperDeskRoute.LIBRARY_READ}
+        ):
+            mode_decision = self._build_lifecycle_route_decision(
+                session=session,
+                user_message=user_message,
+                request=request,
+                attachments=normalized_attachments,
+                selected_document_ids=document_ids,
+                memory_snapshot=memory_snapshot,
+                route=lifecycle_execution_route,
+                reason=f"Domain resolver refined lifecycle route from {lifecycle_route.value}.",
+                requires_tools=lifecycle_execution_route == PaperDeskRoute.LIBRARY_READ,
+                target_runtime=(
+                    "PaperRagRuntime"
+                    if lifecycle_execution_route == PaperDeskRoute.PAPER_RAG
+                    else "ToolActionRuntime"
+                ),
+            )
         agent_trace_id = mode_decision.trace_id if mode_decision is not None else None
         self._append_lifecycle_trace(mode_decision, lifecycle_request, lifecycle_dispatch_result)
         self._append_workbench_hint_trace(mode_decision, request)
@@ -1038,6 +1122,7 @@ class ChatService:
         else:
             agent_result = self._execute_agent_mode_through_runtime(
                 decision=mode_decision,
+                route=lifecycle_execution_route,
                 session=session,
                 request=request,
                 attachments=normalized_attachments,
@@ -1073,7 +1158,7 @@ class ChatService:
                 assistant_text = self.knowledge_agent_provider.ensure_final_answer(
                     user_prompt=request.content,
                     original_request=request,
-                    runtime_mode=mode_decision.mode.value if mode_decision is not None else "knowledge_agent",
+                    runtime_mode=getattr(getattr(mode_decision, "mode", None), "value", "knowledge_agent"),
                     evidence_items=evidence_items,
                     citations=citations,
                     used_document_ids=document_ids,
@@ -1111,12 +1196,11 @@ class ChatService:
             and not session_file_write_unsupported
             and not session_file_all_rejected
             and workspace_file_read_error is None
-            and mode_decision is not None
-            and mode_decision.mode == AgentRunMode.DIRECT
+            and research_redirect is None
+            and self._lifecycle_route_is_direct_answer(lifecycle_execution_route)
         ):
             direct_context_lines = [*session_file_context_lines, *workspace_file_context_lines]
             direct_result = self.direct_chat_runtime_executor.run(
-                generate_answer=self._generate_answer,
                 session=session,
                 history=history_before_current,
                 current_request=request,
@@ -1128,6 +1212,7 @@ class ChatService:
             )
             assistant_text = direct_result.content
             context_state = direct_result.context_state
+            self.last_llm_diagnostic = _LLMDiagnostic(**(direct_result.diagnostic or self.last_llm_diagnostic.as_trace_payload()))
             rejection_notice = self._session_file_rejection_notice(file_resolution)
             if rejection_notice:
                 suffix = f"\n\n{rejection_notice}"
@@ -1158,17 +1243,12 @@ class ChatService:
                 if document is not None and document.status == "ready"
             ]
             if ready_documents:
-                try:
-                    evidence_items = self.rag_service.retrieve_evidence(
-                        question=request.content,
-                        documents=ready_documents,
-                        top_k=4,
-                    )
-                    retrieval_status = "ready"
-                except Exception:
-                    retrieval_status = "degraded"
-                    retrieval_failure_message = self._selected_document_retrieval_failed_message()
-                    warning = None
+                evidence_items, retrieval_status, retrieval_failure_message = self.paper_rag_runtime_executor.retrieve(
+                    question=request.content,
+                    documents=ready_documents,
+                    top_k=4,
+                )
+                warning = None if retrieval_failure_message else warning
             else:
                 retrieval_status = "skipped"
                 warning = "所选论文仍在入库处理中，本轮先按普通模型回答。"
@@ -1182,9 +1262,7 @@ class ChatService:
             and retrieval_failure_message
             and research_redirect is None
             and agent_result is None
-            and not (
-            mode_decision is not None and mode_decision.mode == AgentRunMode.DIRECT
-            )
+            and self._lifecycle_route_uses_paper_rag(lifecycle_execution_route)
         ):
             assistant_text = retrieval_failure_message
             context_state = self._assemble_context_state(
@@ -1215,14 +1293,13 @@ class ChatService:
             and agent_result is None
             and not mixed_file_and_document_selection
             and not session_file_write_unsupported
-            and not (mode_decision is not None and mode_decision.mode == AgentRunMode.DIRECT)
+            and self._lifecycle_route_uses_paper_rag(lifecycle_execution_route)
         ):
             memory_snapshot = self.memory_service.build_snapshot(
                 session_id=session.id,
                 selected_document_ids=document_ids,
             )
             rag_result = self.paper_rag_runtime_executor.run(
-                generate_answer=self._generate_answer,
                 session=session,
                 history=history_before_current,
                 current_request=request,
@@ -1234,7 +1311,8 @@ class ChatService:
             )
             assistant_text = rag_result.content
             context_state = rag_result.context_state
-            citations = self._collect_citations(evidence_items)
+            self.last_llm_diagnostic = _LLMDiagnostic(**(rag_result.diagnostic or self.last_llm_diagnostic.as_trace_payload()))
+            citations = rag_result.citations or self._collect_citations(evidence_items)
             self._append_direct_llm_trace(mode_decision)
             if mode_decision is not None:
                 action_status = "fallback_completed"
@@ -1291,7 +1369,7 @@ class ChatService:
     def _review_agent_result(
         self,
         *,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         session: ChatSession,
         request: ChatMessageRequest,
         attachments: list[ChatAttachment],
@@ -1302,7 +1380,7 @@ class ChatService:
             return result
         if result.action_status in {"confirmation_required", "needs_clarification", "validation_failed", "failed"}:
             return result
-        if decision.mode not in {AgentRunMode.REACT, AgentRunMode.PLANNER}:
+        if not self.agent_mode_adapter.is_reviewable_tool_or_plan(decision):
             return result
         if not self._should_run_reflection_review(result):
             return result
@@ -1365,7 +1443,7 @@ class ChatService:
         )
         return answer, context_state
 
-    def _append_direct_llm_trace(self, decision: AgentModeDecision | None) -> None:
+    def _append_direct_llm_trace(self, decision: Any | None) -> None:
         if decision is None or self.agent_orchestrator is None:
             return
         self.agent_orchestrator.append_trace(
@@ -1377,7 +1455,7 @@ class ChatService:
 
     def _append_lifecycle_trace(
         self,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         lifecycle_request,
         lifecycle_dispatch_result,
     ) -> None:
@@ -1406,7 +1484,7 @@ class ChatService:
 
     def _append_lifecycle_response_trace(
         self,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         lifecycle_dispatch_result,
     ) -> None:
         if decision is None or self.agent_orchestrator is None:
@@ -1436,7 +1514,7 @@ class ChatService:
 
     def _append_workbench_hint_trace(
         self,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         request: ChatMessageRequest,
     ) -> None:
         if decision is None or self.agent_orchestrator is None:
@@ -1462,7 +1540,7 @@ class ChatService:
 
     def _append_slash_command_hint_trace(
         self,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         request: ChatMessageRequest,
         *,
         selected_document_ids: list[str],
@@ -1486,7 +1564,7 @@ class ChatService:
 
     def _record_session_file_context_trace(
         self,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         resolution: _SessionFileContextResolution,
     ) -> None:
         if decision is None or self.agent_orchestrator is None:
@@ -1680,108 +1758,131 @@ class ChatService:
         attachments: list[ChatAttachment],
         selected_document_ids: list[str],
         memory_snapshot: MemorySnapshot,
-        route: KnowledgeRoute,
+        route: PaperDeskRoute,
         intent: KnowledgeIntent,
         reason: str,
         requires_tools: bool,
         target_runtime: str,
-    ) -> AgentModeDecision | None:
-        if self.agent_orchestrator is None:
-            return None
-        payload = AgentOrchestratorInput(
-            session_id=session.id,
-            message_id=user_message.id,
-            user_prompt=request.content,
-            selected_document_ids=selected_document_ids,
+    ) -> Any | None:
+        return self.agent_mode_adapter.build_fast_path_decision(
+            session=session,
+            user_message=user_message,
+            request=request,
             attachments=attachments,
-            conversation_referents={},
+            selected_document_ids=selected_document_ids,
             memory_snapshot=memory_snapshot,
-            available_tools=self.agent_orchestrator.available_tools(),
-            available_skills=self.agent_orchestrator.available_skills(),
-            runtime_context={
-                "fast_path": True,
-                "session_title": session.title,
-                "entrypoint": "knowledge",
-                "command": request.command,
-                "intent_hint": request.intent_hint,
-            },
-        )
-        begin_trace = getattr(self.agent_orchestrator, "_begin_trace", None)
-        trace_id = begin_trace(payload) if callable(begin_trace) else f"chat-fast-{uuid4().hex}"
-        skill_selection = self.agent_orchestrator.select_skills_for_trace(payload)
-        skill_context_builder = getattr(self.agent_orchestrator, "skill_context_builder", None)
-        skill_context_summary = (
-            skill_context_builder.build(skill_selection)
-            if skill_context_builder is not None and hasattr(skill_context_builder, "build")
-            else None
-        )
-        decision = AgentModeDecision(
-            mode=AgentRunMode.DIRECT,
             route=route,
             intent=intent,
             reason=reason,
-            confidence=0.93,
-            target_runtime=target_runtime,
             requires_tools=requires_tools,
-            requires_rag=False,
-            requires_confirmation=False,
-            risk_level=KnowledgeRiskLevel.LOW if requires_tools else KnowledgeRiskLevel.NONE,
-            required_capabilities=(
-                ["deterministic_write_new"]
-                if requires_tools and target_runtime == "WorkspaceFileWriteNewRuntime"
-                else (
-                    ["workspace_file_overwrite_confirmation"]
-                    if requires_tools and target_runtime == "WorkspaceFileOverwriteRuntime"
-                    else (
-                        ["workspace_command_execution_blocked"]
-                        if target_runtime == "WorkspaceCommandBoundaryRuntime"
-                        else (["deterministic_read"] if requires_tools else [])
-                    )
-                )
+            target_runtime=target_runtime,
+        )
+
+    def _build_lifecycle_route_decision(
+        self,
+        *,
+        session: ChatSession,
+        user_message: ChatMessage,
+        request: ChatMessageRequest,
+        attachments: list[ChatAttachment],
+        selected_document_ids: list[str],
+        memory_snapshot: MemorySnapshot,
+        route: PaperDeskRoute,
+        reason: str,
+        requires_tools: bool,
+        target_runtime: str,
+    ) -> Any | None:
+        return self._build_fast_path_decision(
+            session=session,
+            user_message=user_message,
+            request=request,
+            attachments=attachments,
+            selected_document_ids=selected_document_ids,
+            memory_snapshot=memory_snapshot,
+            route=route,
+            intent=KnowledgeIntent.CHAT,
+            reason=reason,
+            requires_tools=requires_tools,
+            target_runtime=target_runtime,
+        )
+
+    @staticmethod
+    def _effective_lifecycle_execution_route(
+        *,
+        lifecycle_route: PaperDeskRoute,
+        research_redirect: str | None,
+        workspace_command_boundary: Any | None,
+        workspace_file_pending_response: Any | None,
+        workspace_file_overwrite_intent: Any | None,
+        workspace_file_write_new_intent: Any | None,
+        workspace_file_read_intent: Any | None,
+        mixed_file_and_document_selection: bool,
+        session_file_write_unsupported: bool,
+        session_file_direct_answer: bool,
+        session_file_all_rejected: bool,
+        recent_paper_reference: bool,
+        fast_path_response: _FastPathResponse | None,
+        general_chat_fast_path: bool,
+    ) -> PaperDeskRoute:
+        if research_redirect is not None:
+            return PaperDeskRoute.DIRECT_CHAT
+        if (
+            workspace_command_boundary is not None
+            or workspace_file_pending_response is not None
+            or workspace_file_overwrite_intent is not None
+            or workspace_file_write_new_intent is not None
+        ):
+            return PaperDeskRoute.WORKSPACE_WRITE
+        if workspace_file_read_intent is not None:
+            return PaperDeskRoute.WORKSPACE_READ
+        if (
+            mixed_file_and_document_selection
+            or session_file_write_unsupported
+            or session_file_direct_answer
+            or session_file_all_rejected
+        ):
+            return PaperDeskRoute.DIRECT_CHAT
+        if fast_path_response is not None:
+            return PaperDeskRoute.LIBRARY_READ
+        if recent_paper_reference:
+            return PaperDeskRoute.PAPER_RAG
+        if general_chat_fast_path:
+            return PaperDeskRoute.DIRECT_CHAT
+        return lifecycle_route
+
+    @staticmethod
+    def _lifecycle_route_is_direct_answer(route: PaperDeskRoute) -> bool:
+        return route in {PaperDeskRoute.DIRECT_CHAT, PaperDeskRoute.WORKSPACE_READ}
+
+    @staticmethod
+    def _lifecycle_route_uses_paper_rag(route: PaperDeskRoute) -> bool:
+        return route == PaperDeskRoute.PAPER_RAG
+
+    def _has_recent_paper_reference(self, content: str, session_id: str) -> bool:
+        if not self.knowledge_agent_provider.available:
+            return False
+        if not self._contains_any(
+            content,
+            (
+                "刚才那篇",
+                "刚才这篇",
+                "刚刚那篇",
+                "刚刚这篇",
+                "上面那篇",
+                "上述那篇",
+                "recent paper",
+                "previous paper",
             ),
-            trace_id=trace_id,
-            fallback_used=False,
-        )
-        self.agent_orchestrator.append_trace(
-            trace_id,
-            status="agent_mode_selected",
-            message=f"Agent mode selected by local fast path: {decision.mode.value}.",
-            payload={
-                "mode": decision.mode.value,
-                "route": decision.route.value,
-                "intent": decision.intent.value,
-                "reason": decision.reason,
-                "confidence": decision.confidence,
-                "target_runtime": decision.target_runtime,
-                "requires_tools": decision.requires_tools,
-                "requires_rag": decision.requires_rag,
-                "requires_confirmation": decision.requires_confirmation,
-                "risk_level": decision.risk_level.value,
-                "target_objects": [],
-                "required_capabilities": decision.required_capabilities,
-                "fallback_used": False,
-                "decision_source": "local_fast_path",
-                "guardrail_candidate": None,
-                "rule_candidate": None,
-                "fallback_candidate": None,
-                "llm_candidate": None,
-                "available_tool_ids": [tool.tool_id for tool in payload.available_tools[:30]],
-                "available_skill_ids": [skill.skill_id for skill in payload.available_skills[:20]],
-                "primary_skill_id": (
-                    skill_selection.primary_skill.skill_id
-                    if skill_selection.primary_skill is not None
-                    else None
-                ),
-                "used_skill_ids": [skill.skill_id for skill in skill_selection.used_skills],
-                "used_skills": [skill.model_dump(mode="json") for skill in skill_selection.used_skills],
-                "skill_context_summary": (
-                    skill_context_summary.model_dump(mode="json") if skill_context_summary is not None else None
-                ),
-                "has_conversation_referents": False,
-                "memory_hit_count": len(memory_snapshot.items),
-            },
-        )
-        return decision
+        ):
+            return False
+        try:
+            referents = self.knowledge_agent_provider.conversation_referents(session_id)
+        except Exception:
+            return False
+        single = referents.get("last_single_document") if isinstance(referents, dict) else None
+        if isinstance(single, dict):
+            return bool(single.get("document_id") or single.get("document_ids"))
+        return False
 
     def _record_fast_path_referents(
         self,
@@ -1803,7 +1904,7 @@ class ChatService:
 
     def _record_deterministic_read_trace(
         self,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         *,
         response: _FastPathResponse,
     ) -> None:
@@ -2555,176 +2656,69 @@ class ChatService:
         normalized = content.casefold()
         return any(marker.casefold() in normalized for marker in markers)
 
-    def _select_agent_mode(
-        self,
-        *,
-        session: ChatSession,
-        user_message: ChatMessage,
-        request: ChatMessageRequest,
-        attachments: list[ChatAttachment],
-        selected_document_ids: list[str],
-        memory_snapshot: MemorySnapshot,
-    ) -> AgentModeDecision | None:
-        # ChatService assembles the chat-side decision packet, then delegates
-        # routing to AgentOrchestrator. Product routing rules should live
-        # there, not in API handlers or frontend store state.
-        if self.agent_orchestrator is None:
-            return None
-        conversation_referents: dict = {}
-        has_pending_action = False
-        if self.knowledge_agent_provider.available:
-            try:
-                conversation_referents = self.knowledge_agent_provider.conversation_referents(session.id)
-            except Exception:
-                conversation_referents = {}
-            try:
-                has_pending_action = self.knowledge_agent_provider.has_pending_action(session.id)
-            except Exception:
-                has_pending_action = False
-        payload = AgentOrchestratorInput(
-            session_id=session.id,
-            message_id=user_message.id,
-            user_prompt=request.content,
-            selected_document_ids=selected_document_ids,
-            attachments=attachments,
-            conversation_referents=conversation_referents,
-            memory_snapshot=memory_snapshot,
-            available_tools=self.agent_orchestrator.available_tools(),
-            available_skills=self.agent_orchestrator.available_skills(),
-            runtime_context={
-                "has_pending_action": has_pending_action,
-                "session_title": session.title,
-                "entrypoint": "knowledge",
-                "command": request.command,
-                "intent_hint": request.intent_hint,
-            },
-        )
-        try:
-            return self.agent_orchestrator.select_mode(payload)
-        except Exception:
-            return None
-
     def _execute_agent_mode(
         self,
         *,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         session: ChatSession,
         request: ChatMessageRequest,
         attachments: list[ChatAttachment],
         selected_document_ids: list[str],
         history: list[ChatMessage],
     ):
-        # Runtime executors remain the compatibility boundary: DIRECT falls
-        # back to normal answer generation, while REACT/PLANNER/REFLECTION are
-        # delegated to their existing runtimes without changing chat behavior.
-        if self._has_pending_action(session.id):
-            return self._run_knowledge_agent(
-                session=session,
-                request=request,
-                attachments=attachments,
-                selected_document_ids=selected_document_ids,
-                trace_id=decision.trace_id if decision is not None else None,
-            )
-        if decision is None:
-            return self._run_knowledge_agent(
-                session=session,
-                request=request,
-                attachments=attachments,
-                selected_document_ids=selected_document_ids,
-            )
-        if decision.mode == AgentRunMode.DIRECT:
-            return None
-        try:
-            if decision.mode == AgentRunMode.REACT:
-                return self._run_knowledge_agent(
-                    session=session,
-                    request=request,
-                    attachments=attachments,
-                    selected_document_ids=selected_document_ids,
-                    trace_id=decision.trace_id,
-                )
-            if decision.mode == AgentRunMode.PLANNER and self.knowledge_planner_runtime is not None:
-                return self.knowledge_planner_runtime.handle(
-                    session=session,
-                    request=request,
-                    attachments=attachments,
-                    selected_document_ids=selected_document_ids,
-                    decision=decision,
-                )
-            if decision.mode == AgentRunMode.REFLECTION and self.reflection_runtime is not None:
-                return self.reflection_runtime.handle(
-                    session=session,
-                    request=request,
-                    attachments=attachments,
-                    selected_document_ids=selected_document_ids,
-                    history=history,
-                    decision=decision,
-                )
-        except Exception as exc:
-            if self.agent_orchestrator is not None:
-                self.agent_orchestrator.append_trace(
-                    decision.trace_id,
-                    status="agent_mode_execution_failed",
-                    message="Agent mode execution failed.",
-                    payload={"mode": decision.mode.value, "error": str(exc)},
-                )
-        return None
+        return self.agent_mode_execution_adapter.execute_legacy_mode(
+            decision=decision,
+            session=session,
+            request=request,
+            attachments=attachments,
+            selected_document_ids=selected_document_ids,
+            history=history,
+            has_pending_action=self._has_pending_action,
+            run_knowledge_agent=self._run_knowledge_agent,
+            knowledge_planner_runtime=self.knowledge_planner_runtime,
+            reflection_runtime=self.reflection_runtime,
+            append_trace=self._append_agent_mode_execution_error_trace,
+        )
+
+    def _append_agent_mode_execution_error_trace(
+        self,
+        trace_id: str,
+        status: str,
+        message: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if self.agent_orchestrator is None:
+            return
+        self.agent_orchestrator.append_trace(
+            trace_id,
+            status=status,
+            message=message,
+            payload=payload,
+        )
 
     def _execute_agent_mode_through_runtime(
         self,
         *,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
+        route: PaperDeskRoute | None = None,
         session: ChatSession,
         request: ChatMessageRequest,
         attachments: list[ChatAttachment],
         selected_document_ids: list[str],
         history: list[ChatMessage],
     ):
-        kwargs = {
-            "decision": decision,
-            "session": session,
-            "request": request,
-            "attachments": attachments,
-            "selected_document_ids": selected_document_ids,
-            "history": history,
-        }
-        if self._is_report_runtime_request(request.content):
-            self._append_runtime_executor_trace(decision, "ReportRuntimeExecutor")
-            return self.report_runtime_executor.run_agent_mode(
-                execute_agent_mode=self._execute_agent_mode,
-                **kwargs,
-            )
-        if decision is not None and decision.mode in {AgentRunMode.PLANNER, AgentRunMode.REFLECTION}:
-            self._append_runtime_executor_trace(decision, "ExperimentalRuntimeExecutor")
-            return self.experimental_runtime_executor.run_agent_mode(
-                execute_agent_mode=self._execute_agent_mode,
-                **kwargs,
-            )
-        if self._has_pending_action(session.id) or self._has_active_write_intent(request.content):
-            self._append_runtime_executor_trace(decision, "WriteRuntimeExecutor")
-            return self.write_runtime_executor.run_pending_write(
-                execute_agent_mode=self._execute_agent_mode,
-                **kwargs,
-            )
-        self._append_runtime_executor_trace(decision, "ToolActionRuntimeExecutor")
-        return self.tool_action_runtime_executor.run_agent_mode(
+        return self.agent_mode_execution_adapter.execute(
+            decision=decision,
+            route=route,
             execute_agent_mode=self._execute_agent_mode,
-            **kwargs,
-        )
-
-    def _append_runtime_executor_trace(self, decision: AgentModeDecision | None, executor_name: str) -> None:
-        if decision is None or self.agent_orchestrator is None:
-            return
-        self.agent_orchestrator.append_trace(
-            decision.trace_id,
-            status="route_runtime_executor_selected",
-            message="Route runtime executor selected for legacy-compatible execution.",
-            payload={
-                "executor": executor_name,
-                "mode": decision.mode.value,
-                "route": decision.route.value,
-                "target_runtime": decision.target_runtime,
-            },
+            is_report_runtime_request=self._is_report_runtime_request,
+            has_pending_action=self._has_pending_action,
+            has_active_write_intent=self._has_active_write_intent,
+            session=session,
+            request=request,
+            attachments=attachments,
+            selected_document_ids=selected_document_ids,
+            history=history,
         )
 
     def _is_report_runtime_request(self, content: str) -> bool:
@@ -2745,7 +2739,7 @@ class ChatService:
 
     def _finish_agent_trace(
         self,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         result=None,
         *,
         action_status: str | None = None,
@@ -2756,7 +2750,7 @@ class ChatService:
         if decision is None or self.agent_orchestrator is None:
             return
         payload = {
-            "mode": decision.mode.value,
+            "mode": getattr(getattr(decision, "mode", None), "value", None),
             "action_status": action_status or getattr(result, "action_status", None),
             "retrieval_status": retrieval_status or getattr(result, "retrieval_status", None),
             "used_document_count": used_document_count or len(getattr(result, "used_document_ids", []) or []),
@@ -2798,7 +2792,11 @@ class ChatService:
             return None
 
     def _research_task_redirect_message(self, content: str) -> str | None:
-        if self.enable_research_from_knowledge:
+        env_override = os.getenv("ENABLE_RESEARCH_FROM_KNOWLEDGE")
+        enabled = self.enable_research_from_knowledge
+        if env_override is not None:
+            enabled = env_override.strip().casefold() in {"1", "true", "yes", "on"}
+        if enabled:
             return None
         if not self._looks_like_explicit_research_task_request(content):
             return None
@@ -2811,7 +2809,23 @@ class ChatService:
     @staticmethod
     def _looks_like_explicit_research_task_request(content: str) -> bool:
         normalized = content.casefold()
+        if any(
+            marker in normalized
+            for marker in (
+                "创建研究任务",
+                "按研究任务执行",
+                "分步骤完成研究计划",
+                "分步骤研究",
+                "研究任务 agent",
+            )
+        ):
+            return True
         markers = (
+            "创建研究任务",
+            "按研究任务执行",
+            "分步骤完成研究计划",
+            "分步骤研究",
+            "研究任务 agent",
             "创建研究任务",
             "按研究任务执行",
             "分步骤完成研究计划",
@@ -3196,7 +3210,7 @@ class ChatService:
         *,
         session_id: str,
         intent: _WorkspaceFileOverwriteIntent,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
     ) -> tuple[str, str]:
         assistant_text, action_status, pending, error = self.workspace_chat_operations.create_overwrite_pending(
             session_id=session_id,
@@ -3218,7 +3232,7 @@ class ChatService:
         *,
         session_id: str,
         response: _WorkspaceFilePendingResponse,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
     ) -> tuple[str, str]:
         assistant_text, action_status, workspace_file, skipped_intent, error = (
             self.workspace_chat_operations.handle_pending_response(
@@ -3265,7 +3279,7 @@ class ChatService:
 
     def _record_workspace_file_created_trace(
         self,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         workspace_file,
     ) -> None:
         if decision is None or self.agent_orchestrator is None:
@@ -3279,7 +3293,7 @@ class ChatService:
 
     def _record_workspace_file_create_skipped_trace(
         self,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         *,
         intent: _WorkspaceFileWriteNewIntent,
         status: str,
@@ -3296,7 +3310,7 @@ class ChatService:
 
     def _record_workspace_command_blocked_trace(
         self,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         *,
         boundary: _WorkspaceCommandBoundary,
     ) -> None:
@@ -3311,7 +3325,7 @@ class ChatService:
 
     def _record_workspace_file_overwrite_pending_trace(
         self,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         *,
         pending: dict[str, Any],
     ) -> None:
@@ -3326,7 +3340,7 @@ class ChatService:
 
     def _record_workspace_file_overwritten_trace(
         self,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         workspace_file,
     ) -> None:
         if decision is None or self.agent_orchestrator is None:
@@ -3340,7 +3354,7 @@ class ChatService:
 
     def _record_workspace_file_overwrite_skipped_trace(
         self,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         *,
         intent: _WorkspaceFileOverwriteIntent,
         status: str,
@@ -3357,7 +3371,7 @@ class ChatService:
 
     def _record_workspace_file_context_trace(
         self,
-        decision: AgentModeDecision | None,
+        decision: Any | None,
         result: WorkspaceFileReadResult,
     ) -> None:
         if decision is None or self.agent_orchestrator is None:

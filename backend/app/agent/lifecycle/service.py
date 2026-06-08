@@ -88,6 +88,13 @@ class AgentLifecycleService:
         selected_file_ids: list[str] | None = None,
         pending_action: dict[str, Any] | None = None,
         confirmation_received: bool = False,
+        recent_messages: list[dict[str, Any]] | None = None,
+        session_summary: str | None = None,
+        long_term_preferences: list[str] | None = None,
+        memory_snapshot: dict[str, Any] | None = None,
+        global_custom_instruction: str | None = None,
+        session_custom_instruction: str | None = None,
+        workspace_scope: dict[str, Any] | None = None,
     ) -> AgentLifecycleResult:
         lifecycle_request = self.ingress_service.build_request(
             session_id=session_id,
@@ -145,9 +152,16 @@ class AgentLifecycleService:
         )
         self.skill_lifecycle_service.attach_active_skill(lifecycle_request, skill_selection)
         lifecycle_context = self.context_service.build_context(
+            recent_messages=recent_messages,
+            session_summary=session_summary,
+            long_term_preferences=long_term_preferences,
+            memory_snapshot=memory_snapshot,
+            global_custom_instruction=global_custom_instruction,
+            session_custom_instruction=session_custom_instruction,
             selected_document_ids=selected_document_ids or [],
             selected_file_ids=selected_file_ids or [],
             pending_action=lifecycle_request.context.pending_action,
+            workspace_scope=workspace_scope,
         )
         self.context_service.attach_context(lifecycle_request, lifecycle_context)
         lifecycle_request.tool_policy = self.tool_policy_resolver.resolve(

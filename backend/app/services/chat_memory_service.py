@@ -128,7 +128,6 @@ class ChatMemoryService:
         normalized = content.strip()
         if not normalized:
             return
-
         preferences: list[tuple[str, str, str, str]] = []
         if "中文" in normalized:
             preferences.append(
@@ -171,6 +170,8 @@ class ChatMemoryService:
             )
 
         for summary, detail, source_kind, source_id in preferences:
+            if not self._is_stable_long_term_preference(normalized, summary):
+                continue
             self.file_store.add_user_preference(summary)
             self._upsert_memory(
                 memory_type="feedback" if source_kind == "chat_message" else "user",
@@ -334,6 +335,44 @@ class ChatMemoryService:
     def _reflection_lesson_source_id(lesson: str) -> str:
         digest = hashlib.sha1(lesson.encode("utf-8")).hexdigest()[:16]
         return f"lesson-{digest}"
+
+    @staticmethod
+    def _looks_temporary_instruction(content: str) -> bool:
+        normalized = content.casefold()
+        temporary_markers = (
+            "这次",
+            "本次",
+            "本轮",
+            "当前任务",
+            "临时",
+            "暂时",
+            "这条消息",
+            "这一次",
+            "only this time",
+            "for this task",
+            "temporary",
+        )
+        return any(marker in normalized for marker in temporary_markers)
+
+    @classmethod
+    def _is_stable_long_term_preference(cls, content: str, summary: str) -> bool:
+        if not summary.strip():
+            return False
+        normalized = content.casefold()
+        stable_markers = (
+            "以后",
+            "以后都",
+            "默认",
+            "长期",
+            "总是",
+            "每次",
+            "之后",
+            "下次",
+            "prefer",
+            "always",
+            "default",
+        )
+        return any(marker in normalized for marker in stable_markers)
 
     @staticmethod
     def _is_high_value_reflection_lesson(lesson: str) -> bool:

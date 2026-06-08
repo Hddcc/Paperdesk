@@ -45,8 +45,8 @@ class ContextAssembler:
         user_preferences = self.file_store.read_user_preferences()
         compact_summaries = self.file_store.list_compact_summaries(session.id, limit=3)
         raw_history = [message for message in history if message.role in {"user", "assistant"}]
-        recent_message_limit = 16
-        visible_history = [message for message in raw_history if message.id not in compacted_ids][-recent_message_limit:]
+        available_history = [message for message in raw_history if message.id not in compacted_ids]
+        visible_history, budget_dropped_count = self._trim_visible_history(available_history)
 
         stage = "normal"
         evidence_lines = self._render_full_evidence(evidence_items)
@@ -88,9 +88,8 @@ class ContextAssembler:
                 history=raw_history,
                 already_compacted_ids=compacted_ids,
             )
-            visible_history = [
-                message for message in raw_history if message.id not in compacted_ids
-            ][-recent_message_limit:]
+            available_history = [message for message in raw_history if message.id not in compacted_ids]
+            visible_history, budget_dropped_count = self._trim_visible_history(available_history)
             compact_summaries = self.file_store.list_compact_summaries(session.id, limit=3)
             stage = "history_compacted"
             messages, sources = self._build_messages(
@@ -142,11 +141,30 @@ class ContextAssembler:
         last_compacted_at = state_payload.get("last_compacted_at")
         if stage in {"history_compacted", "truncated"}:
             last_compacted_at = self.file_store.mark_compacted_now(session.id)
+        allocation = self.budget_service.allocation
+        compacted_message_count = len(compacted_ids)
+        dropped_message_count = budget_dropped_count + compacted_message_count
+        truncated_sections = []
+        if stage == "evidence_compacted":
+            truncated_sections.append("rag_evidence")
+        if compacted_message_count:
+            truncated_sections.append("history_summary")
+        if budget_dropped_count or stage == "truncated":
+            truncated_sections.append("recent_messages")
 
         next_state = {
             "stage": stage,
             "estimated_tokens": estimated,
             "budget_tokens": self.budget_service.budget_tokens,
+            "context_profile": allocation.profile.value,
+            "effective_context_window": allocation.effective_context_window,
+            "generation_reserve": allocation.generation_reserve,
+            "safety_reserve": allocation.safety_reserve,
+            "sliding_messages_budget": allocation.sliding_messages_budget,
+            "fallback_message_cap": allocation.fallback_message_cap,
+            "retained_message_count": len(visible_history),
+            "dropped_message_count": dropped_message_count,
+            "truncated_sections": truncated_sections,
             "sources": sources,
             "last_compacted_at": last_compacted_at,
             "compacted_message_ids": sorted(compacted_ids),
@@ -157,6 +175,11 @@ class ContextAssembler:
             stage=stage,
             estimated_tokens=estimated,
             budget_tokens=self.budget_service.budget_tokens,
+            context_profile=allocation.profile.value,
+            effective_context_window=allocation.effective_context_window,
+            retained_message_count=len(visible_history),
+            dropped_message_count=dropped_message_count,
+            truncated_sections=truncated_sections,
             sources=sources,
             last_compacted_at=(
                 datetime.fromisoformat(last_compacted_at) if last_compacted_at else None
@@ -170,6 +193,13 @@ class ContextAssembler:
             stage=payload.get("stage", "normal"),
             estimated_tokens=int(payload.get("estimated_tokens", 0)),
             budget_tokens=int(budget_tokens),
+            context_profile=str(payload.get("context_profile") or self.budget_service.allocation.profile.value),
+            effective_context_window=int(
+                payload.get("effective_context_window") or self.budget_service.allocation.effective_context_window
+            ),
+            retained_message_count=int(payload.get("retained_message_count", 0)),
+            dropped_message_count=int(payload.get("dropped_message_count", 0)),
+            truncated_sections=list(payload.get("truncated_sections", [])),
             sources=list(payload.get("sources", [])),
             last_compacted_at=(
                 datetime.fromisoformat(payload["last_compacted_at"])
@@ -177,6 +207,20 @@ class ContextAssembler:
                 else None
             ),
         )
+
+    def _trim_visible_history(self, messages: list[ChatMessage]) -> tuple[list[ChatMessage], int]:
+        retained: list[ChatMessage] = []
+        total = 0
+        for message in reversed(messages):
+            estimated = self.budget_service.estimate_messages([{"role": message.role, "content": message.content}])
+            if retained and total + estimated > self.budget_service.sliding_messages_budget:
+                break
+            retained.append(message)
+            total += estimated
+        retained.reverse()
+        if len(retained) > self.budget_service.fallback_message_cap:
+            retained = retained[-self.budget_service.fallback_message_cap :]
+        return retained, max(len(messages) - len(retained), 0)
 
     def _build_messages(
         self,

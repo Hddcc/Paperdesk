@@ -1,22 +1,30 @@
-# PaperDesk 论文阅读 Agent
+# PaperDesk
 
-PaperDesk 是一个面向论文阅读、论文库管理和研究写作的本地 AI Agent 应用。项目围绕论文业务闭环构建，同时把 Agent 执行框架抽象为可复用的 `Agent Core`，让后续接入 draw.io、token 消耗统计、外部知识源、MCP 工具等能力时有清晰的扩展位置。
+PaperDesk 是一个面向论文阅读、论文库管理和研究写作的轻量 Agent 应用。它把论文上传、PDF 解析、向量检索、证据问答、选中文章综述、标签分类、报告保存、普通聊天和工作区文件操作放在同一条对话链路中，并通过 Agent Core 管理路由、上下文、记忆、工具、安全和运行追踪。
 
-项目核心结构采用 `Agent Core + Domain Pack + Infrastructure Adapter`：
+项目定位是“可扩展的论文阅读 Agent”。当前核心能力围绕论文业务闭环展开，同时为后续接入 draw.io、token 消耗统计、外部知识源、MCP 工具、自定义 Skills 等能力保留清晰的扩展路径。
 
-- `Agent Core`：负责路由决策、上下文装配、记忆管理、运行时分发、工具治理、Skills 选择、写操作安全和运行追踪。
-- `Domain Pack`：承载论文、工作区、报告等业务能力，避免把业务逻辑堆在单一 ChatService 中。
-- `Infrastructure Adapter`：隔离模型、Embedding、向量库、文件系统、第三方 API 等外部依赖。
+## 功能概览
+
+- 论文上传与解析：上传 PDF 后解析正文、生成 chunk、写入论文库并建立向量索引。
+- 论文 RAG 问答：支持选中文档范围、metadata 过滤、证据拼接、引用返回和无证据边界提示。
+- 论文综述与对比：围绕选中文章生成总结、方法解释、创新点对比和综述草稿。
+- 标签分类管理：支持标签/分类查看、创建、重命名、分配和清理，写操作需要明确 scope 与确认。
+- 报告保存：将对话中的研究结果保存为报告，并支持导出。
+- 普通聊天：无论文意图时走轻量直接回答链路，避免强行进入论文库或工具链。
+- 会话文件与工作区：支持会话文件读取、工作区文件读取、新建文件和覆盖确认。
+- 自定义 Skills：支持内置与用户自定义 Skill，Skill 可声明触发条件和工具请求，最终工具暴露由 Tool Policy 决定。
+- Trace 与调试：记录 route、runtime、context、memory、tool policy、RAG evidence、写操作 scope 和错误原因。
 
 ## 技术栈
 
 | 模块 | 技术 |
 | --- | --- |
-| 前端 | Vue 3, TypeScript, Vite |
-| 后端 | FastAPI, Pydantic, SQLite |
-| Agent | Lifecycle, Capability Registry, Runtime Dispatcher, Tool Registry, Skills, Safety, Trace |
-| RAG | PDF parsing, chunking, embedding, Milvus, metadata filter, evidence assembly |
-| 工程能力 | SSE streaming, write confirmation, route trace, runtime metrics, modular domain packs |
+| 前端 | Vue 3、TypeScript、Vite、Pinia |
+| 后端 | FastAPI、Pydantic、SQLite |
+| Agent | Lifecycle、Route Decision、Runtime Dispatcher、RunnerPolicy、Tool Registry、Skills、Safety、Trace |
+| RAG | PDF 解析、chunk 切分、Embedding、Milvus、metadata filter、evidence assembly |
+| 工程能力 | SSE 流式输出、写操作确认、运行追踪、runtime metrics、domain pack 分层 |
 
 ## 项目截图
 
@@ -28,157 +36,175 @@ PaperDesk 是一个面向论文阅读、论文库管理和研究写作的本地 
 | --- | --- |
 | ![报告保存](docs/images/readme/report-save.png) | ![Skills 与会话文件](docs/images/readme/skills-files.png) |
 
-## 核心能力
-
-- 论文上传与解析：上传 PDF 后解析文本、切分 chunk、写入论文库并建立向量索引。
-- 论文库问答：支持全库检索、选中文档范围、metadata 过滤、证据拼接和引用信息。
-- 选中文章综述：根据当前选择的论文生成总结、对比、方法解释和综述草稿。
-- 标签与分类管理：支持查看、创建、更新和分配分类，写操作需要明确 scope。
-- 报告保存与导出：可将聊天中的研究结果保存为报告，并导出 Markdown。
-- 普通聊天：无论文意图时走轻量 direct chat，不强行进入 RAG 或工具链。
-- 工作区文件：支持会话文件上传、工作区文件读取、生成文件和覆盖确认。
-- 自定义 Skills：支持内置和用户自定义 skill，允许绑定工具，并受 route、capability、tool policy 约束。
-- Trace 与调试：记录 route、capability、skill、context、tool policy、RAG evidence、runtime、错误原因等信息。
-
 ## 架构设计
 
-```text
-Frontend Vue
-  -> FastAPI Routes
-  -> Application Use Cases
-  -> Agent Core
-       Ingress
-       Route Decision
-       Capability Resolution
-       Skill Selection
-       Context Assembly
-       Memory Snapshot
-       Tool Policy
-       Runtime Dispatch
-       Response Recorder
-       Trace
-  -> Domain Packs
-       Paper Domain
-       Workspace Domain
-       Artifact Domain
-  -> Infrastructure Adapters
-       LLM / Embedding / VectorStore / Files / External APIs
+```mermaid
+flowchart TD
+    UI[Vue Workbench<br/>Prompt / Files / Selected Papers / Deep Research Toggle] --> API[FastAPI Routes]
+    API --> UseCase[Application Use Cases]
+    UseCase --> ChatService[ChatService<br/>session / message / SSE / persistence]
+    ChatService --> Core[Agent Core]
+
+    Core --> Ingress[Ingress]
+    Ingress --> Router[Route Decision]
+    Router --> Capability[Capability Registry]
+    Capability --> Skills[Skill Selector]
+    Skills --> Context[Context & Memory Engine]
+    Context --> ToolPolicy[Tool Policy]
+    ToolPolicy --> Policy[RunnerPolicy]
+    Policy --> Dispatcher[Runtime Dispatcher]
+
+    Dispatcher --> Direct[Direct Chat]
+    Dispatcher --> Rag[Paper RAG]
+    Dispatcher --> Tool[Tool Action]
+    Dispatcher --> Write[Confirmed Write]
+    Dispatcher --> Report[Report Action]
+    Dispatcher --> Workspace[Workspace Action]
+    Dispatcher --> Research[Deep Research]
+
+    Rag --> PaperDomain[Paper Domain Pack]
+    Tool --> PaperDomain
+    Write --> PaperDomain
+    Report --> ArtifactDomain[Artifact Domain Pack]
+    Workspace --> WorkspaceDomain[Workspace Domain Pack]
+    Research --> ResearchDomain[Research Domain Pack]
+
+    PaperDomain --> Infra[Infrastructure Adapters<br/>LLM / Embedding / VectorStore / Files / External APIs]
+    WorkspaceDomain --> Infra
+    ArtifactDomain --> Infra
+    ResearchDomain --> Infra
+
+    Dispatcher --> Trace[Trace & Metrics]
+    Trace --> ChatService
 ```
 
-PaperDesk 的请求不会直接散落到各个业务 service 中。所有聊天类请求先进入 Agent Core，由 Agent Core 判断请求类型、当前上下文、可用能力和工具边界，再分发到对应 runtime。论文业务、工作区业务和报告业务通过 domain pack 暴露稳定能力，底层模型和存储细节由 infrastructure adapter 管理。
+整体分层采用 `Agent Core + Domain Pack + Infrastructure Adapter`：
 
-## 执行链路
+- Agent Core 负责请求入口、路由判断、能力解析、Skill 选择、上下文装配、记忆注入、工具过滤、RunnerPolicy、运行时分发、写操作安全和 trace。
+- Domain Pack 承载论文、报告、工作区、研究任务等业务能力，保持业务规则边界清晰。
+- Infrastructure Adapter 隔离 LLM、Embedding、Milvus、文件系统、OpenAlex、arXiv 等外部依赖。
+- ChatService 收敛为会话、消息、SSE、错误处理和最终结果持久化协调层。
 
-```text
-User Request
-  -> Agent Ingress
-  -> RouteDecisionPacket
-  -> CapabilityDeclaration
-  -> Skill Selection
-  -> AgentContext
-  -> MemorySnapshot
-  -> ToolPolicyDecision
-  -> Runtime Executor
-  -> RuntimeMetricsEnvelope
-  -> Stream / Response
+## Agent 生命周期
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant API as Chat API
+    participant Chat as ChatService
+    participant Core as Agent Core
+    participant Runtime as Runtime Executor
+    participant Domain as Domain Pack
+    participant Trace as Trace Store
+
+    User->>API: prompt / 文件 / 选中文章 / 深度研究开关
+    API->>Chat: ChatMessageRequest
+    Chat->>Chat: 保存 user message
+    Chat->>Core: session、message、history、memory、scope
+    Core->>Core: route decision
+    Core->>Core: capability + skill + context + memory
+    Core->>Core: tool policy + RunnerPolicy
+    Core->>Runtime: RuntimeRequest
+    Runtime->>Domain: RAG / tool / write / report / workspace
+    Domain-->>Runtime: evidence / observation / result
+    Runtime-->>Core: RuntimeResult
+    Core->>Trace: route / context / tools / evidence / metrics
+    Core-->>Chat: response metadata
+    Chat->>Chat: 保存 assistant message
+    Chat-->>API: response / SSE
+    API-->>User: assistant answer
 ```
 
-关键对象：
+用户只需要使用对话框、文件上传、选中文章、深度研究开关和自定义指令。普通回答、论文问答、工具查询、写操作确认和深度研究由 Agent 内部判断。
 
-- `RouteDecisionPacket`：记录 route、runtime、编排策略、scope、RAG/tool/confirmation 需求。
-- `CapabilityDeclaration`：声明能力 id、routes、tools、domain package、infrastructure 依赖和文档摘要。
-- `AgentContext`：聚合最近对话、选中文档、检索证据、会话文件、当前操作范围和 token 预算。
-- `MemorySnapshot`：保存会话摘要、用户偏好、最近任务状态，作为轻量记忆输入。
-- `ToolPolicyDecision`：根据 route、capability、skill、scope、risk、确认状态过滤工具。
-- `RuntimeMetricsEnvelope`：记录 route、runtime、capability、证据数、工具数、token 可用状态和错误信息。
+## 路由与编排
+
+Agent Core 使用一套内部运行时词汇描述请求走向，普通用户无需选择这些策略。
+
+| 内部场景 | Route | 编排策略 | Runtime | 最大步数 |
+| --- | --- | --- | --- | ---: |
+| 普通聊天 | `direct_chat` | `single-turn` | `DirectChatRuntime` | 1 |
+| 论文问答、总结、对比 | `paper_rag` | `retrieve-then-synthesize` | `PaperRagRuntime` | 1 |
+| 论文库只读查询 | `library_read` / `tool_action` | `bounded-react` | `ToolActionRuntime` | 4 |
+| 标签、分类、删除、覆盖等写操作 | `write_pending` / `write_confirmed` | `preview-confirm-execute-verify` | `ToolActionRuntime` / `ConfirmedWriteRuntime` | 3 |
+| 报告保存与导出 | `report_action` | `service-workflow` | `ReportActionRuntime` | 2 |
+| 工作区文件 | `workspace_read` / `workspace_write` | `service-workflow` / `preview-confirm-execute-verify` | `WorkspaceActionRuntime` | 2-3 |
+| 深度研究 | `experimental_research` | `plan-execute-replan` | `ExperimentalRuntime` | 6 |
+
+RunnerPolicy 是 loop 策略的统一来源，负责 max steps、stop reason、RAG/tools/planner 开关、显式 scope 要求和 trace payload。普通聊天和论文 RAG 都是单轮策略；工具查询使用有限轮工具执行；写操作使用预览、确认、执行、验证；深度研究通过 feature flag 和策略上限控制。
 
 ## 上下文管理
 
-PaperDesk 的上下文管理目标是让模型拿到当前任务需要的信息，同时避免普通聊天被论文库和工具链拖重。
-
-```text
-Recent Messages
-  + Active Paper Scope
-  + Retrieved Evidence
-  + Session Files
-  + Workspace Scope
-  + Pending Action
-  + Token Budget
-  -> AgentContext
+```mermaid
+flowchart LR
+    Request[当前请求] --> Context[Agent Context Packet]
+    History[最近对话] --> Context
+    Summary[会话摘要] --> Context
+    Preference[长期偏好] --> Context
+    Selected[选中文章 / 文件] --> Context
+    Evidence[RAG Evidence] --> Context
+    Pending[Pending Action] --> Context
+    Workspace[Workspace Scope] --> Context
+    Budget[Token Budget Profile] --> Context
+    Context --> Runtime[Runtime Executor]
 ```
 
-上下文由 Agent Core 统一装配：
+上下文由 Agent Core 统一装配，runtime 消费 `ContextPacket`。主要内容包括最近对话、会话摘要、长期偏好、选中范围、RAG 证据、pending action、工作区 scope 和 token budget。
 
-- 最近对话：保留当前会话的短期上下文，用于延续普通聊天和多轮论文问答。
-- 选中文档：记录用户当前选择的论文范围，RAG 召回和写操作默认只在明确 scope 内进行。
-- 检索证据：只在 `paper_rag` 或相关 route 中注入 evidence，普通聊天不默认拼接论文内容。
-- 会话文件：用户上传到当前会话的文件独立进入上下文，和论文库文档保持边界。
-- 工作区范围：文件读写操作需要明确路径和操作意图，防止模糊指令扩大影响面。
-- Token 控制：上下文装配阶段会控制消息、证据和文件片段数量，优先保留当前任务相关信息。
+| Profile | 配置窗口 | 输出预留 | 典型用途 |
+| --- | ---: | ---: | --- |
+| `small` | 8K / 8192 | 1K / 1024 | 普通聊天、短论文问答、工具查询 |
+| `standard` | 32K / 32768 | 4K / 4096 | 默认论文阅读、多轮对话、选中文章综述 |
+| `large` | 128K / 131072 | 8K / 8192 | 长上下文综述、多文档对比、深度研究 |
+
+有效窗口会结合模型 metadata 或显式配置取上限。滑动窗口优先按 token budget 保留最近消息，消息条数仅作为异常碎片化场景的 fallback cap：8K/32K 默认 24 条，128K 默认 48 条。
+
+压缩顺序固定为三段：
+
+1. evidence compact：RAG 证据过长时先压缩证据。
+2. history summary：超过强制阈值后，将离开窗口的旧对话压缩成会话摘要。
+3. hard trim：仍然超限时裁剪低优先级最近消息，同时保留当前任务、安全指令、选中范围和必要证据头。
+
+context state 会记录 `context_profile`、`effective_context_window`、`retained_message_count`、`dropped_message_count`、`truncated_sections` 和压缩阶段，便于调试。
 
 ## 记忆管理
 
-PaperDesk 使用轻量记忆，不引入复杂长期人格记忆。当前记忆重点服务于论文阅读和研究任务连续性。
+PaperDesk 使用轻量记忆体系：
 
-```text
-Session Summary
-  + User Preference
-  + Recent Task State
-  + Active Paper Scope
-  -> MemorySnapshot
-```
+- 短期记忆：当前 token-budgeted sliding window，直接服务本轮回答。
+- 中期记忆：会话摘要与 compact summaries，只在旧消息离开窗口后生成。
+- 长期记忆：稳定、可复用、有来源的用户偏好或高价值反思经验。
 
-记忆分为三类：
-
-- 会话摘要：当对话变长时，将历史交流压缩为摘要，用于维持研究任务的连续性。
-- 用户偏好：记录稳定偏好，例如回答语言、引用格式、综述风格、输出结构。
-- 最近任务状态：记录刚执行过的查询、报告保存、标签操作、待确认写操作和当前论文范围。
-
-写操作相关状态会通过 pending action 管理。需要修改标签、分类、删除、覆盖、保存报告时，系统先生成预览并等待用户确认，确认后再执行。
-
-## 编排策略
-
-每次请求选择一个主 runtime 和一个主编排策略，保持执行链路可解释、可调试、可扩展。
-
-| 用户意图 | Route | 主策略 | Runtime |
-| --- | --- | --- | --- |
-| 普通聊天 | `direct_chat` | single-turn | `DirectChatRuntime` |
-| 论文问答、总结、对比 | `paper_rag` | retrieve-then-synthesize | `PaperRagRuntime` |
-| 论文库只读查询 | `library_read` / `tool_action` | bounded-react | `ToolActionRuntime` |
-| 标签、分类、删除、覆盖等写操作 | `write_pending` / `write_confirmed` | preview-confirm-execute-verify | `ToolActionRuntime` / `ConfirmedWriteRuntime` |
-| 报告保存和导出 | `report_action` | service-workflow | `ReportActionRuntime` |
-| 工作区文件 | `workspace_read` / `workspace_write` | service-workflow / preview-confirm | `WorkspaceActionRuntime` |
-| 实验研究能力 | `experimental_research` | plan-execute-replan | `ExperimentalRuntime` |
-
-Planner、reflection、MCP、subagent、research-task runtime 放在 experimental runtime 中，作为可选研究能力保留。
+长期记忆写入有准入规则。稳定偏好需要具备跨会话复用价值，并带有 source metadata；“这次”“本轮”“当前任务”“临时”等一次性指令保留在当前上下文或会话自定义指令中。自定义指令采用“全局默认 + 会话可覆盖”，优先级为 system policy、global custom instruction、session custom instruction、current user task。
 
 ## RAG 设计
 
-```text
-PDF Upload
-  -> Text Parse
-  -> Chunk Split
-  -> Embedding
-  -> Vector Index
-  -> Metadata Filter
-  -> Evidence Recall
-  -> Answer Synthesis
-  -> Citation / Trace
+```mermaid
+flowchart LR
+    Upload[PDF Upload] --> Parse[Text Parse]
+    Parse --> Chunk[Chunk Split]
+    Chunk --> Embed[Embedding]
+    Embed --> Milvus[Milvus Vector Index]
+    Query[User Question] --> Filter[Metadata / Selected Scope Filter]
+    Milvus --> Recall[Evidence Recall]
+    Filter --> Recall
+    Recall --> Assemble[Evidence Assembly]
+    Assemble --> Answer[Answer Synthesis]
+    Answer --> Cite[Citation + Trace]
 ```
 
-论文 RAG 保留论文场景最关键的能力：
+论文场景保留必要 RAG 能力：
 
-- PDF 解析：提取页面文本和基础 metadata。
-- Chunk 切分：按页面和段落生成可召回片段，保留页码、标题、文档 id、版本等 metadata。
-- Embedding：通过 infrastructure LLM/embedding 边界生成向量。
-- 向量库：使用 Milvus 执行向量召回。
-- 范围控制：支持选中文档、文档 id、分类、标签等过滤。
-- 证据拼接：将文本片段、页码、标题和文档信息拼入模型上下文。
-- 输出边界：证据不足时明确说明，不把无证据内容包装成确定结论。
+- PDF 正文解析与基础 metadata。
+- 按页面和段落切分 chunk，保留文档 id、页码、标题、版本等 metadata。
+- 使用 Embedding 与 Milvus 建立向量索引。
+- 支持选中文档、文档 id、分类、标签等过滤。
+- 召回 evidence 后拼接正文片段、页码、标题和引用信息。
+- 证据不足时明确说明边界，避免把无证据内容写成确定结论。
 
 ## Skills
 
-Skills 支持内置和用户自定义。一个 skill 可以声明触发方式、适用 route、需要的 capability、允许绑定的工具和输出协议。
+Skills 支持内置和用户自定义。一个 Skill 可以声明触发方式、适用能力、工具请求和输出协议。
 
 ```json
 {
@@ -195,53 +221,53 @@ Skills 支持内置和用户自定义。一个 skill 可以声明触发方式、
 }
 ```
 
-Skill 负责表达“用户想让 Agent 用什么方式工作”。真正暴露给 runtime 的工具仍会经过 Tool Registry、route、capability、scope、risk、feature flag 和确认状态过滤。
+Skill 负责表达任务偏好和工具请求。最终可用工具由 Tool Registry 与 Tool Policy 根据 route、capability、scope、risk、feature flag、外部绑定状态和确认状态过滤。MCP 与外部工具需要用户显式绑定或配置后才会进入候选池。
 
-## Tool Registry 与写安全
+## Tool Registry 与写操作安全
 
-所有工具通过统一 Registry 声明 metadata：
+工具统一声明以下 metadata：
 
-- tool id、描述、schema；
+- tool id、描述、输入输出 schema；
 - capability id、scope、integration source；
 - read/write 类型；
 - operation level；
-- risk level；
 - destructive 标记；
 - confirmation requirement；
-- verification 和 observation 规则。
+- verification 与 observation 规则；
+- feature flag 与外部绑定要求。
 
-写操作统一走：
+写操作统一遵循：
 
 ```text
-preview -> pending action -> explicit confirmation -> execute -> optional verification
+preview -> pending action -> explicit confirmation -> execute -> verification
 ```
 
-安全规则：
+安全约束：
 
 - 模糊指代不会默认执行全库写操作。
 - 删除、覆盖、清空、批量改标签必须有明确 scope。
-- 未确认前不暴露危险写工具。
+- 未确认前不会暴露危险写工具。
 - 工具结果统一回灌为结构化 observation，便于 trace 和调试。
+- Tool Policy 对 Skill 绑定工具有最终控制权，并记录过滤原因。
 
 ## 可观测性
 
-Agent 运行过程记录轻量 trace 和 metrics：
+Agent 运行过程记录轻量 trace 与 metrics：
 
 - route、runtime、orchestration pattern；
-- active capability；
-- active skill；
-- context scope；
-- allowed/filtered tools；
-- RAG evidence count 与 metadata filter；
-- pending action 与写操作 scope；
+- active capability 与 active skill；
+- context scope、selected documents、selected files；
+- allowed / filtered tools 以及过滤原因；
+- RAG evidence count、metadata filter、citation；
+- pending action、write scope、verification；
 - response status、error reason；
 - token usage availability。
 
 当模型供应商没有返回 token 信息时，系统记录 `token_usage_available=false`，请求仍可正常完成。
 
-## 扩展能力
+## 扩展方式
 
-新增能力优先以 capability 接入：
+新增能力建议沿着以下路径接入：
 
 ```text
 Capability Declaration
@@ -252,10 +278,11 @@ Capability Declaration
   -> README / Docs
 ```
 
-示例方向：
+示例：
 
-- `drawio`：新增图形产物 domain 或复用 artifact domain，在 integration adapter 中接入 draw.io 能力，在 Tool Registry 声明创建、编辑、导出工具。
-- `token_usage`：在 observability 中扩展 usage 聚合，在 Tool Registry 声明只读查询工具，通过 API 暴露会话维度的 token、latency、cost 信息。
+- draw.io：新增图形产物 domain 或复用 artifact domain，在 integration adapter 中接入 draw.io，在 Tool Registry 声明创建、编辑、导出工具。
+- token_usage：在 observability 中扩展 usage 聚合，在 Tool Registry 声明只读查询工具，通过 API 暴露会话维度的 token、latency、cost 信息。
+- 外部知识源：通过 capability 和 integration adapter 接入，工具暴露由绑定状态、feature flag 和 Tool Policy 控制。
 
 ## 快速启动
 
@@ -310,4 +337,4 @@ npm run build
 
 项目维护者：Hddcc
 
-GitHub：<https://github.com/Hddcc/Paperdesk>
+GitHub：https://github.com/Hddcc/Paperdesk

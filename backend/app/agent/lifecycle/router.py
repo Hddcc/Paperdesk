@@ -15,8 +15,8 @@ from app.models import (
 class AgentRouteDecisionService:
     """Classify chat requests into explicit PaperDesk product routes."""
 
-    _LIBRARY_TERMS = ("library", "paper library", "papers", "categories", "tags", "metadata")
-    _RAG_TERMS = ("summarize", "summary", "compare", "review", "explain", "method", "evidence")
+    _LIBRARY_TERMS = ("library", "paper library", "papers", "categories", "tags", "metadata", "论文库", "文献库", "分类", "标签", "元数据")
+    _RAG_TERMS = ("summarize", "summary", "compare", "review", "explain", "method", "evidence", "总结", "摘要", "对比", "比较", "综述", "解释", "方法", "证据", "这篇论文")
     _WRITE_TERMS = (
         "delete",
         "remove",
@@ -28,9 +28,50 @@ class AgentRouteDecisionService:
         "tag",
         "category",
         "report",
+        "删除",
+        "移除",
+        "重命名",
+        "添加",
+        "分配",
+        "清空",
+        "保存",
+        "覆盖",
+        "标签",
+        "分类",
+        "报告",
     )
-    _REPORT_TERMS = ("save report", "export report", "report")
-    _WORKSPACE_TERMS = ("workspace", "file", "folder", "path")
+    _REPORT_TERMS = ("save report", "export report", "report", "保存报告", "导出报告", "报告")
+    _WORKSPACE_TERMS = ("workspace", "file", "folder", "path", "工作区", "文件", "文件夹", "路径")
+    _SIMPLE_PROMPTS = (
+        "hi",
+        "hello",
+        "hey",
+        "你好",
+        "您好",
+        "在吗",
+        "谢谢",
+        "thanks",
+        "thank you",
+    )
+    _DEEP_RESEARCH_TERMS = (
+        "research",
+        "deep research",
+        "literature review",
+        "survey",
+        "roadmap",
+        "plan",
+        "multi-step",
+        "compare multiple",
+        "研究",
+        "深度研究",
+        "文献综述",
+        "综述",
+        "调研",
+        "研究路线",
+        "研究计划",
+        "多步骤",
+        "系统分析",
+    )
 
     def decide(
         self,
@@ -43,6 +84,7 @@ class AgentRouteDecisionService:
         normalized = prompt.casefold()
         command = (request.command or "").casefold()
         selected_document_ids = list(request.selected_document_ids)
+        deep_research_enabled = bool(request.deep_research)
 
         if has_pending_action and confirmation_received:
             return RouteDecisionPacket(
@@ -56,6 +98,26 @@ class AgentRouteDecisionService:
                 target_runtime=PaperDeskRuntimeKind.CONFIRMED_WRITE,
                 orchestration_pattern=AgentOrchestrationPattern.PREVIEW_CONFIRM_EXECUTE_VERIFY,
                 selected_document_ids=selected_document_ids,
+            )
+
+        if deep_research_enabled and self._should_route_deep_research(normalized, selected_document_ids):
+            return RouteDecisionPacket(
+                route=PaperDeskRoute.EXPERIMENTAL_RESEARCH,
+                reason="deep research mode and complex research intent detected",
+                capability_id="research",
+                confidence=0.82,
+                requires_tools=True,
+                requires_rag=bool(selected_document_ids) or self._mentions_rag(normalized),
+                target_runtime=PaperDeskRuntimeKind.EXPERIMENTAL,
+                orchestration_pattern=AgentOrchestrationPattern.PLAN_EXECUTE_REPLAN,
+                selected_document_ids=selected_document_ids,
+                target_scope={
+                    "scope_type": "research_task",
+                    "scope_status": "selected_documents" if selected_document_ids else "prompt_scoped_research",
+                    "deep_research": True,
+                    "selected_document_ids": selected_document_ids,
+                    "internal_strategies": ["planner", "subagent", "reflection"],
+                },
             )
 
         if self._mentions_workspace(normalized) and self._mentions_write(normalized):
@@ -189,11 +251,29 @@ class AgentRouteDecisionService:
         return any(term in normalized for term in cls._WRITE_TERMS)
 
     @classmethod
+    def _should_route_deep_research(cls, normalized: str, selected_document_ids: list[str]) -> bool:
+        compact = " ".join(normalized.split())
+        if compact in cls._SIMPLE_PROMPTS:
+            return False
+        if len(compact) <= 12 and not selected_document_ids:
+            return False
+        if len(selected_document_ids) >= 2:
+            return True
+        if any(term in compact for term in cls._DEEP_RESEARCH_TERMS):
+            return True
+        return cls._looks_complex(compact)
+
+    @staticmethod
+    def _looks_complex(normalized: str) -> bool:
+        separators = sum(normalized.count(marker) for marker in (" and ", " then ", "；", ";", "，", ","))
+        return len(normalized) >= 80 or separators >= 2
+
+    @classmethod
     def _write_level(cls, normalized: str) -> WriteOperationLevel:
-        if any(term in normalized for term in ("assign", "tag", "category")):
+        if any(term in normalized for term in ("assign", "tag", "category", "添加", "分配", "标签", "分类")):
             return WriteOperationLevel.RELATION
-        if any(term in normalized for term in ("delete", "rename", "clear")):
+        if any(term in normalized for term in ("delete", "rename", "clear", "删除", "移除", "重命名", "清空")):
             return WriteOperationLevel.ENTITY
-        if any(term in normalized for term in ("report", "save", "overwrite")):
+        if any(term in normalized for term in ("report", "save", "overwrite", "报告", "保存", "覆盖")):
             return WriteOperationLevel.CONTENT
         return WriteOperationLevel.QUERY

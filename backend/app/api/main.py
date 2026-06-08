@@ -52,8 +52,10 @@ from app.services import (
     ResearchWorkspaceService,
 )
 from app.services.research_orchestrator import ResearchOrchestrator
+from app.agent.observability import AgentCoreTraceAdapter
 from app.agent.runtimes.experimental import KnowledgePlannerRuntime, ReflectionRuntime
-from app.runtime import AgentOrchestrator, KnowledgeAgentRuntime
+from app.agent.skills import SkillRegistry
+from app.runtime import KnowledgeAgentRuntime
 from app.vectorstores import MilvusVectorStore
 
 logger = logging.getLogger(__name__)
@@ -383,7 +385,7 @@ def get_chat_service() -> ChatService:
         memory_service=get_chat_memory_service(),
         context_assembler=get_context_assembler(),
         workspace_file_service=get_workspace_file_service(),
-        agent_orchestrator=get_agent_orchestrator(),
+        agent_orchestrator=get_agent_core_trace_adapter(),
         knowledge_agent_runtime=get_knowledge_agent_runtime(),
         knowledge_planner_runtime=get_knowledge_planner_runtime(),
         reflection_runtime=get_reflection_runtime(),
@@ -444,21 +446,16 @@ def get_knowledge_agent_runtime() -> KnowledgeAgentRuntime:
 
 
 @lru_cache(maxsize=1)
-def get_agent_orchestrator() -> AgentOrchestrator:
+def get_agent_core_trace_adapter() -> AgentCoreTraceAdapter:
     settings = get_settings()
-    return AgentOrchestrator(
+    return AgentCoreTraceAdapter(
         research_repository=get_research_repository(),
         runtime_repository=get_runtime_repository(),
         tool_registry=ToolRegistry(
             enable_experimental_mcp=settings.enable_experimental_mcp,
             enable_mcp_in_knowledge=settings.enable_mcp_in_knowledge,
         ),
-        enable_optional_planner=True,
-        enable_auto_reflection=settings.enable_auto_reflection,
-        enable_mcp_in_knowledge=settings.enable_mcp_in_knowledge,
-        model=settings.effective_llm_model,
-        api_key=settings.effective_llm_api_key,
-        base_url=settings.effective_llm_base_url,
+        skill_registry=SkillRegistry(),
     )
 
 

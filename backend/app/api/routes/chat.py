@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from queue import Queue
 from threading import Thread
 import time
@@ -25,6 +24,7 @@ from app.models import (
     ResearchRunStatus,
 )
 from app.services import ChatService
+from .sse import chunk_text, sse_event
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -135,25 +135,25 @@ def send_message_stream(
             events.put(("done", {"type": "done", "response": payload}))
 
         try:
-            yield _sse_event("status", {"type": "status", "status": "processing"})
+            yield sse_event("status", {"type": "status", "status": "processing"})
             Thread(target=worker, daemon=True).start()
 
             while True:
                 event, payload = events.get()
                 if event == "assistant_delta":
                     streamed_any_delta = True
-                    yield _sse_event(event, payload)
+                    yield sse_event(event, payload)
                     continue
                 if event == "error":
-                    yield _sse_event(event, payload)
+                    yield sse_event(event, payload)
                     return
                 if event == "done":
                     response_payload = payload["response"]
                     if not streamed_any_delta:
-                        for chunk in _chunk_text(response_payload["assistant_message"]["content"], size=1):
-                            yield _sse_event("assistant_delta", {"type": "assistant_delta", "delta": chunk})
+                        for chunk in chunk_text(response_payload["assistant_message"]["content"], size=1):
+                            yield sse_event("assistant_delta", {"type": "assistant_delta", "delta": chunk})
                             time.sleep(0.004)
-                    yield _sse_event(event, payload)
+                    yield sse_event(event, payload)
                     return
         except GeneratorExit:
             cancelled = True
@@ -188,25 +188,6 @@ def save_message_as_report(
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return report.model_dump(mode="json")
-
-
-def _sse_event(event: str, payload: dict) -> str:
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    return f"event: {event}\ndata: {data}\n\n"
-
-
-def _chunk_text(text: str, size: int = 18):
-    if not text:
-        return
-    index = 0
-    while index < len(text):
-        next_index = min(len(text), index + size)
-        newline_index = text.find("\n", index + 1, next_index + 1)
-        if newline_index != -1:
-            next_index = newline_index + 1
-        yield text[index:next_index]
-        index = next_index
-
 
 def _record_stream_cancelled(service: ChatService, session_id: str) -> None:
     orchestrator = getattr(service, "agent_orchestrator", None)

@@ -73,6 +73,14 @@ class AgentLifecycleStage(str, Enum):
     RESPONSE = "response"
 
 
+class ContextBudgetProfile(str, Enum):
+    """Common context-window tiers used by Agent Core."""
+
+    SMALL = "small"
+    STANDARD = "standard"
+    LARGE = "large"
+
+
 class WriteOperationLevel(str, Enum):
     """Normalized write scope classes for PaperDesk mutations."""
 
@@ -138,18 +146,86 @@ def _capability_for_route(route: PaperDeskRoute) -> str:
     return "paper"
 
 
+class ContextBudgetAllocation(BaseModel):
+    """Explainable token allocation for one runtime context packet."""
+
+    profile: ContextBudgetProfile = ContextBudgetProfile.STANDARD
+    configured_context_window: int = 32768
+    model_context_window: int | None = None
+    effective_context_window: int = 32768
+    generation_reserve: int = 4096
+    safety_reserve: int = 1024
+    instruction_budget: int = 2048
+    long_term_memory_budget: int = 1024
+    session_summary_budget: int = 2048
+    sliding_messages_budget: int = 8192
+    selected_files_budget: int = 4096
+    rag_evidence_budget: int = 8192
+    tool_observations_budget: int = 2048
+    overflow_reserve: int = 1024
+    fallback_message_cap: int = 24
+    estimation_method: str = "heuristic"
+
+
+class ContextTruncationMetadata(BaseModel):
+    """Runtime-visible summary of context trimming decisions."""
+
+    estimated_tokens: int = 0
+    retained_message_count: int = 0
+    dropped_message_count: int = 0
+    summary_used: bool = False
+    token_budget_first: bool = True
+    fallback_message_cap_used: bool = False
+    truncated_sections: list[str] = Field(default_factory=list)
+
+
+class CustomInstructionPacket(BaseModel):
+    """Custom instruction inputs with global default and session override."""
+
+    global_instruction: str | None = None
+    session_instruction: str | None = None
+    precedence: list[str] = Field(
+        default_factory=lambda: [
+            "system_policy",
+            "global_custom_instruction",
+            "session_custom_instruction",
+            "current_user_task",
+        ]
+    )
+
+    @property
+    def effective_instruction(self) -> str | None:
+        return self.session_instruction or self.global_instruction
+
+
+class MemoryLayerPacket(BaseModel):
+    """Short, medium, and long-term memory prepared for runtime execution."""
+
+    session_summary: str | None = None
+    long_term_preferences: list[str] = Field(default_factory=list)
+    recent_task_state: dict[str, Any] = Field(default_factory=dict)
+    memory_snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
 class ContextPacket(BaseModel):
     """Context assembled for a runtime turn."""
 
     recent_messages: list[dict[str, Any]] = Field(default_factory=list)
+    session_summary: str | None = None
+    long_term_preferences: list[str] = Field(default_factory=list)
+    custom_instructions: CustomInstructionPacket = Field(default_factory=CustomInstructionPacket)
+    memory: MemoryLayerPacket = Field(default_factory=MemoryLayerPacket)
     selected_document_ids: list[str] = Field(default_factory=list)
     selected_file_ids: list[str] = Field(default_factory=list)
     evidence: list[dict[str, Any]] = Field(default_factory=list)
+    tool_observations: list[dict[str, Any]] = Field(default_factory=list)
     pending_action: dict[str, Any] | None = None
     workspace_scope: dict[str, Any] = Field(default_factory=dict)
     preferences: dict[str, Any] = Field(default_factory=dict)
     capability_scope: dict[str, Any] = Field(default_factory=dict)
     token_budget: int | None = None
+    budget_allocation: ContextBudgetAllocation = Field(default_factory=ContextBudgetAllocation)
+    truncation: ContextTruncationMetadata = Field(default_factory=ContextTruncationMetadata)
 
 
 class ToolPolicyDecision(BaseModel):
@@ -157,6 +233,7 @@ class ToolPolicyDecision(BaseModel):
 
     allowed_tools: list[ToolDeclaration] = Field(default_factory=list)
     filtered_tools: dict[str, str] = Field(default_factory=dict)
+    filter_reasons: dict[str, str] = Field(default_factory=dict)
     confirmation_required: bool = False
     reason: str = ""
     capability_id: str = ""
