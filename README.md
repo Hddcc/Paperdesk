@@ -2,7 +2,7 @@
 
 PaperDesk 是一个面向论文阅读、论文库管理和研究写作的轻量 Agent 应用。它把论文上传、PDF 解析、向量检索、证据问答、选中文章综述、标签分类、报告保存、普通聊天和工作区文件操作放在同一条对话链路中，并通过 Agent Core 管理路由、上下文、记忆、工具、安全和运行追踪。
 
-项目定位是“可扩展的论文阅读 Agent”。当前核心能力围绕论文业务闭环展开，同时为后续接入 draw.io、token 消耗统计、外部知识源、MCP 工具、自定义 Skills 等能力保留清晰的扩展路径。
+项目定位是“可扩展的论文阅读 Agent”。当前核心能力围绕论文业务闭环展开，同时为后续接入 draw.io、每日用量与花费统计、外部知识源、MCP 工具、自定义 Skills 等能力保留清晰的扩展路径。
 
 ## 功能概览
 
@@ -13,8 +13,9 @@ PaperDesk 是一个面向论文阅读、论文库管理和研究写作的轻量 
 - 报告保存：将对话中的研究结果保存为报告，并支持导出。
 - 普通聊天：无论文意图时走轻量直接回答链路，避免强行进入论文库或工具链。
 - 会话文件与工作区：支持会话文件读取、工作区文件读取、新建文件和覆盖确认。
-- 自定义 Skills：支持内置与用户自定义 Skill，Skill 可声明触发条件和工具请求，最终工具暴露由 Tool Policy 决定。
-- Trace 与调试：记录 route、runtime、context、memory、tool policy、RAG evidence、写操作 scope 和错误原因。
+- 自定义 Skills：用户可以新增 Skill，PaperDesk 会在合适的对话场景读取并使用它。
+- 用量统计扩展：面向用户展示每日用量、近期消耗和花费概览；内部 trace 继续保留调试所需的运行细节。
+- Trace 与调试：面向开发者记录 route、runtime、context、memory、tool policy、RAG evidence、写操作 scope 和错误原因。
 
 ## 技术栈
 
@@ -24,7 +25,7 @@ PaperDesk 是一个面向论文阅读、论文库管理和研究写作的轻量 
 | 后端 | FastAPI、Pydantic、SQLite |
 | Agent | Lifecycle、Route Decision、Runtime Dispatcher、RunnerPolicy、Tool Registry、Skills、Safety、Trace |
 | RAG | PDF 解析、chunk 切分、Embedding、Milvus、metadata filter、evidence assembly |
-| 工程能力 | SSE 流式输出、写操作确认、运行追踪、runtime metrics、domain pack 分层 |
+| 工程能力 | SSE 流式输出、写操作确认、用量统计扩展、运行追踪、runtime metrics、domain pack 分层 |
 
 ## 项目截图
 
@@ -136,20 +137,38 @@ RunnerPolicy 是 loop 策略的统一来源，负责 max steps、stop reason、R
 ## 上下文管理
 
 ```mermaid
-flowchart LR
-    Request[当前请求] --> Context[Agent Context Packet]
-    History[最近对话] --> Context
-    Summary[会话摘要] --> Context
-    Preference[长期偏好] --> Context
-    Selected[选中文章 / 文件] --> Context
-    Evidence[RAG Evidence] --> Context
-    Pending[Pending Action] --> Context
-    Workspace[Workspace Scope] --> Context
-    Budget[Token Budget Profile] --> Context
-    Context --> Runtime[Runtime Executor]
+flowchart TD
+    Request[当前用户请求] --> Planner[Context Planner]
+    Route[Route / Scope] --> Planner
+
+    subgraph Sources[候选上下文来源]
+        History[最近对话]
+        Summary[会话摘要]
+        Preference[长期偏好摘要]
+        Selected[选中文章 / 文件]
+        Evidence[RAG 召回证据]
+        Skill[当前 Skill]
+        Pending[待确认操作]
+        Workspace[工作区范围]
+    end
+
+    Sources --> Planner
+    Planner --> Budget[Budget Allocator<br/>8K / 32K / 128K]
+    Budget --> Packet[Prompt Packet<br/>本轮实际进入模型]
+    Budget --> Store[Memory / Files / Workspace<br/>保留并按需读取]
+    Budget --> TraceOnly[Trace-only Metadata<br/>记录但不进入 prompt]
+    Packet --> Runtime[Runtime Executor]
+    Runtime --> Trace[Trace / Usage Summary]
 ```
 
-上下文由 Agent Core 统一装配，runtime 消费 `ContextPacket`。主要内容包括最近对话、会话摘要、长期偏好、选中范围、RAG 证据、pending action、工作区 scope 和 token budget。
+上下文由 Agent Core 统一规划。最近对话、会话摘要、长期偏好、选中文章、会话文件、RAG 证据、待确认操作和工作区范围都会先作为候选来源进入 Context Planner；系统会结合当前请求、内部路由、操作范围和 token budget 选择本轮真正需要的内容，形成 `Prompt Packet` 交给 runtime。
+
+候选内容会分层处理，只有经过选择和预算控制的内容进入模型 prompt。PaperDesk 将上下文分为四类：
+
+- 固定进入：系统规则、当前用户请求、必要安全约束和当前任务范围。
+- 优先进入：最近对话、当前选中文章或文件、当前命中的 Skill 摘要。
+- 条件进入：RAG evidence、会话摘要、长期偏好摘要、pending action 摘要。
+- 按需读取或仅记录：完整历史、完整文件、长期记忆详情、route、runtime、latency、cost、错误原因等调试信息。
 
 | Profile | 配置窗口 | 输出预留 | 典型用途 |
 | --- | ---: | ---: | --- |
@@ -157,7 +176,7 @@ flowchart LR
 | `standard` | 32K / 32768 | 4K / 4096 | 默认论文阅读、多轮对话、选中文章综述 |
 | `large` | 128K / 131072 | 8K / 8192 | 长上下文综述、多文档对比、深度研究 |
 
-有效窗口会结合模型 metadata 或显式配置取上限。滑动窗口优先按 token budget 保留最近消息，消息条数仅作为异常碎片化场景的 fallback cap：8K/32K 默认 24 条，128K 默认 48 条。
+有效窗口会结合模型 metadata 或显式配置取上限。滑动窗口优先按 token budget 保留最近消息，消息条数仅作为异常碎片化场景的 fallback cap：8K/32K 默认 24 条，128K 默认 48 条。预算分配的目标是控制本轮进入模型的 Prompt Packet，完整文件、完整历史和内部 trace 保留在存储与调试链路中。
 
 压缩顺序固定为三段：
 
@@ -165,7 +184,7 @@ flowchart LR
 2. history summary：超过强制阈值后，将离开窗口的旧对话压缩成会话摘要。
 3. hard trim：仍然超限时裁剪低优先级最近消息，同时保留当前任务、安全指令、选中范围和必要证据头。
 
-context state 会记录 `context_profile`、`effective_context_window`、`retained_message_count`、`dropped_message_count`、`truncated_sections` 和压缩阶段，便于调试。
+context state 会记录 `context_profile`、`effective_context_window`、`retained_message_count`、`dropped_message_count`、`truncated_sections` 和压缩阶段，便于开发者调试上下文选择结果。
 
 ## 记忆管理
 
@@ -204,24 +223,24 @@ flowchart LR
 
 ## Skills
 
-Skills 支持内置和用户自定义。一个 Skill 可以声明触发方式、适用能力、工具请求和输出协议。
+Skills 支持内置和用户自定义。用户可以新增一个 Skill，用自然语言描述它适合处理的任务、输出风格和可使用的能力；PaperDesk 会在对话时读取可用 Skills，并在相关场景自动使用。
+
+一个 Skill 的简化结构如下：
 
 ```json
 {
   "skill_id": "custom_review",
   "name": "自定义论文评审",
   "enabled": true,
-  "capability_ids": ["paper"],
+  "description": "按我的评审模板分析论文贡献、方法、实验和不足。",
   "allowed_tool_ids": ["search_local/vector_recall_default"],
   "trigger": {
-    "keywords": ["custom-review"],
-    "routes": ["paper_rag"],
-    "capability_ids": ["paper"]
+    "keywords": ["评审", "review", "custom-review"]
   }
 }
 ```
 
-Skill 负责表达任务偏好和工具请求。最终可用工具由 Tool Registry 与 Tool Policy 根据 route、capability、scope、risk、feature flag、外部绑定状态和确认状态过滤。MCP 与外部工具需要用户显式绑定或配置后才会进入候选池。
+对用户来说，Skill 的核心作用是让 PaperDesk 记住一种可复用的任务处理方式。对系统来说，Skill Registry 会负责读取和校验 Skill，Tool Policy 会继续控制工具是否安全可用。Skill 可以请求工具，但最终可用工具仍由当前任务范围、工具风险、外部绑定状态和确认状态共同决定。MCP 与外部工具需要用户显式绑定或配置后才会进入候选池。
 
 ## Tool Registry 与写操作安全
 
@@ -252,7 +271,9 @@ preview -> pending action -> explicit confirmation -> execute -> verification
 
 ## 可观测性
 
-Agent 运行过程记录轻量 trace 与 metrics：
+用量统计的用户视图面向普通用户展示每日用量、近期消耗和花费概览。用户只需要知道今天大致用了多少、花了多少，以及哪些会话消耗较高。
+
+Agent 运行过程还会记录面向开发者的轻量 trace 与 metrics：
 
 - route、runtime、orchestration pattern；
 - active capability 与 active skill；
@@ -261,9 +282,9 @@ Agent 运行过程记录轻量 trace 与 metrics：
 - RAG evidence count、metadata filter、citation；
 - pending action、write scope、verification；
 - response status、error reason；
-- token usage availability。
+- token usage availability、latency、cost availability。
 
-当模型供应商没有返回 token 信息时，系统记录 `token_usage_available=false`，请求仍可正常完成。
+当模型供应商没有返回 token 信息时，系统记录 `token_usage_available=false`，请求仍可正常完成；用户侧用量概览会基于可用数据展示，不把内部 route、runtime 或 latency 作为日常操作信息。
 
 ## 扩展方式
 
@@ -281,7 +302,7 @@ Capability Declaration
 示例：
 
 - draw.io：新增图形产物 domain 或复用 artifact domain，在 integration adapter 中接入 draw.io，在 Tool Registry 声明创建、编辑、导出工具。
-- token_usage：在 observability 中扩展 usage 聚合，在 Tool Registry 声明只读查询工具，通过 API 暴露会话维度的 token、latency、cost 信息。
+- token_usage：在 observability 中扩展 usage 聚合，面向用户展示每日用量、近期消耗和花费概览；内部保留会话维度的 token、latency、cost 记录用于调试。
 - 外部知识源：通过 capability 和 integration adapter 接入，工具暴露由绑定状态、feature flag 和 Tool Policy 控制。
 
 ## 快速启动
